@@ -1,73 +1,68 @@
-# React + TypeScript + Vite
+# Cloud Weave
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Cloud Weave is a Windows desktop app that aims to make multi-cloud file management easier.
 
-Currently, two official plugins are available:
+The project is built as a desktop UI layer on top of rclone.  
+Instead of building a new sync engine, Cloud Weave focuses on usability, workspace design, and a simpler experience for managing files across multiple cloud storage providers.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Goals
 
-## React Compiler
+- Provide a simple desktop UI for multi-cloud workflows
+- Present multiple storage providers in a unified workspace
+- Make file placement easier without forcing users to think about low-level storage details
+- Build an app that feels approachable for non-technical users
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Current Status
 
-## Expanding the ESLint configuration
+This project is in an early prototype stage.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+At the moment:
+- the desktop app foundation is set up with Tauri
+- the frontend foundation is set up with React + TypeScript + Vite
+- rclone integration is the next major step
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Tech Stack
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+- Tauri
+- React
+- TypeScript
+- Vite
+- rclone
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Project Direction
+
+Cloud Weave is intended to be a thin UI wrapper around rclone.
+
+That means:
+- rclone handles storage operations
+- Cloud Weave provides the desktop experience
+- the app focuses on workspaces, visibility, and interaction design
+
+## Planned Features
+
+- Multi-cloud workspace view
+- File browsing across connected storage providers
+- Better visibility into where files are stored
+- Smarter file placement based on available space
+- A cleaner workflow for moving and organizing files
+
+## Non-Goals
+
+- Replacing rclone's core engine
+- Building a brand new cloud sync protocol
+- Supporting every advanced rclone feature in the first version
+
+## Development
+
+This repository currently contains the Tauri + React app foundation.
+
+Typical local development commands:
+
+```bash
+npm run dev
+npm run build
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## note
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+This is an experimental project and the structure may change frequently while the app direction is still being refined.
