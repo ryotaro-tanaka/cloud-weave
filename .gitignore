@@ -25,3 +25,6 @@ dist-ssr
 
 # note
 *.note.md
+
+# binaries
+src-tauri/binaries/

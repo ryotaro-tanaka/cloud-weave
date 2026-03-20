@@ -66,3 +66,7 @@ npm run build
 ## note
 
 This is an experimental project and the structure may change frequently while the app direction is still being refined.
+
+## LICENSES
+
+Cloud Weave bundles rclone. See `THIRD_PARTY_NOTICES.md` and `LICENSES/rclone-MIT.txt`.
