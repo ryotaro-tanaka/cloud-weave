@@ -62,7 +62,7 @@ Typical local development commands:
 npm run dev
 npm run build
 npm run test:run
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/crates/rclone_logic/Cargo.toml
 ```
 
 Node.js version:

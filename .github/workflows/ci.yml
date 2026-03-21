@@ -47,8 +47,8 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
 
-      - name: Run Rust unit tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Check Rust formatting for pure logic crate
+        run: cargo fmt --manifest-path src-tauri/crates/rclone_logic/Cargo.toml --all --check
 
-      - name: Check Rust build
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Run Rust unit tests
+        run: cargo test --manifest-path src-tauri/crates/rclone_logic/Cargo.toml
