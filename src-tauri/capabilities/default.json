@@ -14,7 +14,64 @@
           "name": "binaries/rclone",
           "sidecar": true,
           "args": [
-            "version"
+            "listremotes",
+            "--json",
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "config",
+            "show",
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "config",
+            "create",
+            {
+              "validator": "[A-Za-z0-9_-]+"
+            },
+            "onedrive",
+            {
+              "validator": "[A-Za-z0-9_=.\\-/+:]+"
+            },
+            {
+              "validator": "[A-Za-z0-9_=.\\-/+:]+"
+            },
+            {
+              "validator": "[A-Za-z0-9_=.\\-/+:]+"
+            },
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "config",
+            "reconnect",
+            {
+              "validator": "[A-Za-z0-9_-]+:"
+            },
+            "--config",
+            {
+              "validator": "\\S+"
+            }
           ]
         }
       ]
