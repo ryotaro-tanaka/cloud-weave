@@ -61,7 +61,17 @@ Typical local development commands:
 ```bash
 npm run dev
 npm run build
+npm run test:run
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
+
+Node.js version:
+
+```bash
+24.14.0
+```
+
+The project pins this via `.nvmrc`, `.node-version`, and `package.json` `engines`.
 
 ## note
 

@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import {
+  resolvePendingSession,
+  type AuthSessionRecord,
+  type PendingMode,
+  type PendingSession,
+  type RemoteSummary,
+} from './features/storage/pendingState'
 import './App.css'
 
 type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
 type AuthType = 'oauth' | 'form'
 type ModalName = 'none' | 'add-storage' | 'oauth-pending' | 'remove-confirm'
 type AddFlowStep = 'providers' | 'form'
-type PendingMode = 'create' | 'reconnect'
-
-type RemoteSummary = {
-  name: string
-  provider: string
-  status: string
-}
 
 type CreateOneDriveRemoteInput = {
   remoteName: string
@@ -24,15 +24,6 @@ type CreateOneDriveRemoteInput = {
 type CreateRemoteResult = {
   remoteName: string
   provider: string
-  status: 'connected' | 'pending' | 'error'
-  nextStep: 'done' | 'open_browser' | 'retry' | 'rename'
-  message: string
-}
-
-type AuthSessionRecord = {
-  remoteName: string
-  provider: string
-  mode: PendingMode
   status: 'connected' | 'pending' | 'error'
   nextStep: 'done' | 'open_browser' | 'retry' | 'rename'
   message: string
@@ -49,15 +40,6 @@ type ProviderDefinition = {
   authType: AuthType
   enabled: boolean
   description: string
-}
-
-type PendingSession = {
-  remoteName: string
-  provider: string
-  mode: PendingMode
-  status: 'connected' | 'pending' | 'error'
-  nextStep: string
-  message: string
 }
 
 const STORAGE_PROVIDERS: ProviderDefinition[] = [
@@ -201,26 +183,7 @@ function App() {
         fetchAuthSession(pendingSession.remoteName),
       ])
 
-      const remoteAppeared = latestRemotes?.some((remote) => remote.name === pendingSession.remoteName) ?? false
-      let nextPending = pendingSession
-
-      if (remoteAppeared) {
-        nextPending = {
-          ...pendingSession,
-          status: 'connected',
-          nextStep: 'done',
-          message: 'Your storage is connected and ready to use.',
-        }
-      } else if (session) {
-        nextPending = {
-          remoteName: session.remoteName,
-          provider: session.provider,
-          mode: session.mode,
-          status: session.status,
-          nextStep: session.nextStep,
-          message: session.message,
-        }
-      }
+      const nextPending = resolvePendingSession(pendingSession, latestRemotes, session)
 
       setPendingSession(nextPending)
       return nextPending
