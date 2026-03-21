@@ -1,18 +1,20 @@
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
+  --text: #5d6677;
+  --text-h: #0d1728;
+  --muted: #72809a;
+  --bg: #f8fafc;
+  --border: #d8dfeb;
+  --code-bg: #eef3f8;
+  --panel-soft: rgba(239, 244, 250, 0.76);
+  --accent: #2364ff;
+  --accent-bg: rgba(35, 100, 255, 0.12);
+  --accent-border: rgba(35, 100, 255, 0.38);
+  --danger: #bd2f4a;
   --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+    rgba(36, 53, 88, 0.14) 0 24px 48px -28px, rgba(27, 43, 74, 0.08) 0 12px 24px -18px;
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --sans: 'Segoe UI Variable', 'Segoe UI', sans-serif;
+  --heading: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
   --mono: ui-monospace, Consolas, monospace;
 
   font: 18px/145% var(--sans);
@@ -32,30 +34,26 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
+    --text: #9fabc0;
+    --text-h: #f7fbff;
+    --muted: #8f9ab0;
+    --bg: #0d1118;
+    --border: #263142;
+    --code-bg: #131c28;
+    --panel-soft: rgba(17, 24, 36, 0.82);
+    --accent: #72a3ff;
+    --accent-bg: rgba(114, 163, 255, 0.16);
+    --accent-border: rgba(114, 163, 255, 0.38);
+    --danger: #ff7f96;
     --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
+      rgba(0, 0, 0, 0.42) 0 28px 52px -28px, rgba(0, 0, 0, 0.22) 0 14px 26px -18px;
   }
 }
 
 #root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
+  width: 100%;
+  margin: 0;
+  text-align: left;
   min-height: 100svh;
   display: flex;
   flex-direction: column;
@@ -67,7 +65,8 @@ body {
 }
 
 h1,
-h2 {
+h2,
+h3 {
   font-family: var(--heading);
   font-weight: 500;
   color: var(--text-h);
@@ -90,6 +89,10 @@ h2 {
   @media (max-width: 1024px) {
     font-size: 20px;
   }
+}
+h3 {
+  font-size: 18px;
+  margin: 0;
 }
 p {
   margin: 0;
