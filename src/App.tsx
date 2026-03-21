@@ -8,6 +8,17 @@ import {
   type PendingSession,
   type RemoteSummary,
 } from './features/storage/pendingState'
+import {
+  filterItemsByView,
+  formatFileSize,
+  formatModifiedTime,
+  getCategoryLabel,
+  getCategoryMonogram,
+  groupRecentItems,
+  searchUnifiedItems,
+  type LogicalView,
+  type UnifiedItem,
+} from './features/storage/unifiedItems'
 import './App.css'
 
 type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
@@ -73,6 +84,7 @@ const STORAGE_PROVIDERS: ProviderDefinition[] = [
   },
 ]
 
+const LOGICAL_VIEWS: LogicalView[] = ['recent', 'documents', 'photos', 'videos', 'audio', 'other']
 const EMPTY_PENDING_MESSAGE = 'Complete authentication in your browser.'
 
 function App() {
@@ -80,11 +92,15 @@ function App() {
   const [activeModal, setActiveModal] = useState<ModalName>('none')
   const [addFlowStep, setAddFlowStep] = useState<AddFlowStep>('providers')
   const [selectedProvider, setSelectedProvider] = useState<StorageProvider>('onedrive')
+  const [activeView, setActiveView] = useState<LogicalView>('recent')
+  const [searchQuery, setSearchQuery] = useState('')
   const [remotes, setRemotes] = useState<RemoteSummary[]>([])
+  const [unifiedItems, setUnifiedItems] = useState<UnifiedItem[]>([])
   const [hoveredRemote, setHoveredRemote] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
   const [isLoadingRemotes, setIsLoadingRemotes] = useState(true)
+  const [isLoadingItems, setIsLoadingItems] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isCheckingPending, setIsCheckingPending] = useState(false)
   const [isRemoving, setIsRemoving] = useState(false)
@@ -92,6 +108,7 @@ function App() {
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
   const [listError, setListError] = useState('')
+  const [itemsError, setItemsError] = useState('')
   const [addError, setAddError] = useState('')
   const [removeError, setRemoveError] = useState('')
 
@@ -99,6 +116,22 @@ function App() {
     () => STORAGE_PROVIDERS.find((provider) => provider.id === selectedProvider) ?? STORAGE_PROVIDERS[0],
     [selectedProvider],
   )
+
+  const displayedItems = useMemo(() => {
+    const viewItems = filterItemsByView(unifiedItems, activeView)
+    return searchUnifiedItems(viewItems, searchQuery)
+  }, [activeView, searchQuery, unifiedItems])
+
+  const groupedRecentItems = useMemo(() => {
+    if (activeView !== 'recent') {
+      return []
+    }
+
+    return groupRecentItems(displayedItems)
+  }, [activeView, displayedItems])
+
+  const isVisualGrid = activeView === 'photos' || activeView === 'videos'
+  const showsPersonalVaultNotice = remotes.some((remote) => remote.provider === 'onedrive')
 
   const fetchRemotes = async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false
@@ -115,6 +148,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setListError(message)
+      setRemotes([])
       return null
     } finally {
       if (!silent) {
@@ -123,8 +157,47 @@ function App() {
     }
   }
 
+  const fetchUnifiedItems = async (nextRemotes?: RemoteSummary[] | null, options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false
+    const resolvedRemotes = nextRemotes === undefined ? remotes : nextRemotes
+
+    if (!silent) {
+      setIsLoadingItems(true)
+    }
+
+    if (!resolvedRemotes || resolvedRemotes.length === 0) {
+      setUnifiedItems([])
+      setItemsError('')
+      if (!silent) {
+        setIsLoadingItems(false)
+      }
+      return []
+    }
+
+    try {
+      const result = await invoke<UnifiedItem[]>('list_unified_items')
+      setUnifiedItems(result)
+      setItemsError('')
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setItemsError(message)
+      setUnifiedItems([])
+      return null
+    } finally {
+      if (!silent) {
+        setIsLoadingItems(false)
+      }
+    }
+  }
+
+  const refreshLibrary = async (options?: { silent?: boolean }) => {
+    const nextRemotes = await fetchRemotes(options)
+    await fetchUnifiedItems(nextRemotes, options)
+  }
+
   useEffect(() => {
-    void fetchRemotes()
+    void refreshLibrary()
   }, [])
 
   useEffect(() => {
@@ -286,7 +359,7 @@ function App() {
 
       setActiveModal('none')
       setRemoveTarget(null)
-      await fetchRemotes({ silent: true })
+      await refreshLibrary({ silent: true })
     } catch (error) {
       setRemoveError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -298,6 +371,7 @@ function App() {
     const latest = await checkPendingSession()
 
     if (latest?.status === 'connected') {
+      await refreshLibrary({ silent: true })
       setActiveModal('none')
       setPendingSession(null)
       resetAddFlow()
@@ -327,6 +401,11 @@ function App() {
   const closePendingModal = () => {
     setActiveModal('none')
   }
+
+  const hasConnectedStorage = remotes.length > 0
+  const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
+  const shouldShowCategoryEmptyState =
+    hasConnectedStorage && !isLoadingItems && !itemsError && displayedItems.length === 0
 
   return (
     <main className="workspace-shell">
@@ -358,9 +437,7 @@ function App() {
             <div className="sidebar-list">
               {isLoadingRemotes ? <p className="empty-state">Loading storage...</p> : null}
               {!isLoadingRemotes && listError ? <p className="error-text">{listError}</p> : null}
-              {!isLoadingRemotes && !listError && remotes.length === 0 ? (
-                <p className="empty-state">No storage connected yet.</p>
-              ) : null}
+              {shouldShowNoStorageState ? <p className="empty-state">No storage connected yet.</p> : null}
 
               {!isLoadingRemotes && !listError && remotes.length > 0 ? (
                 <ul className="remote-list">
@@ -375,7 +452,11 @@ function App() {
                         onMouseLeave={() => setHoveredRemote((current) => (current === remote.name ? null : current))}
                       >
                         <div className="remote-summary">
-                          <p className="remote-name">{remote.name}</p>
+                          <div>
+                            <p className="remote-name">{remote.name}</p>
+                            <p className="remote-provider">{getProviderLabel(remote.provider)}</p>
+                            {remote.message ? <p className="remote-message">{remote.message}</p> : null}
+                          </div>
                         </div>
 
                         <div className={`remote-actions ${isHovered ? 'visible' : ''}`}>
@@ -398,12 +479,100 @@ function App() {
       </aside>
 
       <section className="workspace-main">
-        <div className="workspace-placeholder">
-          <p className="eyebrow">Cloud Weave</p>
-          <h1>Connected storage, without the clutter.</h1>
-          <p>
-            Add a provider from the sidebar, complete authentication in your browser, and come back when you are done.
-          </p>
+        <div className="library-shell">
+          <header className="library-topbar">
+            <label className="search-field" aria-label="Search files">
+              <span className="search-icon" aria-hidden="true">
+                /
+              </span>
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search files, paths, or storage names"
+              />
+            </label>
+
+            <nav className="view-tabs" aria-label="Logical views">
+              {LOGICAL_VIEWS.map((view) => (
+                <button
+                  key={view}
+                  className={`view-tab ${activeView === view ? 'active' : ''}`}
+                  type="button"
+                  onClick={() => setActiveView(view)}
+                >
+                  {getCategoryLabel(view)}
+                </button>
+              ))}
+            </nav>
+          </header>
+
+          <div className="library-content">
+            {showsPersonalVaultNotice ? (
+              <div className="info-banner" role="note">
+                <p>OneDrive Personal Vault is excluded from unified browsing.</p>
+              </div>
+            ) : null}
+
+            {isLoadingItems && hasConnectedStorage ? <p className="empty-state">Loading your unified library...</p> : null}
+            {!isLoadingItems && itemsError ? <p className="error-text">{itemsError}</p> : null}
+
+            {shouldShowNoStorageState ? (
+              <div className="main-empty-state">
+                <p className="eyebrow">Unified Library</p>
+                <h1>Your files will appear here.</h1>
+                <p>Connect a storage from the sidebar to start browsing everything in one place.</p>
+                <button className="primary-button" type="button" onClick={openAddModal}>
+                  Connect storage
+                </button>
+              </div>
+            ) : null}
+
+            {shouldShowCategoryEmptyState ? (
+              <div className="main-empty-state compact">
+                <p className="eyebrow">{getCategoryLabel(activeView)}</p>
+                <h2>No matching files.</h2>
+                <p>
+                  {searchQuery
+                    ? 'Try a different search or switch to another view.'
+                    : `There are no files in ${getCategoryLabel(activeView).toLowerCase()} right now.`}
+                </p>
+              </div>
+            ) : null}
+
+            {!isLoadingItems && !itemsError && displayedItems.length > 0 ? (
+              activeView === 'recent' ? (
+                <div className="recent-groups">
+                  {groupedRecentItems.map((group) => (
+                    <section key={group.label} className="recent-group">
+                      <div className="section-heading">
+                        <h3>{group.label}</h3>
+                        <span>{group.items.length}</span>
+                      </div>
+
+                      <div className="item-list">
+                        {group.items.map((item) => (
+                          <UnifiedListItem key={item.id} item={item} />
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              ) : isVisualGrid ? (
+                <div className="item-grid">
+                  {displayedItems.map((item) => (
+                    <UnifiedGridItem key={item.id} item={item} />
+                  ))}
+                </div>
+              ) : (
+                <div className="item-list">
+                  {displayedItems.map((item) => (
+                    <UnifiedListItem key={item.id} item={item} />
+                  ))}
+                </div>
+              )
+            ) : null}
+          </div>
         </div>
       </section>
 
@@ -525,7 +694,7 @@ function App() {
               ) : null}
 
               {pendingSession.status === 'connected' ? (
-                <p className="pending-help">This storage will now appear in the connected list.</p>
+                <p className="pending-help">This storage now appears in the connected list and unified library.</p>
               ) : null}
             </div>
 
@@ -579,7 +748,7 @@ function App() {
 
             <div className="confirm-copy">
               <p>This removes the saved connection from Cloud Weave.</p>
-              <p className="confirm-provider">{removeTarget.provider}</p>
+              <p className="confirm-provider">{getProviderLabel(removeTarget.provider)}</p>
               {removeError ? <p className="error-text">{removeError}</p> : null}
             </div>
 
@@ -596,6 +765,70 @@ function App() {
       ) : null}
     </main>
   )
+}
+
+function UnifiedListItem({ item }: { item: UnifiedItem }) {
+  return (
+    <article className="unified-item list-item">
+      <div className="item-leading">
+        <span className={`item-monogram ${item.category}`} aria-hidden="true">
+          {getCategoryMonogram(item.category)}
+        </span>
+      </div>
+
+      <div className="item-copy">
+        <div className="item-title-row">
+          <p className="item-name">{item.name}</p>
+          <span className="source-badge">{item.sourceRemote}</span>
+        </div>
+
+        <div className="item-meta">
+          <span>{getProviderLabel(item.sourceProvider)}</span>
+          <span>{item.sourcePath}</span>
+        </div>
+      </div>
+
+      <div className="item-trailing">
+        <span>{formatFileSize(item.size)}</span>
+        <span>{formatModifiedTime(item.modTime)}</span>
+      </div>
+    </article>
+  )
+}
+
+function UnifiedGridItem({ item }: { item: UnifiedItem }) {
+  return (
+    <article className="unified-item grid-item">
+      <div className={`grid-preview ${item.category}`}>
+        <span className="source-badge">{item.sourceRemote}</span>
+      </div>
+
+      <div className="grid-copy">
+        <p className="item-name">{item.name}</p>
+        <div className="item-meta">
+          <span>{getProviderLabel(item.sourceProvider)}</span>
+          <span>{formatFileSize(item.size)}</span>
+        </div>
+        <p className="grid-path">{item.sourcePath}</p>
+        <p className="grid-date">{formatModifiedTime(item.modTime)}</p>
+      </div>
+    </article>
+  )
+}
+
+function getProviderLabel(provider: string): string {
+  switch (provider) {
+    case 'onedrive':
+      return 'OneDrive'
+    case 'gdrive':
+      return 'Google Drive'
+    case 'dropbox':
+      return 'Dropbox'
+    case 'icloud':
+      return 'iCloud Drive'
+    default:
+      return provider
+  }
 }
 
 export default App

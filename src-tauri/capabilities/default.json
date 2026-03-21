@@ -26,6 +26,26 @@
           "name": "binaries/rclone",
           "sidecar": true,
           "args": [
+            "lsjson",
+            {
+              "validator": "[A-Za-z0-9_-]+:"
+            },
+            "-R",
+            "--files-only",
+            "--exclude",
+            {
+              "validator": "\\S+"
+            },
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
             "config",
             "show",
             "--config",

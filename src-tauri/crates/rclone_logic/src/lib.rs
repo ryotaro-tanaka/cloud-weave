@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
@@ -16,6 +16,45 @@ struct ListRemoteRecord {
     _type: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct LsjsonItem {
+    path: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    mod_time: Option<String>,
+    #[serde(default)]
+    is_dir: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedItem {
+    pub id: String,
+    pub source_remote: String,
+    pub source_provider: String,
+    pub source_path: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub mod_time: Option<String>,
+    pub mime_type: Option<String>,
+    pub extension: Option<String>,
+    pub category: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteConfigState {
+    pub provider: String,
+    pub drive_id: Option<String>,
+    pub drive_type: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum RcloneErrorKind {
     DuplicateRemote,
@@ -24,6 +63,39 @@ pub enum RcloneErrorKind {
     RcloneUnavailable,
     Other,
 }
+
+const DOCUMENT_MIME_TYPES: &[&str] = &[
+    "application/pdf",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/rtf",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.presentation",
+];
+
+const DOCUMENT_EXTENSIONS: &[&str] = &[
+    ".pdf", ".txt", ".md", ".csv", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf",
+    ".odt", ".ods", ".odp", ".pages", ".numbers", ".key",
+];
+
+const PHOTO_EXTENSIONS: &[&str] = &[
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".tif", ".tiff", ".bmp",
+    ".svg", ".dng", ".cr2", ".nef", ".arw",
+];
+
+const VIDEO_EXTENSIONS: &[&str] = &[
+    ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".wmv", ".flv", ".mpeg", ".mpg",
+];
+
+const AUDIO_EXTENSIONS: &[&str] = &[".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus"];
 
 pub fn parse_listremotes(raw: &str) -> Result<Vec<String>, String> {
     if raw.trim().is_empty() {
@@ -48,6 +120,13 @@ pub fn parse_listremotes(raw: &str) -> Result<Vec<String>, String> {
 }
 
 pub fn parse_provider_map(config_text: &str) -> HashMap<String, String> {
+    parse_remote_config_state_map(config_text)
+        .into_iter()
+        .map(|(name, state)| (name, state.provider))
+        .collect()
+}
+
+pub fn parse_remote_config_state_map(config_text: &str) -> HashMap<String, RemoteConfigState> {
     let mut providers = HashMap::new();
     let mut current_remote: Option<String> = None;
 
@@ -63,14 +142,105 @@ pub fn parse_provider_map(config_text: &str) -> HashMap<String, String> {
 
         if let Some(remote_name) = current_remote.as_ref() {
             if let Some((key, value)) = line.split_once('=') {
-                if key.trim() == "type" {
-                    providers.insert(remote_name.clone(), value.trim().to_string());
+                let entry = providers
+                    .entry(remote_name.clone())
+                    .or_insert_with(|| RemoteConfigState {
+                        provider: "unknown".to_string(),
+                        drive_id: None,
+                        drive_type: None,
+                    });
+
+                match key.trim() {
+                    "type" => {
+                        entry.provider = value.trim().to_string();
+                    }
+                    "drive_id" => {
+                        entry.drive_id = Some(value.trim().to_string());
+                    }
+                    "drive_type" => {
+                        entry.drive_type = Some(value.trim().to_string());
+                    }
+                    _ => {}
                 }
             }
         }
     }
 
     providers
+}
+
+pub fn parse_unified_items(
+    raw: &str,
+    source_remote: &str,
+    source_provider: &str,
+) -> Result<Vec<UnifiedItem>, String> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let parsed = serde_json::from_str::<Vec<LsjsonItem>>(raw)
+        .map_err(|error| format!("failed to parse rclone lsjson output: {error}"))?;
+
+    Ok(parsed
+        .into_iter()
+        .filter(|item| !item.is_dir)
+        .map(|item| normalize_unified_item(item, source_remote, source_provider))
+        .collect())
+}
+
+pub fn classify_item(mime_type: Option<&str>, extension: Option<&str>) -> &'static str {
+    if let Some(mime_type) = mime_type.map(|value| value.trim().to_ascii_lowercase()) {
+        if DOCUMENT_MIME_TYPES.contains(&mime_type.as_str()) {
+            return "documents";
+        }
+
+        if mime_type.starts_with("image/") {
+            return "photos";
+        }
+
+        if mime_type.starts_with("video/") {
+            return "videos";
+        }
+
+        if mime_type.starts_with("audio/") {
+            return "audio";
+        }
+    }
+
+    if let Some(extension) = extension.map(|value| value.trim().to_ascii_lowercase()) {
+        if DOCUMENT_EXTENSIONS.contains(&extension.as_str()) {
+            return "documents";
+        }
+
+        if PHOTO_EXTENSIONS.contains(&extension.as_str()) {
+            return "photos";
+        }
+
+        if VIDEO_EXTENSIONS.contains(&extension.as_str()) {
+            return "videos";
+        }
+
+        if AUDIO_EXTENSIONS.contains(&extension.as_str()) {
+            return "audio";
+        }
+    }
+
+    "other"
+}
+
+pub fn derive_extension(file_name: &str) -> Option<String> {
+    let trimmed = file_name.trim();
+
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (_, extension) = trimmed.rsplit_once('.')?;
+    if extension.is_empty() {
+        return None;
+    }
+
+    Some(format!(".{}", extension.to_ascii_lowercase()))
 }
 
 pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
@@ -107,9 +277,40 @@ pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
     RcloneErrorKind::Other
 }
 
+fn normalize_unified_item(
+    item: LsjsonItem,
+    source_remote: &str,
+    source_provider: &str,
+) -> UnifiedItem {
+    let name = item.name.unwrap_or_else(|| basename_from_path(&item.path));
+    let extension = derive_extension(&name);
+    let category = classify_item(item.mime_type.as_deref(), extension.as_deref()).to_string();
+
+    UnifiedItem {
+        id: format!("{source_remote}::{path}", path = item.path),
+        source_remote: source_remote.to_string(),
+        source_provider: source_provider.to_string(),
+        source_path: item.path,
+        name,
+        is_dir: item.is_dir,
+        size: item.size,
+        mod_time: item.mod_time,
+        mime_type: item.mime_type,
+        extension,
+        category,
+    }
+}
+
+fn basename_from_path(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{classify_rclone_error, parse_listremotes, parse_provider_map, RcloneErrorKind};
+    use super::{
+        classify_item, classify_rclone_error, derive_extension, parse_listremotes,
+        parse_provider_map, parse_remote_config_state_map, parse_unified_items, RcloneErrorKind,
+    };
 
     #[test]
     fn parse_listremotes_supports_string_arrays() {
@@ -164,6 +365,81 @@ mod tests {
             parsed.get("dropbox-backup").map(String::as_str),
             Some("dropbox")
         );
+    }
+
+    #[test]
+    fn parse_remote_config_state_map_reads_drive_fields() {
+        let config = r#"
+      [onedrive-main]
+      type = onedrive
+      drive_id = abc123
+      drive_type = personal
+    "#;
+
+        let parsed = parse_remote_config_state_map(config);
+        let state = parsed.get("onedrive-main").expect("remote state should exist");
+
+        assert_eq!(state.provider, "onedrive");
+        assert_eq!(state.drive_id.as_deref(), Some("abc123"));
+        assert_eq!(state.drive_type.as_deref(), Some("personal"));
+    }
+
+    #[test]
+    fn classify_item_prefers_document_mime() {
+        assert_eq!(
+            classify_item(Some("application/pdf"), Some(".jpg")),
+            "documents"
+        );
+    }
+
+    #[test]
+    fn classify_item_falls_back_to_extension() {
+        assert_eq!(classify_item(None, Some(".mp3")), "audio");
+    }
+
+    #[test]
+    fn classify_item_returns_other_for_unknown_types() {
+        assert_eq!(classify_item(Some("application/octet-stream"), None), "other");
+    }
+
+    #[test]
+    fn derive_extension_lowercases_file_extensions() {
+        assert_eq!(derive_extension("Vacation.JPG"), Some(".jpg".to_string()));
+    }
+
+    #[test]
+    fn parse_unified_items_filters_directories_and_normalizes_fields() {
+        let raw = r#"
+      [
+        {
+          "Path": "Pictures/Trip/photo.JPG",
+          "Name": "photo.JPG",
+          "Size": 128,
+          "MimeType": "image/jpeg",
+          "ModTime": "2026-01-01T10:00:00Z",
+          "IsDir": false
+        },
+        {
+          "Path": "Pictures",
+          "Name": "Pictures",
+          "Size": 0,
+          "IsDir": true
+        }
+      ]
+    "#;
+
+        let parsed =
+            parse_unified_items(raw, "onedrive-main", "onedrive").expect("lsjson should parse");
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].source_remote, "onedrive-main");
+        assert_eq!(parsed[0].source_provider, "onedrive");
+        assert_eq!(parsed[0].source_path, "Pictures/Trip/photo.JPG");
+        assert_eq!(parsed[0].name, "photo.JPG");
+        assert_eq!(parsed[0].extension.as_deref(), Some(".jpg"));
+        assert_eq!(parsed[0].category, "photos");
+        assert_eq!(parsed[0].size, 128);
+        assert_eq!(parsed[0].mod_time.as_deref(), Some("2026-01-01T10:00:00Z"));
     }
 
     #[test]

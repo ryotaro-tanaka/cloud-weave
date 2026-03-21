@@ -1,4 +1,7 @@
-use rclone_logic::{classify_rclone_error, parse_listremotes, parse_provider_map, RcloneErrorKind};
+use rclone_logic::{
+    classify_rclone_error, parse_listremotes, parse_remote_config_state_map, parse_unified_items,
+    RcloneErrorKind, RemoteConfigState, UnifiedItem,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -14,6 +17,7 @@ use tauri::{AppHandle, Manager};
 const RCLONE_BINARY: &str = "rclone-x86_64-pc-windows-msvc.exe";
 const AUTH_COMMAND_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
+const INVENTORY_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const AUTH_START_GRACE_PERIOD: Duration = Duration::from_millis(350);
 
@@ -28,6 +32,7 @@ struct RemoteSummary {
     name: String,
     provider: String,
     status: String,
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +89,13 @@ async fn create_onedrive_remote(
 }
 
 #[tauri::command]
+async fn list_unified_items(app: AppHandle) -> Result<Vec<UnifiedItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_unified_items_impl(app))
+        .await
+        .map_err(|error| format!("failed to join unified item task: {error}"))?
+}
+
+#[tauri::command]
 async fn reconnect_remote(app: AppHandle, name: String) -> Result<CreateRemoteResult, String> {
     tauri::async_runtime::spawn_blocking(move || reconnect_remote_impl(app, name))
         .await
@@ -116,20 +128,21 @@ fn list_storage_remotes_impl(app: AppHandle) -> Result<Vec<RemoteSummary>, Strin
         DEFAULT_COMMAND_TIMEOUT,
     )?;
     let remotes = parse_listremotes(&stdout)?;
-    let provider_by_remote = load_remote_types(&app, &config_path)?;
+    let remote_config_by_name = load_remote_config_states(&app, &config_path)?;
 
     let mut summaries = remotes
         .into_iter()
         .map(|remote_name| {
-            let provider = provider_by_remote
+            let config_state = remote_config_by_name
                 .get(&remote_name)
                 .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
+                .unwrap_or_else(default_remote_config_state);
 
             RemoteSummary {
                 name: remote_name,
-                provider,
-                status: "connected".to_string(),
+                provider: config_state.provider.clone(),
+                status: remote_status(&config_state).to_string(),
+                message: remote_status_message(&config_state),
             }
         })
         .collect::<Vec<_>>();
@@ -165,6 +178,72 @@ fn create_onedrive_remote_impl(
     owned_args.push(config_path.to_string_lossy().into_owned());
 
     start_auth_flow(&app, &input.remote_name, "onedrive", "create", &owned_args)
+}
+
+fn list_unified_items_impl(app: AppHandle) -> Result<Vec<UnifiedItem>, String> {
+    let config_path = ensure_rclone_config(&app)?;
+    let stdout = run_rclone(
+        &app,
+        &["listremotes", "--json", "--config"],
+        &[config_path.as_os_str()],
+        DEFAULT_COMMAND_TIMEOUT,
+    )?;
+    let remotes = parse_listremotes(&stdout)?;
+
+    if remotes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let remote_config_by_name = load_remote_config_states(&app, &config_path)?;
+    let mut items = Vec::new();
+
+    for remote_name in remotes {
+        let config_state = remote_config_by_name
+            .get(&remote_name)
+            .cloned()
+            .unwrap_or_else(default_remote_config_state);
+
+        if remote_status(&config_state) != "connected" {
+            continue;
+        }
+
+        let mut owned_args = vec![
+            "lsjson".to_string(),
+            format!("{remote_name}:"),
+            "-R".to_string(),
+            "--files-only".to_string(),
+            "--config".to_string(),
+            config_path.to_string_lossy().into_owned(),
+        ];
+
+        if let Some(exclude_pattern) = personal_vault_exclude_pattern(&config_state.provider) {
+            owned_args.insert(4, "--exclude".to_string());
+            owned_args.insert(5, exclude_pattern.to_string());
+        }
+
+        let output = run_rclone_owned(&app, &owned_args, INVENTORY_COMMAND_TIMEOUT)?;
+        items.extend(parse_unified_items(
+            &output,
+            &remote_name,
+            &config_state.provider,
+        )?);
+    }
+
+    items.sort_by(|left, right| {
+        left.source_remote
+            .cmp(&right.source_remote)
+            .then(left.source_path.cmp(&right.source_path))
+    });
+
+    Ok(items)
+}
+
+fn personal_vault_exclude_pattern(provider: &str) -> Option<&'static str> {
+    if provider == "onedrive" {
+        Some("/Personal Vault/**")
+    } else {
+        None
+    }
 }
 
 fn reconnect_remote_impl(app: AppHandle, name: String) -> Result<CreateRemoteResult, String> {
@@ -234,19 +313,7 @@ fn start_auth_flow(
 
     match child.try_wait() {
         Ok(Some(_)) => match collect_child_output(child) {
-            Ok(stdout) => {
-                let record =
-                    success_auth_session(remote_name, provider, mode, &success_message(&stdout));
-                set_auth_session_record(app, record.clone());
-
-                Ok(CreateRemoteResult {
-                    remote_name: record.remote_name,
-                    provider: record.provider,
-                    status: record.status,
-                    next_step: record.next_step,
-                    message: record.message,
-                })
-            }
+            Ok(stdout) => build_success_result(app, remote_name, provider, mode, &stdout),
             Err(error) => build_auth_error_result(app, remote_name, provider, mode, &error),
         },
         Ok(None) => {
@@ -297,13 +364,19 @@ fn spawn_auth_watcher(
                 Ok(Some(_)) => {
                     match collect_child_output(child) {
                         Ok(stdout) => {
-                            let record = success_auth_session(
-                                &remote_name,
-                                &provider,
-                                &mode,
-                                &success_message(&stdout),
-                            );
-                            set_auth_session_record(&app, record);
+                            if let Ok(result) =
+                                build_success_result(&app, &remote_name, &provider, &mode, &stdout)
+                            {
+                                let record = AuthSessionRecord {
+                                    remote_name: result.remote_name,
+                                    provider: result.provider,
+                                    mode: mode.clone(),
+                                    status: result.status,
+                                    next_step: result.next_step,
+                                    message: result.message,
+                                };
+                                set_auth_session_record(&app, record);
+                            }
                         }
                         Err(error) => {
                             if let Ok(result) = build_auth_error_result(
@@ -418,6 +491,53 @@ fn build_auth_error_result(
     Ok(result)
 }
 
+fn build_success_result(
+    app: &AppHandle,
+    remote_name: &str,
+    provider: &str,
+    mode: &str,
+    stdout: &str,
+) -> Result<CreateRemoteResult, String> {
+    let config_path = ensure_rclone_config(app)?;
+    let remote_config_by_name = load_remote_config_states(app, &config_path)?;
+    let config_state = remote_config_by_name
+        .get(remote_name)
+        .cloned()
+        .unwrap_or_else(default_remote_config_state);
+
+    let result = if remote_status(&config_state) == "connected" {
+        CreateRemoteResult {
+            remote_name: remote_name.to_string(),
+            provider: provider.to_string(),
+            status: "connected".to_string(),
+            next_step: "done".to_string(),
+            message: success_message(stdout),
+        }
+    } else {
+        CreateRemoteResult {
+            remote_name: remote_name.to_string(),
+            provider: provider.to_string(),
+            status: "error".to_string(),
+            next_step: "retry".to_string(),
+            message: remote_status_message(&config_state).unwrap_or_else(|| {
+                "This storage connection is incomplete. Try again.".to_string()
+            }),
+        }
+    };
+
+    let session = AuthSessionRecord {
+        remote_name: result.remote_name.clone(),
+        provider: result.provider.clone(),
+        mode: mode.to_string(),
+        status: result.status.clone(),
+        next_step: result.next_step.clone(),
+        message: result.message.clone(),
+    };
+    set_auth_session_record(app, session);
+
+    Ok(result)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AuthSessionStore::default())
@@ -430,6 +550,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_storage_remotes,
             create_onedrive_remote,
+            list_unified_items,
             reconnect_remote,
             get_auth_session_status,
             delete_remote
@@ -570,17 +691,46 @@ fn kill_child(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn load_remote_types(
+fn load_remote_config_states(
     app: &AppHandle,
     config_path: &Path,
-) -> Result<HashMap<String, String>, String> {
+) -> Result<HashMap<String, RemoteConfigState>, String> {
     let config_text = run_rclone(
         app,
         &["config", "show", "--config"],
         &[config_path.as_os_str()],
         DEFAULT_COMMAND_TIMEOUT,
     )?;
-    Ok(parse_provider_map(&config_text))
+    Ok(parse_remote_config_state_map(&config_text))
+}
+
+fn default_remote_config_state() -> RemoteConfigState {
+    RemoteConfigState {
+        provider: "unknown".to_string(),
+        drive_id: None,
+        drive_type: None,
+    }
+}
+
+fn remote_status(config_state: &RemoteConfigState) -> &'static str {
+    if config_state.provider == "onedrive"
+        && (config_state.drive_id.is_none() || config_state.drive_type.is_none())
+    {
+        "error"
+    } else {
+        "connected"
+    }
+}
+
+fn remote_status_message(config_state: &RemoteConfigState) -> Option<String> {
+    if remote_status(config_state) == "error" {
+        Some(
+            "This OneDrive connection is incomplete. Reconnect it or remove it and connect again."
+                .to_string(),
+        )
+    } else {
+        None
+    }
 }
 
 fn validate_remote_name(remote_name: &str) -> Result<(), String> {

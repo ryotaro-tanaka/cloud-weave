@@ -3,7 +3,8 @@ export type PendingMode = 'create' | 'reconnect'
 export type RemoteSummary = {
   name: string
   provider: string
-  status: string
+  status: 'connected' | 'error'
+  message?: string | null
 }
 
 export type AuthSessionRecord = {
@@ -29,14 +30,23 @@ export function resolvePendingSession(
   latestRemotes: RemoteSummary[] | null,
   session: AuthSessionRecord | null,
 ): PendingSession {
-  const remoteAppeared = latestRemotes?.some((remote) => remote.name === currentPending.remoteName) ?? false
+  const remote = latestRemotes?.find((entry) => entry.name === currentPending.remoteName) ?? null
 
-  if (remoteAppeared) {
+  if (remote?.status === 'connected') {
     return {
       ...currentPending,
       status: 'connected',
       nextStep: 'done',
       message: 'Your storage is connected and ready to use.',
+    }
+  }
+
+  if (remote?.status === 'error') {
+    return {
+      ...currentPending,
+      status: 'error',
+      nextStep: 'retry',
+      message: remote.message ?? 'This storage connection is incomplete. Try again.',
     }
   }
 

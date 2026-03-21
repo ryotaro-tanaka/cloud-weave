@@ -50,6 +50,24 @@ describe('resolvePendingSession', () => {
     })
   })
 
+  it('treats a discovered but incomplete remote as an error', () => {
+    const remotes: RemoteSummary[] = [
+      {
+        name: 'onedrive-main',
+        provider: 'onedrive',
+        status: 'error',
+        message: 'This OneDrive connection is incomplete. Reconnect it or remove it and connect again.',
+      },
+    ]
+
+    expect(resolvePendingSession(basePending, remotes, null)).toEqual({
+      ...basePending,
+      status: 'error',
+      nextStep: 'retry',
+      message: 'This OneDrive connection is incomplete. Reconnect it or remove it and connect again.',
+    })
+  })
+
   it('keeps the current pending state when nothing new is available', () => {
     expect(resolvePendingSession(basePending, null, null)).toEqual(basePending)
   })
