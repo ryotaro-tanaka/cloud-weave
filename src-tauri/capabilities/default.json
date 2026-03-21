@@ -73,6 +73,21 @@
               "validator": "\\S+"
             }
           ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "config",
+            "delete",
+            {
+              "validator": "[A-Za-z0-9_-]+"
+            },
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
         }
       ]
     }
