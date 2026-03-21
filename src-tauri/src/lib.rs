@@ -1,10 +1,5 @@
+use rclone_logic::{classify_rclone_error, parse_listremotes, parse_provider_map, RcloneErrorKind};
 use serde::{Deserialize, Serialize};
-use rclone_logic::{
-    classify_rclone_error,
-    parse_listremotes,
-    parse_provider_map,
-    RcloneErrorKind,
-};
 use std::{
     collections::HashMap,
     fs,
