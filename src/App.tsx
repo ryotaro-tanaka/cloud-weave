@@ -4,10 +4,22 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   resolvePendingSession,
   type AuthSessionRecord,
+  type OneDriveDriveCandidate,
   type PendingMode,
   type PendingSession,
   type RemoteSummary,
 } from './features/storage/pendingState'
+import {
+  filterItemsByView,
+  formatFileSize,
+  formatModifiedTime,
+  getCategoryLabel,
+  getCategoryMonogram,
+  groupRecentItems,
+  searchUnifiedItems,
+  type LogicalView,
+  type UnifiedItem,
+} from './features/storage/unifiedItems'
 import './App.css'
 
 type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
@@ -24,14 +36,20 @@ type CreateOneDriveRemoteInput = {
 type CreateRemoteResult = {
   remoteName: string
   provider: string
-  status: 'connected' | 'pending' | 'error'
-  nextStep: 'done' | 'open_browser' | 'retry' | 'rename'
+  status: 'connected' | 'pending' | 'requires_drive_selection' | 'error'
+  nextStep: 'done' | 'open_browser' | 'retry' | 'rename' | 'select_drive'
   message: string
+  driveCandidates?: OneDriveDriveCandidate[] | null
 }
 
 type ActionResult = {
   status: 'success' | 'error'
   message: string
+}
+
+type UnifiedLibraryResult = {
+  items: UnifiedItem[]
+  notices: string[]
 }
 
 type ProviderDefinition = {
@@ -73,6 +91,7 @@ const STORAGE_PROVIDERS: ProviderDefinition[] = [
   },
 ]
 
+const LOGICAL_VIEWS: LogicalView[] = ['recent', 'documents', 'photos', 'videos', 'audio', 'other']
 const EMPTY_PENDING_MESSAGE = 'Complete authentication in your browser.'
 
 function App() {
@@ -80,18 +99,27 @@ function App() {
   const [activeModal, setActiveModal] = useState<ModalName>('none')
   const [addFlowStep, setAddFlowStep] = useState<AddFlowStep>('providers')
   const [selectedProvider, setSelectedProvider] = useState<StorageProvider>('onedrive')
+  const [activeView, setActiveView] = useState<LogicalView>('recent')
+  const [searchQuery, setSearchQuery] = useState('')
   const [remotes, setRemotes] = useState<RemoteSummary[]>([])
+  const [unifiedItems, setUnifiedItems] = useState<UnifiedItem[]>([])
+  const [libraryNotices, setLibraryNotices] = useState<string[]>([])
   const [hoveredRemote, setHoveredRemote] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
+  const [selectedDriveId, setSelectedDriveId] = useState('')
+  const [showManualSetupHelp, setShowManualSetupHelp] = useState(false)
   const [isLoadingRemotes, setIsLoadingRemotes] = useState(true)
+  const [isLoadingItems, setIsLoadingItems] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isCheckingPending, setIsCheckingPending] = useState(false)
+  const [isFinalizingDrive, setIsFinalizingDrive] = useState(false)
   const [isRemoving, setIsRemoving] = useState(false)
   const [remoteName, setRemoteName] = useState('')
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
   const [listError, setListError] = useState('')
+  const [itemsError, setItemsError] = useState('')
   const [addError, setAddError] = useState('')
   const [removeError, setRemoveError] = useState('')
 
@@ -99,6 +127,21 @@ function App() {
     () => STORAGE_PROVIDERS.find((provider) => provider.id === selectedProvider) ?? STORAGE_PROVIDERS[0],
     [selectedProvider],
   )
+
+  const displayedItems = useMemo(() => {
+    const viewItems = filterItemsByView(unifiedItems, activeView)
+    return searchUnifiedItems(viewItems, searchQuery)
+  }, [activeView, searchQuery, unifiedItems])
+
+  const groupedRecentItems = useMemo(() => {
+    if (activeView !== 'recent') {
+      return []
+    }
+
+    return groupRecentItems(displayedItems)
+  }, [activeView, displayedItems])
+
+  const isVisualGrid = activeView === 'photos' || activeView === 'videos'
 
   const fetchRemotes = async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false
@@ -115,6 +158,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setListError(message)
+      setRemotes([])
       return null
     } finally {
       if (!silent) {
@@ -123,8 +167,50 @@ function App() {
     }
   }
 
+  const fetchUnifiedItems = async (nextRemotes?: RemoteSummary[] | null, options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false
+    const resolvedRemotes = nextRemotes === undefined ? remotes : nextRemotes
+
+    if (!silent) {
+      setIsLoadingItems(true)
+    }
+
+    if (!resolvedRemotes || resolvedRemotes.length === 0) {
+      setUnifiedItems([])
+      setLibraryNotices([])
+      setItemsError('')
+      if (!silent) {
+        setIsLoadingItems(false)
+      }
+      return []
+    }
+
+    try {
+      const result = await invoke<UnifiedLibraryResult>('list_unified_items')
+      setUnifiedItems(result.items)
+      setLibraryNotices(result.notices)
+      setItemsError('')
+      return result.items
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setItemsError(message)
+      setUnifiedItems([])
+      setLibraryNotices([])
+      return null
+    } finally {
+      if (!silent) {
+        setIsLoadingItems(false)
+      }
+    }
+  }
+
+  const refreshLibrary = async (options?: { silent?: boolean }) => {
+    const nextRemotes = await fetchRemotes(options)
+    await fetchUnifiedItems(nextRemotes, options)
+  }
+
   useEffect(() => {
-    void fetchRemotes()
+    void refreshLibrary()
   }, [])
 
   useEffect(() => {
@@ -139,6 +225,20 @@ function App() {
     return () => window.clearInterval(intervalId)
   }, [activeModal, pendingSession?.remoteName, pendingSession?.status])
 
+  useEffect(() => {
+    if (pendingSession?.status !== 'requires_drive_selection') {
+      setSelectedDriveId('')
+      return
+    }
+
+    const preferred =
+      pendingSession.driveCandidates?.find((candidate) => candidate.isSuggested && candidate.isReachable) ??
+      pendingSession.driveCandidates?.find((candidate) => candidate.isReachable) ??
+      pendingSession.driveCandidates?.[0]
+
+    setSelectedDriveId(preferred?.id ?? '')
+  }, [pendingSession])
+
   const resetAddFlow = () => {
     setAddFlowStep('providers')
     setSelectedProvider('onedrive')
@@ -146,6 +246,8 @@ function App() {
     setClientId('')
     setClientSecret('')
     setAddError('')
+    setShowManualSetupHelp(false)
+    setSelectedDriveId('')
   }
 
   const openAddModal = () => {
@@ -205,6 +307,7 @@ function App() {
   }
 
   const moveToPendingModal = (result: CreateRemoteResult, mode: PendingMode) => {
+    setShowManualSetupHelp(false)
     setPendingSession({
       remoteName: result.remoteName,
       provider: result.provider,
@@ -212,6 +315,7 @@ function App() {
       status: result.status,
       nextStep: result.nextStep,
       message: result.message || EMPTY_PENDING_MESSAGE,
+      driveCandidates: result.driveCandidates ?? undefined,
     })
     setActiveModal('oauth-pending')
   }
@@ -286,7 +390,7 @@ function App() {
 
       setActiveModal('none')
       setRemoveTarget(null)
-      await fetchRemotes({ silent: true })
+      await refreshLibrary({ silent: true })
     } catch (error) {
       setRemoveError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -298,9 +402,48 @@ function App() {
     const latest = await checkPendingSession()
 
     if (latest?.status === 'connected') {
+      await refreshLibrary({ silent: true })
       setActiveModal('none')
       setPendingSession(null)
       resetAddFlow()
+    }
+  }
+
+  const handleFinalizeDriveSelection = async () => {
+    if (!pendingSession || pendingSession.status !== 'requires_drive_selection' || !selectedDriveId) {
+      return
+    }
+
+    setIsFinalizingDrive(true)
+
+    try {
+      const result = await invoke<CreateRemoteResult>('finalize_onedrive_remote', {
+        name: pendingSession.remoteName,
+        driveId: selectedDriveId,
+      })
+
+      setPendingSession({
+        remoteName: result.remoteName,
+        provider: result.provider,
+        mode: pendingSession.mode,
+        status: result.status,
+        nextStep: result.nextStep,
+        message: result.message,
+        driveCandidates: result.driveCandidates ?? undefined,
+      })
+
+      if (result.status === 'connected') {
+        await refreshLibrary({ silent: true })
+      }
+    } catch (error) {
+      setPendingSession({
+        ...pendingSession,
+        status: 'error',
+        nextStep: 'retry',
+        message: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setIsFinalizingDrive(false)
     }
   }
 
@@ -315,7 +458,30 @@ function App() {
     setClientId('')
     setClientSecret('')
     setAddError('')
+    setShowManualSetupHelp(false)
     setActiveModal('add-storage')
+  }
+
+  const handlePendingRemoveAndReconnect = async () => {
+    if (!pendingSession) {
+      return
+    }
+
+    try {
+      await invoke<ActionResult>('delete_remote', { name: pendingSession.remoteName })
+    } catch {
+      // Ignore delete failures here and still guide the user back into reconnect flow.
+    }
+
+    setSelectedProvider((pendingSession.provider as StorageProvider) || 'onedrive')
+    setAddFlowStep('form')
+    setRemoteName(pendingSession.remoteName)
+    setClientId('')
+    setClientSecret('')
+    setAddError('')
+    setShowManualSetupHelp(false)
+    setActiveModal('add-storage')
+    await refreshLibrary({ silent: true })
   }
 
   const openRemoveModal = (remote: RemoteSummary) => {
@@ -326,10 +492,16 @@ function App() {
 
   const closePendingModal = () => {
     setActiveModal('none')
+    setSelectedDriveId('')
   }
 
+  const hasConnectedStorage = remotes.length > 0
+  const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
+  const shouldShowCategoryEmptyState =
+    hasConnectedStorage && !isLoadingItems && !itemsError && displayedItems.length === 0
+
   return (
-    <main className="workspace-shell">
+    <main className={`workspace-shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
       <aside className={`storage-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
         <div className="sidebar-rail">
           <button
@@ -358,9 +530,7 @@ function App() {
             <div className="sidebar-list">
               {isLoadingRemotes ? <p className="empty-state">Loading storage...</p> : null}
               {!isLoadingRemotes && listError ? <p className="error-text">{listError}</p> : null}
-              {!isLoadingRemotes && !listError && remotes.length === 0 ? (
-                <p className="empty-state">No storage connected yet.</p>
-              ) : null}
+              {shouldShowNoStorageState ? <p className="empty-state">No storage connected yet.</p> : null}
 
               {!isLoadingRemotes && !listError && remotes.length > 0 ? (
                 <ul className="remote-list">
@@ -375,7 +545,11 @@ function App() {
                         onMouseLeave={() => setHoveredRemote((current) => (current === remote.name ? null : current))}
                       >
                         <div className="remote-summary">
-                          <p className="remote-name">{remote.name}</p>
+                          <div>
+                            <p className="remote-name">{remote.name}</p>
+                            <p className="remote-provider">{getProviderLabel(remote.provider)}</p>
+                            {remote.message ? <p className="remote-message">{remote.message}</p> : null}
+                          </div>
                         </div>
 
                         <div className={`remote-actions ${isHovered ? 'visible' : ''}`}>
@@ -398,12 +572,100 @@ function App() {
       </aside>
 
       <section className="workspace-main">
-        <div className="workspace-placeholder">
-          <p className="eyebrow">Cloud Weave</p>
-          <h1>Connected storage, without the clutter.</h1>
-          <p>
-            Add a provider from the sidebar, complete authentication in your browser, and come back when you are done.
-          </p>
+        <div className="library-shell">
+          <header className="library-topbar">
+            <label className="search-field" aria-label="Search files">
+              <span className="search-icon" aria-hidden="true">
+                /
+              </span>
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search files, paths, or storage names"
+              />
+            </label>
+
+            <nav className="view-tabs" aria-label="Logical views">
+              {LOGICAL_VIEWS.map((view) => (
+                <button
+                  key={view}
+                  className={`view-tab ${activeView === view ? 'active' : ''}`}
+                  type="button"
+                  onClick={() => setActiveView(view)}
+                >
+                  {getCategoryLabel(view)}
+                </button>
+              ))}
+            </nav>
+          </header>
+
+          <div className="library-content">
+            {libraryNotices.map((notice) => (
+              <div key={notice} className="info-banner" role="note">
+                <p>{notice}</p>
+              </div>
+            ))}
+
+            {isLoadingItems && hasConnectedStorage ? <p className="empty-state">Loading your unified library...</p> : null}
+            {!isLoadingItems && itemsError ? <p className="error-text">{itemsError}</p> : null}
+
+            {shouldShowNoStorageState ? (
+              <div className="main-empty-state">
+                <p className="eyebrow">Unified Library</p>
+                <h1>Your files will appear here.</h1>
+                <p>Connect a storage from the sidebar to start browsing everything in one place.</p>
+                <button className="primary-button" type="button" onClick={openAddModal}>
+                  Connect storage
+                </button>
+              </div>
+            ) : null}
+
+            {shouldShowCategoryEmptyState ? (
+              <div className="main-empty-state compact">
+                <p className="eyebrow">{getCategoryLabel(activeView)}</p>
+                <h2>No matching files.</h2>
+                <p>
+                  {searchQuery
+                    ? 'Try a different search or switch to another view.'
+                    : `There are no files in ${getCategoryLabel(activeView).toLowerCase()} right now.`}
+                </p>
+              </div>
+            ) : null}
+
+            {!isLoadingItems && !itemsError && displayedItems.length > 0 ? (
+              activeView === 'recent' ? (
+                <div className="recent-groups">
+                  {groupedRecentItems.map((group) => (
+                    <section key={group.label} className="recent-group">
+                      <div className="section-heading">
+                        <h3>{group.label}</h3>
+                        <span>{group.items.length}</span>
+                      </div>
+
+                      <div className="item-list">
+                        {group.items.map((item) => (
+                          <UnifiedListItem key={item.id} item={item} />
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              ) : isVisualGrid ? (
+                <div className="item-grid">
+                  {displayedItems.map((item) => (
+                    <UnifiedGridItem key={item.id} item={item} />
+                  ))}
+                </div>
+              ) : (
+                <div className="item-list">
+                  {displayedItems.map((item) => (
+                    <UnifiedListItem key={item.id} item={item} />
+                  ))}
+                </div>
+              )
+            ) : null}
+          </div>
         </div>
       </section>
 
@@ -498,6 +760,8 @@ function App() {
                 <h2 id="pending-title">
                   {pendingSession.status === 'connected'
                     ? 'Storage connected'
+                    : pendingSession.status === 'requires_drive_selection'
+                      ? 'Choose your OneDrive'
                     : pendingSession.status === 'error'
                       ? 'Authentication was not completed'
                       : 'Complete authentication in your browser'}
@@ -520,12 +784,78 @@ function App() {
                 </div>
               ) : null}
 
+              {pendingSession.status === 'requires_drive_selection' ? (
+                <div className="drive-picker">
+                  <p className="pending-help">
+                    Cloud Weave found more than one OneDrive library for this account. Choose the one you want to
+                    browse.
+                  </p>
+
+                  <div className="drive-candidate-list" role="list" aria-label="OneDrive libraries">
+                    {pendingSession.driveCandidates?.map((candidate) => {
+                      const isSelected = candidate.id === selectedDriveId
+
+                      return (
+                        <label
+                          key={`${candidate.id}-${candidate.label}`}
+                          className={`drive-candidate ${isSelected ? 'selected' : ''} ${candidate.isReachable ? '' : 'disabled'}`}
+                        >
+                          <input
+                            type="radio"
+                            name="drive-candidate"
+                            value={candidate.id}
+                            checked={isSelected}
+                            disabled={!candidate.isReachable}
+                            onChange={() => setSelectedDriveId(candidate.id)}
+                          />
+
+                          <div className="drive-candidate-copy">
+                            <div className="drive-candidate-title">
+                              <span>{candidate.label}</span>
+                              <div className="drive-candidate-badges">
+                                <span className="source-badge">{candidate.driveType}</span>
+                                {candidate.isSuggested ? <span className="source-badge suggested-badge">Recommended</span> : null}
+                              </div>
+                            </div>
+
+                            <p className="drive-candidate-id">{candidate.id}</p>
+                            <p className="drive-candidate-help">
+                              {candidate.isReachable
+                                ? candidate.isSystemLike
+                                  ? 'This looks like a system-style library. Choose it only if it is the one you expect.'
+                                  : 'This library is reachable and ready to use.'
+                                : candidate.message ?? 'This library could not be opened.'}
+                            </p>
+                          </div>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
               {pendingSession.status === 'error' ? (
-                <p className="pending-help">You can close this window or try again.</p>
+                <>
+                  <p className="pending-help">
+                    Cloud Weave finished browser authentication, but this OneDrive connection could not be finalized for browsing.
+                  </p>
+                  {showManualSetupHelp ? (
+                    <div className="manual-help">
+                      <p>Manual debug steps</p>
+                      <code>
+                        rclone config show --config "%APPDATA%\com.ryotaro.cloudweave\rclone.conf"
+                      </code>
+                      <code>
+                        rclone lsd {pendingSession.remoteName}: --config "%APPDATA%\com.ryotaro.cloudweave\rclone.conf" -vv
+                      </code>
+                      <p>Use interactive <code>rclone config</code> if the remote still lacks drive information.</p>
+                    </div>
+                  ) : null}
+                </>
               ) : null}
 
               {pendingSession.status === 'connected' ? (
-                <p className="pending-help">This storage will now appear in the connected list.</p>
+                <p className="pending-help">This storage now appears in the connected list and unified library.</p>
               ) : null}
             </div>
 
@@ -535,8 +865,31 @@ function App() {
                   <button className="ghost-button" type="button" onClick={closePendingModal}>
                     Close
                   </button>
+                  <button className="ghost-button" type="button" onClick={() => setShowManualSetupHelp((current) => !current)}>
+                    {showManualSetupHelp ? 'Hide manual setup instructions' : 'Open manual setup instructions'}
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                    Remove and connect again
+                  </button>
                   <button className="primary-button" type="button" onClick={handleRetryPending}>
                     Try again
+                  </button>
+                </>
+              ) : pendingSession.status === 'requires_drive_selection' ? (
+                <>
+                  <button className="ghost-button" type="button" onClick={closePendingModal}>
+                    Cancel
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                    Remove and start over
+                  </button>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => void handleFinalizeDriveSelection()}
+                    disabled={!selectedDriveId || isFinalizingDrive}
+                  >
+                    {isFinalizingDrive ? 'Connecting...' : 'Use this drive'}
                   </button>
                 </>
               ) : pendingSession.status === 'connected' ? (
@@ -579,7 +932,7 @@ function App() {
 
             <div className="confirm-copy">
               <p>This removes the saved connection from Cloud Weave.</p>
-              <p className="confirm-provider">{removeTarget.provider}</p>
+              <p className="confirm-provider">{getProviderLabel(removeTarget.provider)}</p>
               {removeError ? <p className="error-text">{removeError}</p> : null}
             </div>
 
@@ -596,6 +949,70 @@ function App() {
       ) : null}
     </main>
   )
+}
+
+function UnifiedListItem({ item }: { item: UnifiedItem }) {
+  return (
+    <article className="unified-item list-item">
+      <div className="item-leading">
+        <span className={`item-monogram ${item.category}`} aria-hidden="true">
+          {getCategoryMonogram(item.category)}
+        </span>
+      </div>
+
+      <div className="item-copy">
+        <div className="item-title-row">
+          <p className="item-name">{item.name}</p>
+          <span className="source-badge">{item.sourceRemote}</span>
+        </div>
+
+        <div className="item-meta">
+          <span>{getProviderLabel(item.sourceProvider)}</span>
+          <span>{item.sourcePath}</span>
+        </div>
+      </div>
+
+      <div className="item-trailing">
+        <span>{formatFileSize(item.size)}</span>
+        <span>{formatModifiedTime(item.modTime)}</span>
+      </div>
+    </article>
+  )
+}
+
+function UnifiedGridItem({ item }: { item: UnifiedItem }) {
+  return (
+    <article className="unified-item grid-item">
+      <div className={`grid-preview ${item.category}`}>
+        <span className="source-badge">{item.sourceRemote}</span>
+      </div>
+
+      <div className="grid-copy">
+        <p className="item-name">{item.name}</p>
+        <div className="item-meta">
+          <span>{getProviderLabel(item.sourceProvider)}</span>
+          <span>{formatFileSize(item.size)}</span>
+        </div>
+        <p className="grid-path">{item.sourcePath}</p>
+        <p className="grid-date">{formatModifiedTime(item.modTime)}</p>
+      </div>
+    </article>
+  )
+}
+
+function getProviderLabel(provider: string): string {
+  switch (provider) {
+    case 'onedrive':
+      return 'OneDrive'
+    case 'gdrive':
+      return 'Google Drive'
+    case 'dropbox':
+      return 'Dropbox'
+    case 'icloud':
+      return 'iCloud Drive'
+    default:
+      return provider
+  }
 }
 
 export default App

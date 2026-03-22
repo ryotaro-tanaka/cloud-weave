@@ -26,6 +26,50 @@
           "name": "binaries/rclone",
           "sidecar": true,
           "args": [
+            "lsd",
+            {
+              "validator": "[A-Za-z0-9_-]+:"
+            },
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "lsjson",
+            {
+              "validator": "[^\\s]+"
+            },
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "lsjson",
+            {
+              "validator": "[^\\s]+"
+            },
+            "-R",
+            "--files-only",
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
             "config",
             "show",
             "--config",
@@ -67,6 +111,27 @@
             "reconnect",
             {
               "validator": "[A-Za-z0-9_-]+:"
+            },
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "config",
+            "update",
+            {
+              "validator": "[A-Za-z0-9_-]+"
+            },
+            {
+              "validator": "drive_id=[A-Za-z0-9!_\\-.]+"
+            },
+            {
+              "validator": "drive_type=(personal|business|documentLibrary)"
             },
             "--config",
             {
