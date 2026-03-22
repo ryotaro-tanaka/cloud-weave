@@ -1,13 +1,24 @@
 .workspace-shell {
+  --sidebar-rail-width: 52px;
+  --sidebar-panel-width: 300px;
+  --sidebar-open-width: calc(var(--sidebar-rail-width) + var(--sidebar-panel-width));
   flex: 1;
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
   min-height: 100svh;
   max-height: 100svh;
   overflow: hidden;
 }
 
+.workspace-shell.sidebar-open {
+  grid-template-columns: var(--sidebar-open-width) minmax(0, 1fr);
+}
+
 .storage-sidebar {
+  display: grid;
+  grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
+  box-sizing: border-box;
+  min-width: 0;
   position: relative;
   background:
     radial-gradient(circle at top left, rgba(32, 109, 255, 0.16), transparent 36%),
@@ -34,21 +45,22 @@
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  width: 52px;
+  width: var(--sidebar-rail-width);
   height: 100%;
   padding: 12px 8px;
+  box-sizing: border-box;
 }
 
 .sidebar-panel {
-  position: absolute;
-  top: 0;
-  left: 52px;
-  bottom: 0;
-  width: 300px;
+  position: relative;
+  width: var(--sidebar-panel-width);
+  max-width: none;
   z-index: 6;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
   padding: 22px 18px 18px;
   overflow-y: auto;
   overflow-x: hidden;
@@ -289,6 +301,8 @@ button:disabled {
 .workspace-main {
   display: flex;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   padding: 24px 28px;
   background:
     radial-gradient(circle at 20% 20%, rgba(15, 141, 122, 0.14), transparent 28%),
@@ -304,6 +318,8 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 22px;
+  min-width: 0;
+  min-height: 0;
 }
 
 .library-topbar {
@@ -863,6 +879,7 @@ button:disabled {
   }
 
   .storage-sidebar {
+    grid-template-columns: 1fr;
     min-height: 52px;
   }
 
@@ -872,9 +889,12 @@ button:disabled {
   }
 
   .sidebar-panel {
+    position: absolute;
     left: 0;
     top: 52px;
+    bottom: auto;
     width: min(320px, 100vw);
+    max-width: none;
     border-bottom: 1px solid var(--border);
   }
 

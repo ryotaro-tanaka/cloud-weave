@@ -501,7 +501,7 @@ function App() {
     hasConnectedStorage && !isLoadingItems && !itemsError && displayedItems.length === 0
 
   return (
-    <main className="workspace-shell">
+    <main className={`workspace-shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
       <aside className={`storage-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
         <div className="sidebar-rail">
           <button
