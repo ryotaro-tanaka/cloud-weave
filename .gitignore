@@ -23,8 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 
-# note
-*.note.md
+# local notes
+.notes/
 
 # binaries
 src-tauri/binaries/
