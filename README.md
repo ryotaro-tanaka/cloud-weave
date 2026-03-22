@@ -84,8 +84,8 @@ Node.js version:
 
 The project pins this via `.nvmrc`, `.node-version`, and `package.json` `engines`.
 
-For OneDrive troubleshooting and deeper developer debugging, see [docs/onedrive-troubleshooting.md](/mnt/c/Users/taroh/Documents/repositories/tauri/cloud-weave/docs/onedrive-troubleshooting.md).
+For OneDrive troubleshooting and deeper developer debugging, see [docs/troubleshooting/onedrive.md](docs/troubleshooting/onedrive.md).
 
 ## License
 
-Cloud Weave bundles `rclone`. See `THIRD_PARTY_NOTICES.md` and `LICENSES/rclone-MIT.txt`.
+Cloud Weave bundles `rclone`. See `docs/legal/THIRD_PARTY_NOTICES.md` and `LICENSES/rclone-MIT.txt`.

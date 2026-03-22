@@ -13,4 +13,4 @@ Cloud Weave bundles the rclone executable as an external binary.
 
 The full MIT license text for rclone is included in:
 
-- `LICENSES/rclone-MIT.txt`
+- `../../LICENSES/rclone-MIT.txt`
