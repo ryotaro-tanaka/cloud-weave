@@ -716,6 +716,94 @@ button:disabled {
   gap: 12px;
 }
 
+.manual-help {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.manual-help p {
+  margin: 0;
+}
+
+.drive-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.drive-candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.drive-candidate {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 14px;
+  align-items: flex-start;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+}
+
+.drive-candidate.selected {
+  border-color: rgba(35, 100, 255, 0.45);
+  box-shadow: 0 12px 28px -22px rgba(35, 100, 255, 0.7);
+}
+
+.drive-candidate.disabled {
+  opacity: 0.68;
+}
+
+.drive-candidate input {
+  margin-top: 3px;
+}
+
+.drive-candidate-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.drive-candidate-title,
+.drive-candidate-badges {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.drive-candidate-title span:first-child {
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.drive-candidate-id,
+.drive-candidate-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.drive-candidate-id {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.suggested-badge {
+  background: rgba(15, 141, 122, 0.14);
+}
+
 .spinner {
   width: 18px;
   height: 18px;

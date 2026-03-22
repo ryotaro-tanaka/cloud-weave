@@ -73,6 +73,17 @@ Node.js version:
 
 The project pins this via `.nvmrc`, `.node-version`, and `package.json` `engines`.
 
+## OneDrive Debug Workflow
+
+If a OneDrive remote authenticates in the browser but still fails inside Cloud Weave, inspect the app config directly:
+
+```powershell
+.\src-tauri\binaries\rclone-x86_64-pc-windows-msvc.exe config show --config "$env:APPDATA\com.ryotaro.cloudweave\rclone.conf"
+.\src-tauri\binaries\rclone-x86_64-pc-windows-msvc.exe lsd <remote-name>: --config "$env:APPDATA\com.ryotaro.cloudweave\rclone.conf" -vv
+```
+
+If the remote exists but still lacks `drive_id` or `drive_type`, use interactive `rclone config` against the same config file to confirm whether the issue is specific to Cloud Weave's setup flow.
+
 ## note
 
 This is an experimental project and the structure may change frequently while the app direction is still being refined.

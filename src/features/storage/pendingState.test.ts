@@ -27,6 +27,7 @@ describe('resolvePendingSession', () => {
       status: 'connected',
       nextStep: 'done',
       message: 'Your storage is connected and ready to use.',
+      driveCandidates: undefined,
     })
   })
 
@@ -47,6 +48,7 @@ describe('resolvePendingSession', () => {
       status: 'error',
       nextStep: 'retry',
       message: 'Authentication was not completed.',
+      driveCandidates: undefined,
     })
   })
 
@@ -65,6 +67,95 @@ describe('resolvePendingSession', () => {
       status: 'error',
       nextStep: 'retry',
       message: 'This OneDrive connection is incomplete. Reconnect it or remove it and connect again.',
+      driveCandidates: undefined,
+    })
+  })
+
+  it('preserves drive candidates when the auth session requires drive selection', () => {
+    const session: AuthSessionRecord = {
+      remoteName: 'onedrive-main',
+      provider: 'onedrive',
+      mode: 'create',
+      status: 'requires_drive_selection',
+      nextStep: 'select_drive',
+      message: 'Choose a drive.',
+      driveCandidates: [
+        {
+          id: 'drive-1',
+          label: 'OneDrive',
+          driveType: 'personal',
+          isReachable: true,
+          isSystemLike: false,
+          isSuggested: true,
+        },
+      ],
+    }
+
+    expect(resolvePendingSession(basePending, [], session)).toEqual({
+      remoteName: 'onedrive-main',
+      provider: 'onedrive',
+      mode: 'create',
+      status: 'requires_drive_selection',
+      nextStep: 'select_drive',
+      message: 'Choose a drive.',
+      driveCandidates: [
+        {
+          id: 'drive-1',
+          label: 'OneDrive',
+          driveType: 'personal',
+          isReachable: true,
+          isSystemLike: false,
+          isSuggested: true,
+        },
+      ],
+    })
+  })
+
+  it('prefers drive selection over the remote error placeholder', () => {
+    const remotes: RemoteSummary[] = [
+      {
+        name: 'onedrive-main',
+        provider: 'onedrive',
+        status: 'error',
+        message: 'This OneDrive connection is incomplete. Reconnect it or remove it and connect again.',
+      },
+    ]
+    const session: AuthSessionRecord = {
+      remoteName: 'onedrive-main',
+      provider: 'onedrive',
+      mode: 'create',
+      status: 'requires_drive_selection',
+      nextStep: 'select_drive',
+      message: 'Choose a drive.',
+      driveCandidates: [
+        {
+          id: 'drive-1',
+          label: 'OneDrive',
+          driveType: 'personal',
+          isReachable: true,
+          isSystemLike: false,
+          isSuggested: true,
+        },
+      ],
+    }
+
+    expect(resolvePendingSession(basePending, remotes, session)).toEqual({
+      remoteName: 'onedrive-main',
+      provider: 'onedrive',
+      mode: 'create',
+      status: 'requires_drive_selection',
+      nextStep: 'select_drive',
+      message: 'Choose a drive.',
+      driveCandidates: [
+        {
+          id: 'drive-1',
+          label: 'OneDrive',
+          driveType: 'personal',
+          isReachable: true,
+          isSystemLike: false,
+          isSuggested: true,
+        },
+      ],
     })
   })
 

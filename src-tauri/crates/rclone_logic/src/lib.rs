@@ -53,6 +53,19 @@ pub struct RemoteConfigState {
     pub provider: String,
     pub drive_id: Option<String>,
     pub drive_type: Option<String>,
+    pub token: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OneDriveDriveCandidate {
+    pub id: String,
+    pub label: String,
+    pub drive_type: String,
+    pub is_reachable: bool,
+    pub is_system_like: bool,
+    pub is_suggested: bool,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -148,6 +161,7 @@ pub fn parse_remote_config_state_map(config_text: &str) -> HashMap<String, Remot
                         provider: "unknown".to_string(),
                         drive_id: None,
                         drive_type: None,
+                        token: None,
                     });
 
                 match key.trim() {
@@ -159,6 +173,9 @@ pub fn parse_remote_config_state_map(config_text: &str) -> HashMap<String, Remot
                     }
                     "drive_type" => {
                         entry.drive_type = Some(value.trim().to_string());
+                    }
+                    "token" => {
+                        entry.token = Some(value.trim().to_string());
                     }
                     _ => {}
                 }
@@ -243,6 +260,77 @@ pub fn derive_extension(file_name: &str) -> Option<String> {
     Some(format!(".{}", extension.to_ascii_lowercase()))
 }
 
+pub fn sort_onedrive_drive_candidates(candidates: &mut [OneDriveDriveCandidate]) {
+    candidates.sort_by(|left, right| {
+        rank_onedrive_drive_candidate(left)
+            .cmp(&rank_onedrive_drive_candidate(right))
+            .then(left.label.to_ascii_lowercase().cmp(&right.label.to_ascii_lowercase()))
+            .then(left.id.cmp(&right.id))
+    });
+}
+
+pub fn select_auto_onedrive_drive_candidate(
+    candidates: &[OneDriveDriveCandidate],
+) -> Option<OneDriveDriveCandidate> {
+    let reachable = candidates
+        .iter()
+        .filter(|candidate| candidate.is_reachable)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if reachable.len() == 1 {
+        return reachable.into_iter().next();
+    }
+
+    let suggested = reachable
+        .iter()
+        .filter(|candidate| candidate.is_suggested)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if suggested.len() == 1 {
+        return suggested.into_iter().next();
+    }
+
+    None
+}
+
+pub fn normalize_onedrive_drive_candidates(
+    raw_candidates: Vec<OneDriveDriveCandidate>,
+) -> Vec<OneDriveDriveCandidate> {
+    let mut by_id = HashMap::<String, OneDriveDriveCandidate>::new();
+
+    for candidate in raw_candidates {
+        match by_id.get(&candidate.id) {
+            Some(existing) if rank_onedrive_drive_candidate(existing) <= rank_onedrive_drive_candidate(&candidate) => {}
+            _ => {
+                by_id.insert(candidate.id.clone(), candidate);
+            }
+        }
+    }
+
+    let mut candidates = by_id.into_values().collect::<Vec<_>>();
+    sort_onedrive_drive_candidates(&mut candidates);
+    candidates
+}
+
+pub fn is_system_like_onedrive_drive_label(label: &str) -> bool {
+    let normalized = label.trim().to_ascii_lowercase();
+
+    normalized.starts_with("bundles_")
+        || normalized.contains("metadataarchive")
+        || normalized.contains("metadata archive")
+        || normalized.contains("archive")
+}
+
+fn rank_onedrive_drive_candidate(candidate: &OneDriveDriveCandidate) -> (u8, u8, String) {
+    let reachability_rank = if candidate.is_reachable { 0 } else { 1 };
+    let system_rank = if candidate.is_system_like { 1 } else { 0 };
+    let suggestion_rank = if candidate.is_suggested { 0 } else { 1 };
+
+    (reachability_rank, system_rank, format!("{suggestion_rank}:{}", candidate.label))
+}
+
 pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
     let normalized = detail.to_lowercase();
 
@@ -308,8 +396,10 @@ fn basename_from_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_item, classify_rclone_error, derive_extension, parse_listremotes,
-        parse_provider_map, parse_remote_config_state_map, parse_unified_items, RcloneErrorKind,
+        classify_item, classify_rclone_error, derive_extension,
+        is_system_like_onedrive_drive_label, normalize_onedrive_drive_candidates,
+        parse_listremotes, parse_provider_map, parse_remote_config_state_map, parse_unified_items,
+        select_auto_onedrive_drive_candidate, OneDriveDriveCandidate, RcloneErrorKind,
     };
 
     #[test]
@@ -382,6 +472,21 @@ mod tests {
         assert_eq!(state.provider, "onedrive");
         assert_eq!(state.drive_id.as_deref(), Some("abc123"));
         assert_eq!(state.drive_type.as_deref(), Some("personal"));
+        assert_eq!(state.token.as_deref(), None);
+    }
+
+    #[test]
+    fn parse_remote_config_state_map_reads_token() {
+        let config = r#"
+      [onedrive-main]
+      type = onedrive
+      token = {"access_token":"abc"}
+    "#;
+
+        let parsed = parse_remote_config_state_map(config);
+        let state = parsed.get("onedrive-main").expect("remote state should exist");
+
+        assert_eq!(state.token.as_deref(), Some(r#"{"access_token":"abc"}"#));
     }
 
     #[test]
@@ -405,6 +510,114 @@ mod tests {
     #[test]
     fn derive_extension_lowercases_file_extensions() {
         assert_eq!(derive_extension("Vacation.JPG"), Some(".jpg".to_string()));
+    }
+
+    #[test]
+    fn identify_system_like_onedrive_drive_labels() {
+        assert!(is_system_like_onedrive_drive_label("ODCMetadataArchive"));
+        assert!(is_system_like_onedrive_drive_label("Bundles_b896e2"));
+        assert!(!is_system_like_onedrive_drive_label("OneDrive"));
+    }
+
+    #[test]
+    fn normalize_onedrive_drive_candidates_deduplicates_by_id_and_prefers_human_label() {
+        let candidates = vec![
+            OneDriveDriveCandidate {
+                id: "drive-1".to_string(),
+                label: "Bundles_abc".to_string(),
+                drive_type: "personal".to_string(),
+                is_reachable: true,
+                is_system_like: true,
+                is_suggested: false,
+                message: None,
+            },
+            OneDriveDriveCandidate {
+                id: "drive-1".to_string(),
+                label: "OneDrive".to_string(),
+                drive_type: "personal".to_string(),
+                is_reachable: true,
+                is_system_like: false,
+                is_suggested: true,
+                message: None,
+            },
+        ];
+
+        let normalized = normalize_onedrive_drive_candidates(candidates);
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].label, "OneDrive");
+        assert!(normalized[0].is_suggested);
+    }
+
+    #[test]
+    fn auto_selects_single_reachable_candidate() {
+        let candidates = vec![OneDriveDriveCandidate {
+            id: "drive-1".to_string(),
+            label: "OneDrive".to_string(),
+            drive_type: "personal".to_string(),
+            is_reachable: true,
+            is_system_like: false,
+            is_suggested: true,
+            message: None,
+        }];
+
+        let selected = select_auto_onedrive_drive_candidate(&candidates);
+
+        assert_eq!(selected.expect("candidate should be selected").id, "drive-1");
+    }
+
+    #[test]
+    fn auto_selects_single_suggested_candidate_among_multiple_reachable() {
+        let candidates = vec![
+            OneDriveDriveCandidate {
+                id: "drive-1".to_string(),
+                label: "OneDrive".to_string(),
+                drive_type: "personal".to_string(),
+                is_reachable: true,
+                is_system_like: false,
+                is_suggested: true,
+                message: None,
+            },
+            OneDriveDriveCandidate {
+                id: "drive-2".to_string(),
+                label: "Archive".to_string(),
+                drive_type: "personal".to_string(),
+                is_reachable: true,
+                is_system_like: true,
+                is_suggested: false,
+                message: None,
+            },
+        ];
+
+        let selected = select_auto_onedrive_drive_candidate(&candidates);
+
+        assert_eq!(selected.expect("candidate should be selected").id, "drive-1");
+    }
+
+    #[test]
+    fn does_not_auto_select_when_multiple_plausible_candidates_exist() {
+        let candidates = vec![
+            OneDriveDriveCandidate {
+                id: "drive-1".to_string(),
+                label: "Docs".to_string(),
+                drive_type: "personal".to_string(),
+                is_reachable: true,
+                is_system_like: false,
+                is_suggested: false,
+                message: None,
+            },
+            OneDriveDriveCandidate {
+                id: "drive-2".to_string(),
+                label: "Photos".to_string(),
+                drive_type: "personal".to_string(),
+                is_reachable: true,
+                is_system_like: false,
+                is_suggested: false,
+                message: None,
+            },
+        ];
+
+        assert!(select_auto_onedrive_drive_candidate(&candidates).is_none());
     }
 
     #[test]

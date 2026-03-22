@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   resolvePendingSession,
   type AuthSessionRecord,
+  type OneDriveDriveCandidate,
   type PendingMode,
   type PendingSession,
   type RemoteSummary,
@@ -35,9 +36,10 @@ type CreateOneDriveRemoteInput = {
 type CreateRemoteResult = {
   remoteName: string
   provider: string
-  status: 'connected' | 'pending' | 'error'
-  nextStep: 'done' | 'open_browser' | 'retry' | 'rename'
+  status: 'connected' | 'pending' | 'requires_drive_selection' | 'error'
+  nextStep: 'done' | 'open_browser' | 'retry' | 'rename' | 'select_drive'
   message: string
+  driveCandidates?: OneDriveDriveCandidate[] | null
 }
 
 type ActionResult = {
@@ -99,10 +101,13 @@ function App() {
   const [hoveredRemote, setHoveredRemote] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
+  const [selectedDriveId, setSelectedDriveId] = useState('')
+  const [showManualSetupHelp, setShowManualSetupHelp] = useState(false)
   const [isLoadingRemotes, setIsLoadingRemotes] = useState(true)
   const [isLoadingItems, setIsLoadingItems] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isCheckingPending, setIsCheckingPending] = useState(false)
+  const [isFinalizingDrive, setIsFinalizingDrive] = useState(false)
   const [isRemoving, setIsRemoving] = useState(false)
   const [remoteName, setRemoteName] = useState('')
   const [clientId, setClientId] = useState('')
@@ -212,6 +217,20 @@ function App() {
     return () => window.clearInterval(intervalId)
   }, [activeModal, pendingSession?.remoteName, pendingSession?.status])
 
+  useEffect(() => {
+    if (pendingSession?.status !== 'requires_drive_selection') {
+      setSelectedDriveId('')
+      return
+    }
+
+    const preferred =
+      pendingSession.driveCandidates?.find((candidate) => candidate.isSuggested && candidate.isReachable) ??
+      pendingSession.driveCandidates?.find((candidate) => candidate.isReachable) ??
+      pendingSession.driveCandidates?.[0]
+
+    setSelectedDriveId(preferred?.id ?? '')
+  }, [pendingSession])
+
   const resetAddFlow = () => {
     setAddFlowStep('providers')
     setSelectedProvider('onedrive')
@@ -219,6 +238,8 @@ function App() {
     setClientId('')
     setClientSecret('')
     setAddError('')
+    setShowManualSetupHelp(false)
+    setSelectedDriveId('')
   }
 
   const openAddModal = () => {
@@ -278,6 +299,7 @@ function App() {
   }
 
   const moveToPendingModal = (result: CreateRemoteResult, mode: PendingMode) => {
+    setShowManualSetupHelp(false)
     setPendingSession({
       remoteName: result.remoteName,
       provider: result.provider,
@@ -285,6 +307,7 @@ function App() {
       status: result.status,
       nextStep: result.nextStep,
       message: result.message || EMPTY_PENDING_MESSAGE,
+      driveCandidates: result.driveCandidates ?? undefined,
     })
     setActiveModal('oauth-pending')
   }
@@ -378,6 +401,44 @@ function App() {
     }
   }
 
+  const handleFinalizeDriveSelection = async () => {
+    if (!pendingSession || pendingSession.status !== 'requires_drive_selection' || !selectedDriveId) {
+      return
+    }
+
+    setIsFinalizingDrive(true)
+
+    try {
+      const result = await invoke<CreateRemoteResult>('finalize_onedrive_remote', {
+        name: pendingSession.remoteName,
+        driveId: selectedDriveId,
+      })
+
+      setPendingSession({
+        remoteName: result.remoteName,
+        provider: result.provider,
+        mode: pendingSession.mode,
+        status: result.status,
+        nextStep: result.nextStep,
+        message: result.message,
+        driveCandidates: result.driveCandidates ?? undefined,
+      })
+
+      if (result.status === 'connected') {
+        await refreshLibrary({ silent: true })
+      }
+    } catch (error) {
+      setPendingSession({
+        ...pendingSession,
+        status: 'error',
+        nextStep: 'retry',
+        message: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setIsFinalizingDrive(false)
+    }
+  }
+
   const handleRetryPending = () => {
     if (!pendingSession) {
       return
@@ -389,7 +450,30 @@ function App() {
     setClientId('')
     setClientSecret('')
     setAddError('')
+    setShowManualSetupHelp(false)
     setActiveModal('add-storage')
+  }
+
+  const handlePendingRemoveAndReconnect = async () => {
+    if (!pendingSession) {
+      return
+    }
+
+    try {
+      await invoke<ActionResult>('delete_remote', { name: pendingSession.remoteName })
+    } catch {
+      // Ignore delete failures here and still guide the user back into reconnect flow.
+    }
+
+    setSelectedProvider((pendingSession.provider as StorageProvider) || 'onedrive')
+    setAddFlowStep('form')
+    setRemoteName(pendingSession.remoteName)
+    setClientId('')
+    setClientSecret('')
+    setAddError('')
+    setShowManualSetupHelp(false)
+    setActiveModal('add-storage')
+    await refreshLibrary({ silent: true })
   }
 
   const openRemoveModal = (remote: RemoteSummary) => {
@@ -400,6 +484,7 @@ function App() {
 
   const closePendingModal = () => {
     setActiveModal('none')
+    setSelectedDriveId('')
   }
 
   const hasConnectedStorage = remotes.length > 0
@@ -667,6 +752,8 @@ function App() {
                 <h2 id="pending-title">
                   {pendingSession.status === 'connected'
                     ? 'Storage connected'
+                    : pendingSession.status === 'requires_drive_selection'
+                      ? 'Choose your OneDrive'
                     : pendingSession.status === 'error'
                       ? 'Authentication was not completed'
                       : 'Complete authentication in your browser'}
@@ -689,8 +776,74 @@ function App() {
                 </div>
               ) : null}
 
+              {pendingSession.status === 'requires_drive_selection' ? (
+                <div className="drive-picker">
+                  <p className="pending-help">
+                    Cloud Weave found more than one OneDrive library for this account. Choose the one you want to
+                    browse.
+                  </p>
+
+                  <div className="drive-candidate-list" role="list" aria-label="OneDrive libraries">
+                    {pendingSession.driveCandidates?.map((candidate) => {
+                      const isSelected = candidate.id === selectedDriveId
+
+                      return (
+                        <label
+                          key={`${candidate.id}-${candidate.label}`}
+                          className={`drive-candidate ${isSelected ? 'selected' : ''} ${candidate.isReachable ? '' : 'disabled'}`}
+                        >
+                          <input
+                            type="radio"
+                            name="drive-candidate"
+                            value={candidate.id}
+                            checked={isSelected}
+                            disabled={!candidate.isReachable}
+                            onChange={() => setSelectedDriveId(candidate.id)}
+                          />
+
+                          <div className="drive-candidate-copy">
+                            <div className="drive-candidate-title">
+                              <span>{candidate.label}</span>
+                              <div className="drive-candidate-badges">
+                                <span className="source-badge">{candidate.driveType}</span>
+                                {candidate.isSuggested ? <span className="source-badge suggested-badge">Recommended</span> : null}
+                              </div>
+                            </div>
+
+                            <p className="drive-candidate-id">{candidate.id}</p>
+                            <p className="drive-candidate-help">
+                              {candidate.isReachable
+                                ? candidate.isSystemLike
+                                  ? 'This looks like a system-style library. Choose it only if it is the one you expect.'
+                                  : 'This library is reachable and ready to use.'
+                                : candidate.message ?? 'This library could not be opened.'}
+                            </p>
+                          </div>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
               {pendingSession.status === 'error' ? (
-                <p className="pending-help">You can close this window or try again.</p>
+                <>
+                  <p className="pending-help">
+                    Cloud Weave finished browser authentication, but this OneDrive connection could not be finalized for browsing.
+                  </p>
+                  {showManualSetupHelp ? (
+                    <div className="manual-help">
+                      <p>Manual debug steps</p>
+                      <code>
+                        rclone config show --config "%APPDATA%\com.ryotaro.cloudweave\rclone.conf"
+                      </code>
+                      <code>
+                        rclone lsd {pendingSession.remoteName}: --config "%APPDATA%\com.ryotaro.cloudweave\rclone.conf" -vv
+                      </code>
+                      <p>Use interactive <code>rclone config</code> if the remote still lacks drive information.</p>
+                    </div>
+                  ) : null}
+                </>
               ) : null}
 
               {pendingSession.status === 'connected' ? (
@@ -704,8 +857,31 @@ function App() {
                   <button className="ghost-button" type="button" onClick={closePendingModal}>
                     Close
                   </button>
+                  <button className="ghost-button" type="button" onClick={() => setShowManualSetupHelp((current) => !current)}>
+                    {showManualSetupHelp ? 'Hide manual setup instructions' : 'Open manual setup instructions'}
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                    Remove and connect again
+                  </button>
                   <button className="primary-button" type="button" onClick={handleRetryPending}>
                     Try again
+                  </button>
+                </>
+              ) : pendingSession.status === 'requires_drive_selection' ? (
+                <>
+                  <button className="ghost-button" type="button" onClick={closePendingModal}>
+                    Cancel
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                    Remove and start over
+                  </button>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => void handleFinalizeDriveSelection()}
+                    disabled={!selectedDriveId || isFinalizingDrive}
+                  >
+                    {isFinalizingDrive ? 'Connecting...' : 'Use this drive'}
                   </button>
                 </>
               ) : pendingSession.status === 'connected' ? (
