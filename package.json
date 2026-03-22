@@ -10,6 +10,9 @@
     "ui:dev": "vite",
     "ui:build": "tsc -b && vite build",
     "test:run": "vitest run",
+    "rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all",
+    "rust:fmt:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
+    "pr:check": "npm run rust:fmt && npm run rust:fmt:check && npm run test:run && npm run ui:build",
     "dev": "tauri dev",
     "build": "tauri build",
     "setup:rclone": "powershell -ExecutionPolicy Bypass -File .\\scripts\\download-rclone.ps1"
