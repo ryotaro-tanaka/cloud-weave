@@ -1,8 +1,8 @@
 use rclone_logic::{
-    classify_rclone_error, is_system_like_onedrive_drive_label, normalize_onedrive_drive_candidates,
-    parse_listremotes, parse_lsjson_items, parse_remote_config_state_map, parse_unified_items,
-    select_auto_onedrive_drive_candidate, OneDriveDriveCandidate, RcloneErrorKind,
-    RemoteConfigState, UnifiedItem, UnifiedLibraryResult,
+    classify_rclone_error, is_system_like_onedrive_drive_label,
+    normalize_onedrive_drive_candidates, parse_listremotes, parse_lsjson_items,
+    parse_remote_config_state_map, parse_unified_items, select_auto_onedrive_drive_candidate,
+    OneDriveDriveCandidate, RcloneErrorKind, RemoteConfigState, UnifiedItem, UnifiedLibraryResult,
 };
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -395,15 +395,15 @@ fn list_unified_items_for_onedrive_remote(
                         summarize_output(&error)
                     );
                     notices.push(
-                        "Some protected or unsupported OneDrive folders were skipped."
-                            .to_string(),
+                        "Some protected or unsupported OneDrive folders were skipped.".to_string(),
                     );
                 }
             }
         } else {
             items.extend(parse_unified_items(
-                &serde_json::to_string(&vec![root_item])
-                    .map_err(|error| format!("failed to serialize top-level lsjson item: {error}"))?,
+                &serde_json::to_string(&vec![root_item]).map_err(|error| {
+                    format!("failed to serialize top-level lsjson item: {error}")
+                })?,
                 remote_name,
                 provider,
             )?);
@@ -845,7 +845,11 @@ fn build_onedrive_post_auth_result(
 ) -> Result<CreateRemoteResult, String> {
     let validation = validate_remote_after_setup(app, remote_name, provider)?;
 
-    if validation.remote_exists && validation.can_list && validation.has_drive_id && validation.has_drive_type {
+    if validation.remote_exists
+        && validation.can_list
+        && validation.has_drive_id
+        && validation.has_drive_type
+    {
         return Ok(CreateRemoteResult {
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
@@ -1053,7 +1057,11 @@ fn apply_onedrive_drive_selection(
 
     let validation = validate_remote_after_setup(app, remote_name, "onedrive")?;
 
-    if validation.remote_exists && validation.can_list && validation.has_drive_id && validation.has_drive_type {
+    if validation.remote_exists
+        && validation.can_list
+        && validation.has_drive_id
+        && validation.has_drive_type
+    {
         return Ok(CreateRemoteResult {
             remote_name: remote_name.to_string(),
             provider: "onedrive".to_string(),

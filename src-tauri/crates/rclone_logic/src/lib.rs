@@ -107,8 +107,8 @@ const DOCUMENT_EXTENSIONS: &[&str] = &[
 ];
 
 const PHOTO_EXTENSIONS: &[&str] = &[
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".tif", ".tiff", ".bmp",
-    ".svg", ".dng", ".cr2", ".nef", ".arw",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".tif", ".tiff", ".bmp", ".svg",
+    ".dng", ".cr2", ".nef", ".arw",
 ];
 
 const VIDEO_EXTENSIONS: &[&str] = &[
@@ -162,14 +162,15 @@ pub fn parse_remote_config_state_map(config_text: &str) -> HashMap<String, Remot
 
         if let Some(remote_name) = current_remote.as_ref() {
             if let Some((key, value)) = line.split_once('=') {
-                let entry = providers
-                    .entry(remote_name.clone())
-                    .or_insert_with(|| RemoteConfigState {
-                        provider: "unknown".to_string(),
-                        drive_id: None,
-                        drive_type: None,
-                        token: None,
-                    });
+                let entry =
+                    providers
+                        .entry(remote_name.clone())
+                        .or_insert_with(|| RemoteConfigState {
+                            provider: "unknown".to_string(),
+                            drive_id: None,
+                            drive_type: None,
+                            token: None,
+                        });
 
                 match key.trim() {
                     "type" => {
@@ -275,7 +276,11 @@ pub fn sort_onedrive_drive_candidates(candidates: &mut [OneDriveDriveCandidate])
     candidates.sort_by(|left, right| {
         rank_onedrive_drive_candidate(left)
             .cmp(&rank_onedrive_drive_candidate(right))
-            .then(left.label.to_ascii_lowercase().cmp(&right.label.to_ascii_lowercase()))
+            .then(
+                left.label
+                    .to_ascii_lowercase()
+                    .cmp(&right.label.to_ascii_lowercase()),
+            )
             .then(left.id.cmp(&right.id))
     });
 }
@@ -313,7 +318,9 @@ pub fn normalize_onedrive_drive_candidates(
 
     for candidate in raw_candidates {
         match by_id.get(&candidate.id) {
-            Some(existing) if rank_onedrive_drive_candidate(existing) <= rank_onedrive_drive_candidate(&candidate) => {}
+            Some(existing)
+                if rank_onedrive_drive_candidate(existing)
+                    <= rank_onedrive_drive_candidate(&candidate) => {}
             _ => {
                 by_id.insert(candidate.id.clone(), candidate);
             }
@@ -339,7 +346,11 @@ fn rank_onedrive_drive_candidate(candidate: &OneDriveDriveCandidate) -> (u8, u8,
     let system_rank = if candidate.is_system_like { 1 } else { 0 };
     let suggestion_rank = if candidate.is_suggested { 0 } else { 1 };
 
-    (reachability_rank, system_rank, format!("{suggestion_rank}:{}", candidate.label))
+    (
+        reachability_rank,
+        system_rank,
+        format!("{suggestion_rank}:{}", candidate.label),
+    )
 }
 
 pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
@@ -479,7 +490,9 @@ mod tests {
     "#;
 
         let parsed = parse_remote_config_state_map(config);
-        let state = parsed.get("onedrive-main").expect("remote state should exist");
+        let state = parsed
+            .get("onedrive-main")
+            .expect("remote state should exist");
 
         assert_eq!(state.provider, "onedrive");
         assert_eq!(state.drive_id.as_deref(), Some("abc123"));
@@ -496,7 +509,9 @@ mod tests {
     "#;
 
         let parsed = parse_remote_config_state_map(config);
-        let state = parsed.get("onedrive-main").expect("remote state should exist");
+        let state = parsed
+            .get("onedrive-main")
+            .expect("remote state should exist");
 
         assert_eq!(state.token.as_deref(), Some(r#"{"access_token":"abc"}"#));
     }
@@ -516,7 +531,10 @@ mod tests {
 
     #[test]
     fn classify_item_returns_other_for_unknown_types() {
-        assert_eq!(classify_item(Some("application/octet-stream"), None), "other");
+        assert_eq!(
+            classify_item(Some("application/octet-stream"), None),
+            "other"
+        );
     }
 
     #[test]
@@ -575,7 +593,10 @@ mod tests {
 
         let selected = select_auto_onedrive_drive_candidate(&candidates);
 
-        assert_eq!(selected.expect("candidate should be selected").id, "drive-1");
+        assert_eq!(
+            selected.expect("candidate should be selected").id,
+            "drive-1"
+        );
     }
 
     #[test]
@@ -603,7 +624,10 @@ mod tests {
 
         let selected = select_auto_onedrive_drive_candidate(&candidates);
 
-        assert_eq!(selected.expect("candidate should be selected").id, "drive-1");
+        assert_eq!(
+            selected.expect("candidate should be selected").id,
+            "drive-1"
+        );
     }
 
     #[test]
