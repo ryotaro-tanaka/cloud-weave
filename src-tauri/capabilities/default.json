@@ -42,26 +42,24 @@
           "args": [
             "lsjson",
             {
-              "validator": "[A-Za-z0-9_-]+:"
+              "validator": "[^\\s]+"
+            },
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "lsjson",
+            {
+              "validator": "[^\\s]+"
             },
             "-R",
             "--files-only",
-            "--exclude",
-            {
-              "validator": "\\S+"
-            },
-            "--exclude",
-            {
-              "validator": "\\S+"
-            },
-            "--exclude",
-            {
-              "validator": "\\S+"
-            },
-            "--exclude",
-            {
-              "validator": "\\S+"
-            },
             "--config",
             {
               "validator": "\\S+"

@@ -1,8 +1,8 @@
 use rclone_logic::{
     classify_rclone_error, is_system_like_onedrive_drive_label, normalize_onedrive_drive_candidates,
-    parse_listremotes, parse_remote_config_state_map, parse_unified_items,
+    parse_listremotes, parse_lsjson_items, parse_remote_config_state_map, parse_unified_items,
     select_auto_onedrive_drive_candidate, OneDriveDriveCandidate, RcloneErrorKind,
-    RemoteConfigState, UnifiedItem,
+    RemoteConfigState, UnifiedItem, UnifiedLibraryResult,
 };
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -140,7 +140,7 @@ async fn create_onedrive_remote(
 }
 
 #[tauri::command]
-async fn list_unified_items(app: AppHandle) -> Result<Vec<UnifiedItem>, String> {
+async fn list_unified_items(app: AppHandle) -> Result<UnifiedLibraryResult, String> {
     tauri::async_runtime::spawn_blocking(move || list_unified_items_impl(app))
         .await
         .map_err(|error| format!("failed to join unified item task: {error}"))?
@@ -252,7 +252,7 @@ fn create_onedrive_remote_impl(
     start_auth_flow(&app, &input.remote_name, "onedrive", "create", &owned_args)
 }
 
-fn list_unified_items_impl(app: AppHandle) -> Result<Vec<UnifiedItem>, String> {
+fn list_unified_items_impl(app: AppHandle) -> Result<UnifiedLibraryResult, String> {
     let config_path = ensure_rclone_config(&app)?;
     let stdout = run_rclone(
         &app,
@@ -263,11 +263,15 @@ fn list_unified_items_impl(app: AppHandle) -> Result<Vec<UnifiedItem>, String> {
     let remotes = parse_listremotes(&stdout)?;
 
     if remotes.is_empty() {
-        return Ok(Vec::new());
+        return Ok(UnifiedLibraryResult {
+            items: Vec::new(),
+            notices: Vec::new(),
+        });
     }
 
     let remote_config_by_name = load_remote_config_states(&app, &config_path)?;
     let mut items = Vec::new();
+    let mut notices = Vec::new();
 
     for remote_name in remotes {
         let config_state = remote_config_by_name
@@ -279,28 +283,34 @@ fn list_unified_items_impl(app: AppHandle) -> Result<Vec<UnifiedItem>, String> {
             continue;
         }
 
-        let mut owned_args = vec![
-            "lsjson".to_string(),
-            format!("{remote_name}:"),
-            "-R".to_string(),
-            "--files-only".to_string(),
-            "--config".to_string(),
-            config_path.to_string_lossy().into_owned(),
-        ];
-
-        let mut insert_at = 4;
-        for exclude_pattern in personal_vault_exclude_patterns(&config_state.provider) {
-            owned_args.insert(insert_at, "--exclude".to_string());
-            owned_args.insert(insert_at + 1, exclude_pattern.to_string());
-            insert_at += 2;
+        if config_state.provider == "onedrive" {
+            let partial = list_unified_items_for_onedrive_remote(
+                &app,
+                &config_path,
+                &remote_name,
+                &config_state.provider,
+            )?;
+            items.extend(partial.items);
+            notices.extend(partial.notices);
+        } else {
+            let output = run_rclone_owned(
+                &app,
+                &[
+                    "lsjson".to_string(),
+                    format!("{remote_name}:"),
+                    "-R".to_string(),
+                    "--files-only".to_string(),
+                    "--config".to_string(),
+                    config_path.to_string_lossy().into_owned(),
+                ],
+                INVENTORY_COMMAND_TIMEOUT,
+            )?;
+            items.extend(parse_unified_items(
+                &output,
+                &remote_name,
+                &config_state.provider,
+            )?);
         }
-
-        let output = run_rclone_owned(&app, &owned_args, INVENTORY_COMMAND_TIMEOUT)?;
-        items.extend(parse_unified_items(
-            &output,
-            &remote_name,
-            &config_state.provider,
-        )?);
     }
 
     items.sort_by(|left, right| {
@@ -309,20 +319,10 @@ fn list_unified_items_impl(app: AppHandle) -> Result<Vec<UnifiedItem>, String> {
             .then(left.source_path.cmp(&right.source_path))
     });
 
-    Ok(items)
-}
+    notices.sort();
+    notices.dedup();
 
-fn personal_vault_exclude_patterns(provider: &str) -> Vec<&'static str> {
-    if provider == "onedrive" {
-        vec![
-            "/Personal Vault",
-            "/Personal Vault/**",
-            "/個人用 Vault",
-            "/個人用 Vault/**",
-        ]
-    } else {
-        Vec::new()
-    }
+    Ok(UnifiedLibraryResult { items, notices })
 }
 
 fn reconnect_remote_impl(app: AppHandle, name: String) -> Result<CreateRemoteResult, String> {
@@ -339,6 +339,78 @@ fn reconnect_remote_impl(app: AppHandle, name: String) -> Result<CreateRemoteRes
     ];
 
     start_auth_flow(&app, &name, "onedrive", "reconnect", &owned_args)
+}
+
+fn list_unified_items_for_onedrive_remote(
+    app: &AppHandle,
+    config_path: &Path,
+    remote_name: &str,
+    provider: &str,
+) -> Result<UnifiedLibraryResult, String> {
+    let mut items = Vec::new();
+    let mut notices = Vec::new();
+
+    let root_items = parse_lsjson_items(&run_rclone_owned(
+        app,
+        &[
+            "lsjson".to_string(),
+            format!("{remote_name}:"),
+            "--config".to_string(),
+            config_path.to_string_lossy().into_owned(),
+        ],
+        DEFAULT_COMMAND_TIMEOUT,
+    )?)?;
+
+    for root_item in root_items {
+        if root_item.is_dir {
+            let target = if root_item.path.is_empty() {
+                format!("{remote_name}:")
+            } else {
+                format!("{remote_name}:{}", root_item.path)
+            };
+            let path_label = if root_item.path.is_empty() {
+                "/".to_string()
+            } else {
+                root_item.path.clone()
+            };
+
+            match run_rclone_owned(
+                app,
+                &[
+                    "lsjson".to_string(),
+                    target,
+                    "-R".to_string(),
+                    "--files-only".to_string(),
+                    "--config".to_string(),
+                    config_path.to_string_lossy().into_owned(),
+                ],
+                INVENTORY_COMMAND_TIMEOUT,
+            ) {
+                Ok(output) => items.extend(parse_unified_items(&output, remote_name, provider)?),
+                Err(error) => {
+                    log::warn!(
+                        "skipping onedrive folder remote={} folder={} reason={}",
+                        remote_name,
+                        path_label,
+                        summarize_output(&error)
+                    );
+                    notices.push(
+                        "Some protected or unsupported OneDrive folders were skipped."
+                            .to_string(),
+                    );
+                }
+            }
+        } else {
+            items.extend(parse_unified_items(
+                &serde_json::to_string(&vec![root_item])
+                    .map_err(|error| format!("failed to serialize top-level lsjson item: {error}"))?,
+                remote_name,
+                provider,
+            )?);
+        }
+    }
+
+    Ok(UnifiedLibraryResult { items, notices })
 }
 
 fn list_onedrive_drive_candidates_impl(

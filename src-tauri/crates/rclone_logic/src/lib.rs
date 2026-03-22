@@ -16,20 +16,27 @@ struct ListRemoteRecord {
     _type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
-struct LsjsonItem {
-    path: String,
+pub struct LsjsonItem {
+    pub path: String,
     #[serde(default)]
-    name: Option<String>,
+    pub name: Option<String>,
     #[serde(default)]
-    size: u64,
+    pub size: i64,
     #[serde(default)]
-    mime_type: Option<String>,
+    pub mime_type: Option<String>,
     #[serde(default)]
-    mod_time: Option<String>,
+    pub mod_time: Option<String>,
     #[serde(default)]
-    is_dir: bool,
+    pub is_dir: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedLibraryResult {
+    pub items: Vec<UnifiedItem>,
+    pub notices: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -191,18 +198,22 @@ pub fn parse_unified_items(
     source_remote: &str,
     source_provider: &str,
 ) -> Result<Vec<UnifiedItem>, String> {
-    if raw.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let parsed = serde_json::from_str::<Vec<LsjsonItem>>(raw)
-        .map_err(|error| format!("failed to parse rclone lsjson output: {error}"))?;
+    let parsed = parse_lsjson_items(raw)?;
 
     Ok(parsed
         .into_iter()
         .filter(|item| !item.is_dir)
         .map(|item| normalize_unified_item(item, source_remote, source_provider))
         .collect())
+}
+
+pub fn parse_lsjson_items(raw: &str) -> Result<Vec<LsjsonItem>, String> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    serde_json::from_str::<Vec<LsjsonItem>>(raw)
+        .map_err(|error| format!("failed to parse rclone lsjson output: {error}"))
 }
 
 pub fn classify_item(mime_type: Option<&str>, extension: Option<&str>) -> &'static str {
@@ -381,7 +392,7 @@ fn normalize_unified_item(
         source_path: item.path,
         name,
         is_dir: item.is_dir,
-        size: item.size,
+        size: item.size.max(0) as u64,
         mod_time: item.mod_time,
         mime_type: item.mime_type,
         extension,
@@ -398,8 +409,9 @@ mod tests {
     use super::{
         classify_item, classify_rclone_error, derive_extension,
         is_system_like_onedrive_drive_label, normalize_onedrive_drive_candidates,
-        parse_listremotes, parse_provider_map, parse_remote_config_state_map, parse_unified_items,
-        select_auto_onedrive_drive_candidate, OneDriveDriveCandidate, RcloneErrorKind,
+        parse_listremotes, parse_lsjson_items, parse_provider_map, parse_remote_config_state_map,
+        parse_unified_items, select_auto_onedrive_drive_candidate, OneDriveDriveCandidate,
+        RcloneErrorKind,
     };
 
     #[test]
@@ -653,6 +665,35 @@ mod tests {
         assert_eq!(parsed[0].category, "photos");
         assert_eq!(parsed[0].size, 128);
         assert_eq!(parsed[0].mod_time.as_deref(), Some("2026-01-01T10:00:00Z"));
+    }
+
+    #[test]
+    fn parse_lsjson_items_keeps_directories_for_staged_listing() {
+        let raw = r#"
+      [
+        {
+          "Path": "Documents",
+          "Name": "Documents",
+          "Size": -1,
+          "IsDir": true
+        },
+        {
+          "Path": "resume.docx",
+          "Name": "resume.docx",
+          "Size": 128,
+          "MimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "IsDir": false
+        }
+      ]
+    "#;
+
+        let parsed = parse_lsjson_items(raw).expect("lsjson should parse");
+
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].is_dir);
+        assert_eq!(parsed[0].path, "Documents");
+        assert_eq!(parsed[0].size, -1);
+        assert!(!parsed[1].is_dir);
     }
 
     #[test]

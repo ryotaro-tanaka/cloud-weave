@@ -47,6 +47,11 @@ type ActionResult = {
   message: string
 }
 
+type UnifiedLibraryResult = {
+  items: UnifiedItem[]
+  notices: string[]
+}
+
 type ProviderDefinition = {
   id: StorageProvider
   label: string
@@ -98,6 +103,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [remotes, setRemotes] = useState<RemoteSummary[]>([])
   const [unifiedItems, setUnifiedItems] = useState<UnifiedItem[]>([])
+  const [libraryNotices, setLibraryNotices] = useState<string[]>([])
   const [hoveredRemote, setHoveredRemote] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
@@ -136,7 +142,6 @@ function App() {
   }, [activeView, displayedItems])
 
   const isVisualGrid = activeView === 'photos' || activeView === 'videos'
-  const showsPersonalVaultNotice = remotes.some((remote) => remote.provider === 'onedrive')
 
   const fetchRemotes = async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false
@@ -172,6 +177,7 @@ function App() {
 
     if (!resolvedRemotes || resolvedRemotes.length === 0) {
       setUnifiedItems([])
+      setLibraryNotices([])
       setItemsError('')
       if (!silent) {
         setIsLoadingItems(false)
@@ -180,14 +186,16 @@ function App() {
     }
 
     try {
-      const result = await invoke<UnifiedItem[]>('list_unified_items')
-      setUnifiedItems(result)
+      const result = await invoke<UnifiedLibraryResult>('list_unified_items')
+      setUnifiedItems(result.items)
+      setLibraryNotices(result.notices)
       setItemsError('')
-      return result
+      return result.items
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setItemsError(message)
       setUnifiedItems([])
+      setLibraryNotices([])
       return null
     } finally {
       if (!silent) {
@@ -593,11 +601,11 @@ function App() {
           </header>
 
           <div className="library-content">
-            {showsPersonalVaultNotice ? (
-              <div className="info-banner" role="note">
-                <p>OneDrive Personal Vault is excluded from unified browsing.</p>
+            {libraryNotices.map((notice) => (
+              <div key={notice} className="info-banner" role="note">
+                <p>{notice}</p>
               </div>
-            ) : null}
+            ))}
 
             {isLoadingItems && hasConnectedStorage ? <p className="empty-state">Loading your unified library...</p> : null}
             {!isLoadingItems && itemsError ? <p className="error-text">{itemsError}</p> : null}
