@@ -79,7 +79,7 @@ describe('groupRecentItems', () => {
         items: [items[1]],
       },
       {
-        label: 'This month',
+        label: 'This week',
         items: [items[0]],
       },
       {
