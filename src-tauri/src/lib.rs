@@ -13,6 +13,7 @@ use std::{
     path::Component,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::mpsc,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -31,6 +32,7 @@ const AUTH_START_GRACE_PERIOD: Duration = Duration::from_millis(350);
 const GRAPH_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 const GRAPH_BASE_URL: &str = "https://graph.microsoft.com/v1.0";
 const DOWNLOAD_PROGRESS_EVENT: &str = "download://progress";
+const LIBRARY_PROGRESS_EVENT: &str = "library://progress";
 const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(400);
 
 #[derive(Default)]
@@ -122,6 +124,33 @@ struct DownloadProgressEvent {
     error_message: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartUnifiedLibraryLoadResult {
+    status: String,
+    request_id: String,
+    total_remotes: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnifiedLibraryLoadEvent {
+    request_id: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    items: Option<Vec<rclone_logic::UnifiedItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notices: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    loaded_remote_count: usize,
+    total_remote_count: usize,
+}
+
 #[derive(Clone, Debug)]
 struct RemoteValidationResult {
     provider: String,
@@ -130,6 +159,12 @@ struct RemoteValidationResult {
     has_drive_type: bool,
     can_list: bool,
     failure_reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct RemoteLoadTarget {
+    name: String,
+    provider: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,6 +278,15 @@ async fn start_download(
         .map_err(|error| format!("failed to join download task: {error}"))?
 }
 
+#[tauri::command]
+async fn start_unified_library_load(
+    app: AppHandle,
+) -> Result<StartUnifiedLibraryLoadResult, String> {
+    tauri::async_runtime::spawn_blocking(move || start_unified_library_load_impl(app))
+        .await
+        .map_err(|error| format!("failed to join unified library stream task: {error}"))?
+}
+
 fn list_storage_remotes_impl(app: AppHandle) -> Result<Vec<RemoteSummary>, String> {
     let config_path = ensure_rclone_config(&app)?;
     let stdout = run_rclone(
@@ -306,13 +350,7 @@ fn create_onedrive_remote_impl(
 
 fn list_unified_items_impl(app: AppHandle) -> Result<UnifiedLibraryResult, String> {
     let config_path = ensure_rclone_config(&app)?;
-    let stdout = run_rclone(
-        &app,
-        &["listremotes", "--json", "--config"],
-        &[config_path.as_os_str()],
-        DEFAULT_COMMAND_TIMEOUT,
-    )?;
-    let remotes = parse_listremotes(&stdout)?;
+    let remotes = list_connected_remote_targets(&app, &config_path)?;
 
     if remotes.is_empty() {
         return Ok(UnifiedLibraryResult {
@@ -320,49 +358,13 @@ fn list_unified_items_impl(app: AppHandle) -> Result<UnifiedLibraryResult, Strin
             notices: Vec::new(),
         });
     }
-
-    let remote_config_by_name = load_remote_config_states(&app, &config_path)?;
     let mut items = Vec::new();
     let mut notices = Vec::new();
 
-    for remote_name in remotes {
-        let config_state = remote_config_by_name
-            .get(&remote_name)
-            .cloned()
-            .unwrap_or_else(default_remote_config_state);
-
-        if remote_status(&config_state) != "connected" {
-            continue;
-        }
-
-        if config_state.provider == "onedrive" {
-            let partial = list_unified_items_for_onedrive_remote(
-                &app,
-                &config_path,
-                &remote_name,
-                &config_state.provider,
-            )?;
-            items.extend(partial.items);
-            notices.extend(partial.notices);
-        } else {
-            let output = run_rclone_owned(
-                &app,
-                &[
-                    "lsjson".to_string(),
-                    format!("{remote_name}:"),
-                    "-R".to_string(),
-                    "--files-only".to_string(),
-                    "--config".to_string(),
-                    config_path.to_string_lossy().into_owned(),
-                ],
-                INVENTORY_COMMAND_TIMEOUT,
-            )?;
-            items.extend(parse_unified_items(
-                &output,
-                &remote_name,
-                &config_state.provider,
-            )?);
-        }
+    for remote in remotes {
+        let partial = load_items_for_remote(&app, &config_path, &remote.name, &remote.provider)?;
+        items.extend(partial.items);
+        notices.extend(partial.notices);
     }
 
     items.sort_by(|left, right| {
@@ -375,6 +377,139 @@ fn list_unified_items_impl(app: AppHandle) -> Result<UnifiedLibraryResult, Strin
     notices.dedup();
 
     Ok(UnifiedLibraryResult { items, notices })
+}
+
+fn start_unified_library_load_impl(app: AppHandle) -> Result<StartUnifiedLibraryLoadResult, String> {
+    let config_path = ensure_rclone_config(&app)?;
+    let remotes = list_connected_remote_targets(&app, &config_path)?;
+    let request_id = format!(
+        "library-load-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    );
+    let total_remotes = remotes.len();
+
+    emit_library_progress(
+        &app,
+        UnifiedLibraryLoadEvent {
+            request_id: request_id.clone(),
+            status: "started".to_string(),
+            remote_name: None,
+            provider: None,
+            items: None,
+            notices: None,
+            message: None,
+            loaded_remote_count: 0,
+            total_remote_count: total_remotes,
+        },
+    );
+
+    if total_remotes == 0 {
+        emit_library_progress(
+            &app,
+            UnifiedLibraryLoadEvent {
+                request_id: request_id.clone(),
+                status: "completed".to_string(),
+                remote_name: None,
+                provider: None,
+                items: None,
+                notices: Some(Vec::new()),
+                message: None,
+                loaded_remote_count: 0,
+                total_remote_count: 0,
+            },
+        );
+
+        return Ok(StartUnifiedLibraryLoadResult {
+            status: "accepted".to_string(),
+            request_id,
+            total_remotes,
+        });
+    }
+
+    let request_id_for_thread = request_id.clone();
+    let app_for_thread = app.clone();
+    let config_path_for_thread = config_path.clone();
+
+    thread::spawn(move || {
+        let (sender, receiver) = mpsc::channel();
+
+        for remote in remotes {
+            let sender = sender.clone();
+            let app = app_for_thread.clone();
+            let config_path = config_path_for_thread.clone();
+
+            thread::spawn(move || {
+                let result = match load_items_for_remote(&app, &config_path, &remote.name, &remote.provider) {
+                    Ok(library) => Ok((remote, library)),
+                    Err(error) => Err((remote, error)),
+                };
+                let _ = sender.send(result);
+            });
+        }
+
+        drop(sender);
+
+        let mut loaded_remote_count = 0;
+
+        for message in receiver {
+            loaded_remote_count += 1;
+
+            match message {
+                Ok((remote, library)) => emit_library_progress(
+                    &app_for_thread,
+                    UnifiedLibraryLoadEvent {
+                        request_id: request_id_for_thread.clone(),
+                        status: "remote_loaded".to_string(),
+                        remote_name: Some(remote.name),
+                        provider: Some(remote.provider),
+                        items: Some(library.items),
+                        notices: Some(library.notices),
+                        message: None,
+                        loaded_remote_count,
+                        total_remote_count: total_remotes,
+                    },
+                ),
+                Err((remote, error)) => emit_library_progress(
+                    &app_for_thread,
+                    UnifiedLibraryLoadEvent {
+                        request_id: request_id_for_thread.clone(),
+                        status: "remote_failed".to_string(),
+                        remote_name: Some(remote.name),
+                        provider: Some(remote.provider),
+                        items: Some(Vec::new()),
+                        notices: Some(Vec::new()),
+                        message: Some(user_facing_command_error(&error)),
+                        loaded_remote_count,
+                        total_remote_count: total_remotes,
+                    },
+                ),
+            }
+        }
+
+        emit_library_progress(
+            &app_for_thread,
+            UnifiedLibraryLoadEvent {
+                request_id: request_id_for_thread,
+                status: "completed".to_string(),
+                remote_name: None,
+                provider: None,
+                items: None,
+                notices: Some(Vec::new()),
+                message: None,
+                loaded_remote_count: total_remotes,
+                total_remote_count: total_remotes,
+            },
+        );
+    });
+
+    Ok(StartUnifiedLibraryLoadResult {
+        status: "accepted".to_string(),
+        request_id,
+        total_remotes,
+    })
 }
 
 fn reconnect_remote_impl(app: AppHandle, name: String) -> Result<CreateRemoteResult, String> {
@@ -391,6 +526,64 @@ fn reconnect_remote_impl(app: AppHandle, name: String) -> Result<CreateRemoteRes
     ];
 
     start_auth_flow(&app, &name, "onedrive", "reconnect", &owned_args)
+}
+
+fn list_connected_remote_targets(
+    app: &AppHandle,
+    config_path: &Path,
+) -> Result<Vec<RemoteLoadTarget>, String> {
+    let stdout = run_rclone(
+        app,
+        &["listremotes", "--json", "--config"],
+        &[config_path.as_os_str()],
+        DEFAULT_COMMAND_TIMEOUT,
+    )?;
+    let remotes = parse_listremotes(&stdout)?;
+    let remote_config_by_name = load_remote_config_states(app, config_path)?;
+
+    Ok(remotes
+        .into_iter()
+        .filter_map(|remote_name| {
+            let config_state = remote_config_by_name
+                .get(&remote_name)
+                .cloned()
+                .unwrap_or_else(default_remote_config_state);
+
+            (remote_status(&config_state) == "connected").then_some(RemoteLoadTarget {
+                name: remote_name,
+                provider: config_state.provider,
+            })
+        })
+        .collect())
+}
+
+fn load_items_for_remote(
+    app: &AppHandle,
+    config_path: &Path,
+    remote_name: &str,
+    provider: &str,
+) -> Result<UnifiedLibraryResult, String> {
+    if provider == "onedrive" {
+        list_unified_items_for_onedrive_remote(app, config_path, remote_name, provider)
+    } else {
+        let output = run_rclone_owned(
+            app,
+            &[
+                "lsjson".to_string(),
+                format!("{remote_name}:"),
+                "-R".to_string(),
+                "--files-only".to_string(),
+                "--config".to_string(),
+                config_path.to_string_lossy().into_owned(),
+            ],
+            INVENTORY_COMMAND_TIMEOUT,
+        )?;
+
+        Ok(UnifiedLibraryResult {
+            items: parse_unified_items(&output, remote_name, provider)?,
+            notices: Vec::new(),
+        })
+    }
 }
 
 fn list_unified_items_for_onedrive_remote(
@@ -1393,7 +1586,8 @@ pub fn run() {
             finalize_onedrive_remote,
             get_auth_session_status,
             delete_remote,
-            start_download
+            start_download,
+            start_unified_library_load
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1486,6 +1680,12 @@ fn resolve_unique_download_target(downloads_dir: &Path, file_name: &str) -> Path
 fn emit_download_progress(app: &AppHandle, event: DownloadProgressEvent) {
     if let Err(error) = app.emit(DOWNLOAD_PROGRESS_EVENT, event) {
         log::warn!("failed to emit download progress event: {error}");
+    }
+}
+
+fn emit_library_progress(app: &AppHandle, event: UnifiedLibraryLoadEvent) {
+    if let Err(error) = app.emit(LIBRARY_PROGRESS_EVENT, event) {
+        log::warn!("failed to emit unified library progress event: {error}");
     }
 }
 

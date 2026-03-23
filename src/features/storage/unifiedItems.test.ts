@@ -4,6 +4,7 @@ import {
   formatFileSize,
   groupRecentItems,
   searchUnifiedItems,
+  sortUnifiedItems,
   type UnifiedItem,
 } from './unifiedItems'
 
@@ -66,6 +67,12 @@ describe('searchUnifiedItems', () => {
     expect(searchUnifiedItems(items, 'audio-archive').map((item) => item.id)).toEqual(['3'])
     expect(searchUnifiedItems(items, 'documents').map((item) => item.id)).toEqual(['1'])
     expect(searchUnifiedItems(items, 'dropbox').map((item) => item.id)).toEqual(['2'])
+  })
+})
+
+describe('sortUnifiedItems', () => {
+  it('sorts items by remote then path', () => {
+    expect(sortUnifiedItems(items).map((item) => item.id)).toEqual(['3', '1', '2'])
   })
 })
 

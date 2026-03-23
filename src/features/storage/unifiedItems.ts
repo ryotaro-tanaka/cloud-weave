@@ -43,6 +43,12 @@ export function searchUnifiedItems(items: UnifiedItem[], query: string): Unified
   )
 }
 
+export function sortUnifiedItems(items: UnifiedItem[]): UnifiedItem[] {
+  return [...items].sort((left, right) =>
+    left.sourceRemote.localeCompare(right.sourceRemote) || left.sourcePath.localeCompare(right.sourcePath),
+  )
+}
+
 export function sortItemsByRecent(items: UnifiedItem[]): UnifiedItem[] {
   return [...items].sort(compareItemsByRecent)
 }
