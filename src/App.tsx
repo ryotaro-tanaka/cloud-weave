@@ -806,9 +806,9 @@ function App() {
             {shouldShowStreamingBanner ? (
               <div className="info-banner" role="status" aria-live="polite">
                 <p>
-                  Loading more files from your connected storage...
+                  Showing files while Cloud Weave loads the rest of your connected storage...
                   {libraryLoadProgress.totalRemoteCount > 0
-                    ? ` ${libraryLoadProgress.loadedRemoteCount} / ${libraryLoadProgress.totalRemoteCount} storages loaded.`
+                    ? ` ${libraryLoadProgress.loadedRemoteCount} / ${libraryLoadProgress.totalRemoteCount} storages fully loaded.`
                     : ''}
                 </p>
               </div>
