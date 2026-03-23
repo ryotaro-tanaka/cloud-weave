@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import {
   resolvePendingSession,
   type AuthSessionRecord,
@@ -17,9 +18,25 @@ import {
   getCategoryMonogram,
   groupRecentItems,
   searchUnifiedItems,
+  sortUnifiedItems,
   type LogicalView,
   type UnifiedItem,
 } from './features/storage/unifiedItems'
+import {
+  applyDownloadProgressEvent,
+  getDownloadStateSummary,
+  IDLE_DOWNLOAD_STATE,
+  type DownloadAcceptedResult,
+  type DownloadProgressEvent,
+  type DownloadRequest,
+  type DownloadState,
+} from './features/storage/downloads'
+import {
+  mergeNotices,
+  mergeUnifiedItems,
+  type StartUnifiedLibraryLoadResult,
+  type UnifiedLibraryLoadEvent,
+} from './features/storage/libraryLoad'
 import './App.css'
 
 type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
@@ -50,6 +67,13 @@ type ActionResult = {
 type UnifiedLibraryResult = {
   items: UnifiedItem[]
   notices: string[]
+}
+
+type DownloadStateMap = Record<string, DownloadState>
+type LibraryLoadProgress = {
+  requestId: string | null
+  loadedRemoteCount: number
+  totalRemoteCount: number
 }
 
 type ProviderDefinition = {
@@ -111,6 +135,7 @@ function App() {
   const [showManualSetupHelp, setShowManualSetupHelp] = useState(false)
   const [isLoadingRemotes, setIsLoadingRemotes] = useState(true)
   const [isLoadingItems, setIsLoadingItems] = useState(true)
+  const [isLibraryStreaming, setIsLibraryStreaming] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isCheckingPending, setIsCheckingPending] = useState(false)
   const [isFinalizingDrive, setIsFinalizingDrive] = useState(false)
@@ -122,6 +147,13 @@ function App() {
   const [itemsError, setItemsError] = useState('')
   const [addError, setAddError] = useState('')
   const [removeError, setRemoveError] = useState('')
+  const [downloadStates, setDownloadStates] = useState<DownloadStateMap>({})
+  const [libraryLoadProgress, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
+    requestId: null,
+    loadedRemoteCount: 0,
+    totalRemoteCount: 0,
+  })
+  const activeLibraryRequestIdRef = useRef<string | null>(null)
 
   const selectedProviderConfig = useMemo(
     () => STORAGE_PROVIDERS.find((provider) => provider.id === selectedProvider) ?? STORAGE_PROVIDERS[0],
@@ -187,9 +219,16 @@ function App() {
 
     try {
       const result = await invoke<UnifiedLibraryResult>('list_unified_items')
-      setUnifiedItems(result.items)
+      setUnifiedItems(sortUnifiedItems(result.items))
       setLibraryNotices(result.notices)
       setItemsError('')
+      setIsLibraryStreaming(false)
+      activeLibraryRequestIdRef.current = null
+      setLibraryLoadProgress({
+        requestId: null,
+        loadedRemoteCount: 0,
+        totalRemoteCount: 0,
+      })
       return result.items
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -210,8 +249,118 @@ function App() {
   }
 
   useEffect(() => {
-    void refreshLibrary()
+    void initializeLibrary()
   }, [])
+
+  useEffect(() => {
+    let isSubscribed = true
+
+    const unlistenPromise = listen<DownloadProgressEvent>('download://progress', (event) => {
+      if (!isSubscribed) {
+        return
+      }
+
+      setDownloadStates((current) => applyDownloadProgressEvent(current, event.payload))
+    })
+
+    return () => {
+      isSubscribed = false
+      void unlistenPromise.then((unlisten) => unlisten())
+    }
+  }, [])
+
+  useEffect(() => {
+    let isSubscribed = true
+
+    const unlistenPromise = listen<UnifiedLibraryLoadEvent>('library://progress', (event) => {
+      if (!isSubscribed) {
+        return
+      }
+
+      const payload = event.payload
+      const activeRequestId = activeLibraryRequestIdRef.current
+
+      if (activeRequestId && payload.requestId !== activeRequestId) {
+        return
+      }
+
+      setLibraryLoadProgress({
+        requestId: payload.requestId,
+        loadedRemoteCount: payload.loadedRemoteCount,
+        totalRemoteCount: payload.totalRemoteCount,
+      })
+
+      if (payload.status === 'remote_loaded') {
+        setUnifiedItems((current) => mergeUnifiedItems(current, payload.items ?? []))
+        setLibraryNotices((current) => mergeNotices(current, payload.notices ?? []))
+        setIsLoadingItems(false)
+        return
+      }
+
+      if (payload.status === 'remote_failed') {
+        setLibraryNotices((current) =>
+          mergeNotices(current, payload.message ? [payload.message, ...(payload.notices ?? [])] : (payload.notices ?? [])),
+        )
+        setIsLoadingItems(false)
+        return
+      }
+
+      if (payload.status === 'completed') {
+        setIsLibraryStreaming(false)
+        setIsLoadingItems(false)
+        activeLibraryRequestIdRef.current = null
+      }
+    })
+
+    return () => {
+      isSubscribed = false
+      void unlistenPromise.then((unlisten) => unlisten())
+    }
+  }, [])
+
+  const initializeLibrary = async () => {
+    setIsLoadingItems(true)
+    setIsLibraryStreaming(false)
+    setUnifiedItems([])
+    setLibraryNotices([])
+    setItemsError('')
+    setLibraryLoadProgress({
+      requestId: null,
+      loadedRemoteCount: 0,
+      totalRemoteCount: 0,
+    })
+    activeLibraryRequestIdRef.current = null
+
+    const nextRemotes = await fetchRemotes()
+
+    if (!nextRemotes || nextRemotes.length === 0) {
+      setIsLoadingItems(false)
+      return
+    }
+
+    try {
+      const result = await invoke<StartUnifiedLibraryLoadResult>('start_unified_library_load')
+      activeLibraryRequestIdRef.current = result.requestId
+
+      setLibraryLoadProgress({
+        requestId: result.requestId,
+        loadedRemoteCount: 0,
+        totalRemoteCount: result.totalRemotes,
+      })
+      setIsLibraryStreaming(result.totalRemotes > 0)
+
+      if (result.totalRemotes === 0) {
+        setIsLoadingItems(false)
+        setIsLibraryStreaming(false)
+        activeLibraryRequestIdRef.current = null
+      }
+    } catch (error) {
+      setItemsError(error instanceof Error ? error.message : String(error))
+      setIsLoadingItems(false)
+      setIsLibraryStreaming(false)
+      activeLibraryRequestIdRef.current = null
+    }
+  }
 
   useEffect(() => {
     if (activeModal !== 'oauth-pending' || !pendingSession || pendingSession.status !== 'pending') {
@@ -490,6 +639,52 @@ function App() {
     setActiveModal('remove-confirm')
   }
 
+  const handleDownload = async (item: UnifiedItem) => {
+    if (item.isDir) {
+      return
+    }
+
+    const request = {
+      downloadId: item.id,
+      sourceRemote: item.sourceRemote,
+      sourcePath: item.sourcePath,
+      displayName: item.name,
+      size: item.size > 0 ? item.size : undefined,
+    } satisfies DownloadRequest
+
+    setDownloadStates((current) =>
+      applyDownloadProgressEvent(current, {
+        downloadId: request.downloadId,
+        status: 'queued',
+        totalBytes: request.size ?? null,
+        errorMessage: null,
+      }),
+    )
+
+    try {
+      const result = await invoke<DownloadAcceptedResult>('start_download', { input: request })
+
+      setDownloadStates((current) =>
+        applyDownloadProgressEvent(current, {
+          downloadId: result.downloadId,
+          status: 'queued',
+          targetPath: result.targetPath,
+          totalBytes: request.size ?? null,
+          errorMessage: null,
+        }),
+      )
+    } catch (error) {
+      setDownloadStates((current) =>
+        applyDownloadProgressEvent(current, {
+          downloadId: request.downloadId,
+          status: 'failed',
+          totalBytes: request.size ?? null,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    }
+  }
+
   const closePendingModal = () => {
     setActiveModal('none')
     setSelectedDriveId('')
@@ -498,7 +693,8 @@ function App() {
   const hasConnectedStorage = remotes.length > 0
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
-    hasConnectedStorage && !isLoadingItems && !itemsError && displayedItems.length === 0
+    hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
+  const shouldShowStreamingBanner = isLibraryStreaming && unifiedItems.length > 0
 
   return (
     <main className={`workspace-shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
@@ -607,7 +803,20 @@ function App() {
               </div>
             ))}
 
-            {isLoadingItems && hasConnectedStorage ? <p className="empty-state">Loading your unified library...</p> : null}
+            {shouldShowStreamingBanner ? (
+              <div className="info-banner" role="status" aria-live="polite">
+                <p>
+                  Showing files while Cloud Weave loads the rest of your connected storage...
+                  {libraryLoadProgress.totalRemoteCount > 0
+                    ? ` ${libraryLoadProgress.loadedRemoteCount} / ${libraryLoadProgress.totalRemoteCount} storages fully loaded.`
+                    : ''}
+                </p>
+              </div>
+            ) : null}
+
+            {isLoadingItems && hasConnectedStorage && unifiedItems.length === 0 ? (
+              <p className="empty-state">Loading your unified library...</p>
+            ) : null}
             {!isLoadingItems && itemsError ? <p className="error-text">{itemsError}</p> : null}
 
             {shouldShowNoStorageState ? (
@@ -633,7 +842,7 @@ function App() {
               </div>
             ) : null}
 
-            {!isLoadingItems && !itemsError && displayedItems.length > 0 ? (
+            {(!isLoadingItems || unifiedItems.length > 0) && !itemsError && displayedItems.length > 0 ? (
               activeView === 'recent' ? (
                 <div className="recent-groups">
                   {groupedRecentItems.map((group) => (
@@ -645,7 +854,12 @@ function App() {
 
                       <div className="item-list">
                         {group.items.map((item) => (
-                          <UnifiedListItem key={item.id} item={item} />
+                          <UnifiedListItem
+                            key={item.id}
+                            item={item}
+                            downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                            onDownload={handleDownload}
+                          />
                         ))}
                       </div>
                     </section>
@@ -654,13 +868,23 @@ function App() {
               ) : isVisualGrid ? (
                 <div className="item-grid">
                   {displayedItems.map((item) => (
-                    <UnifiedGridItem key={item.id} item={item} />
+                    <UnifiedGridItem
+                      key={item.id}
+                      item={item}
+                      downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                      onDownload={handleDownload}
+                    />
                   ))}
                 </div>
               ) : (
                 <div className="item-list">
                   {displayedItems.map((item) => (
-                    <UnifiedListItem key={item.id} item={item} />
+                    <UnifiedListItem
+                      key={item.id}
+                      item={item}
+                      downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                      onDownload={handleDownload}
+                    />
                   ))}
                 </div>
               )
@@ -951,7 +1175,19 @@ function App() {
   )
 }
 
-function UnifiedListItem({ item }: { item: UnifiedItem }) {
+function UnifiedListItem({
+  item,
+  downloadState,
+  onDownload,
+}: {
+  item: UnifiedItem
+  downloadState: DownloadState
+  onDownload: (item: UnifiedItem) => Promise<void>
+}) {
+  const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
+  const actionLabel =
+    downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
+
   return (
     <article className="unified-item list-item">
       <div className="item-leading">
@@ -975,12 +1211,30 @@ function UnifiedListItem({ item }: { item: UnifiedItem }) {
       <div className="item-trailing">
         <span>{formatFileSize(item.size)}</span>
         <span>{formatModifiedTime(item.modTime)}</span>
+        <div className="item-actions">
+          <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
+            {actionLabel}
+          </button>
+          <DownloadStatusView state={downloadState} />
+        </div>
       </div>
     </article>
   )
 }
 
-function UnifiedGridItem({ item }: { item: UnifiedItem }) {
+function UnifiedGridItem({
+  item,
+  downloadState,
+  onDownload,
+}: {
+  item: UnifiedItem
+  downloadState: DownloadState
+  onDownload: (item: UnifiedItem) => Promise<void>
+}) {
+  const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
+  const actionLabel =
+    downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
+
   return (
     <article className="unified-item grid-item">
       <div className={`grid-preview ${item.category}`}>
@@ -995,8 +1249,36 @@ function UnifiedGridItem({ item }: { item: UnifiedItem }) {
         </div>
         <p className="grid-path">{item.sourcePath}</p>
         <p className="grid-date">{formatModifiedTime(item.modTime)}</p>
+        <div className="grid-actions">
+          <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
+            {actionLabel}
+          </button>
+          <DownloadStatusView state={downloadState} />
+        </div>
       </div>
     </article>
+  )
+}
+
+function DownloadStatusView({ state }: { state: DownloadState }) {
+  if (state.status === 'idle') {
+    return null
+  }
+
+  const isRunning = state.status === 'queued' || state.status === 'running'
+
+  return (
+    <div className={`download-status ${state.status}`} aria-live="polite">
+      <p className="download-status-copy">{getDownloadStateSummary(state)}</p>
+      {isRunning ? (
+        <div className="download-progress" aria-hidden="true">
+          <div
+            className="download-progress-fill"
+            style={{ width: `${Math.max(6, Math.min(100, state.progressPercent ?? 8))}%` }}
+          />
+        </div>
+      ) : null}
+    </div>
   )
 }
 

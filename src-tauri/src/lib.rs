@@ -1,21 +1,27 @@
 use rclone_logic::{
     classify_rclone_error, is_system_like_onedrive_drive_label,
     normalize_onedrive_drive_candidates, parse_listremotes, parse_lsjson_items,
-    parse_remote_config_state_map, parse_unified_items, select_auto_onedrive_drive_candidate,
-    OneDriveDriveCandidate, RcloneErrorKind, RemoteConfigState, UnifiedItem, UnifiedLibraryResult,
+    parse_remote_config_state_map, parse_unified_items, prefix_unified_item_paths,
+    select_auto_onedrive_drive_candidate, LsjsonItem, OneDriveDriveCandidate, RcloneErrorKind,
+    RemoteConfigState, UnifiedItem, UnifiedLibraryResult,
 };
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
+    path::Component,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const RCLONE_BINARY: &str = "rclone-x86_64-pc-windows-msvc.exe";
 const AUTH_COMMAND_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -25,6 +31,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const AUTH_START_GRACE_PERIOD: Duration = Duration::from_millis(350);
 const GRAPH_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 const GRAPH_BASE_URL: &str = "https://graph.microsoft.com/v1.0";
+const DOWNLOAD_PROGRESS_EVENT: &str = "download://progress";
+const LIBRARY_PROGRESS_EVENT: &str = "library://progress";
+const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(400);
 
 #[derive(Default)]
 struct AuthSessionStore {
@@ -80,6 +89,68 @@ struct ActionResult {
     message: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartDownloadInput {
+    download_id: String,
+    source_remote: String,
+    source_path: String,
+    display_name: String,
+    size: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadAcceptedResult {
+    download_id: String,
+    status: String,
+    target_path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadProgressEvent {
+    download_id: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    progress_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes_transferred: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartUnifiedLibraryLoadResult {
+    status: String,
+    request_id: String,
+    total_remotes: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnifiedLibraryLoadEvent {
+    request_id: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    items: Option<Vec<rclone_logic::UnifiedItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notices: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    loaded_remote_count: usize,
+    total_remote_count: usize,
+}
+
 #[derive(Clone, Debug)]
 struct RemoteValidationResult {
     provider: String,
@@ -88,6 +159,45 @@ struct RemoteValidationResult {
     has_drive_type: bool,
     can_list: bool,
     failure_reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct RemoteLoadTarget {
+    name: String,
+    provider: String,
+}
+
+#[derive(Clone, Debug)]
+struct OneDriveFolderTarget {
+    target: String,
+    path_label: String,
+}
+
+#[derive(Clone, Debug)]
+struct OneDriveStage {
+    root_files: Vec<UnifiedItem>,
+    folders: Vec<OneDriveFolderTarget>,
+}
+
+enum LibraryLoadMessage {
+    Batch {
+        remote: RemoteLoadTarget,
+        items: Vec<UnifiedItem>,
+        notices: Vec<String>,
+    },
+    RemoteLoaded {
+        remote: RemoteLoadTarget,
+        items: Vec<UnifiedItem>,
+        notices: Vec<String>,
+    },
+    RemoteComplete {
+        remote: RemoteLoadTarget,
+        notices: Vec<String>,
+    },
+    RemoteFailed {
+        remote: RemoteLoadTarget,
+        error: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,6 +301,25 @@ async fn delete_remote(app: AppHandle, name: String) -> Result<ActionResult, Str
         .map_err(|error| format!("failed to join delete task: {error}"))?
 }
 
+#[tauri::command]
+async fn start_download(
+    app: AppHandle,
+    input: StartDownloadInput,
+) -> Result<DownloadAcceptedResult, String> {
+    tauri::async_runtime::spawn_blocking(move || start_download_impl(app, input))
+        .await
+        .map_err(|error| format!("failed to join download task: {error}"))?
+}
+
+#[tauri::command]
+async fn start_unified_library_load(
+    app: AppHandle,
+) -> Result<StartUnifiedLibraryLoadResult, String> {
+    tauri::async_runtime::spawn_blocking(move || start_unified_library_load_impl(app))
+        .await
+        .map_err(|error| format!("failed to join unified library stream task: {error}"))?
+}
+
 fn list_storage_remotes_impl(app: AppHandle) -> Result<Vec<RemoteSummary>, String> {
     let config_path = ensure_rclone_config(&app)?;
     let stdout = run_rclone(
@@ -254,13 +383,7 @@ fn create_onedrive_remote_impl(
 
 fn list_unified_items_impl(app: AppHandle) -> Result<UnifiedLibraryResult, String> {
     let config_path = ensure_rclone_config(&app)?;
-    let stdout = run_rclone(
-        &app,
-        &["listremotes", "--json", "--config"],
-        &[config_path.as_os_str()],
-        DEFAULT_COMMAND_TIMEOUT,
-    )?;
-    let remotes = parse_listremotes(&stdout)?;
+    let remotes = list_connected_remote_targets(&app, &config_path)?;
 
     if remotes.is_empty() {
         return Ok(UnifiedLibraryResult {
@@ -268,49 +391,13 @@ fn list_unified_items_impl(app: AppHandle) -> Result<UnifiedLibraryResult, Strin
             notices: Vec::new(),
         });
     }
-
-    let remote_config_by_name = load_remote_config_states(&app, &config_path)?;
     let mut items = Vec::new();
     let mut notices = Vec::new();
 
-    for remote_name in remotes {
-        let config_state = remote_config_by_name
-            .get(&remote_name)
-            .cloned()
-            .unwrap_or_else(default_remote_config_state);
-
-        if remote_status(&config_state) != "connected" {
-            continue;
-        }
-
-        if config_state.provider == "onedrive" {
-            let partial = list_unified_items_for_onedrive_remote(
-                &app,
-                &config_path,
-                &remote_name,
-                &config_state.provider,
-            )?;
-            items.extend(partial.items);
-            notices.extend(partial.notices);
-        } else {
-            let output = run_rclone_owned(
-                &app,
-                &[
-                    "lsjson".to_string(),
-                    format!("{remote_name}:"),
-                    "-R".to_string(),
-                    "--files-only".to_string(),
-                    "--config".to_string(),
-                    config_path.to_string_lossy().into_owned(),
-                ],
-                INVENTORY_COMMAND_TIMEOUT,
-            )?;
-            items.extend(parse_unified_items(
-                &output,
-                &remote_name,
-                &config_state.provider,
-            )?);
-        }
+    for remote in remotes {
+        let partial = load_items_for_remote(&app, &config_path, &remote.name, &remote.provider)?;
+        items.extend(partial.items);
+        notices.extend(partial.notices);
     }
 
     items.sort_by(|left, right| {
@@ -323,6 +410,212 @@ fn list_unified_items_impl(app: AppHandle) -> Result<UnifiedLibraryResult, Strin
     notices.dedup();
 
     Ok(UnifiedLibraryResult { items, notices })
+}
+
+fn start_unified_library_load_impl(
+    app: AppHandle,
+) -> Result<StartUnifiedLibraryLoadResult, String> {
+    let config_path = ensure_rclone_config(&app)?;
+    let remotes = list_connected_remote_targets(&app, &config_path)?;
+    let request_id = format!(
+        "library-load-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    );
+    let total_remotes = remotes.len();
+
+    emit_library_progress(
+        &app,
+        UnifiedLibraryLoadEvent {
+            request_id: request_id.clone(),
+            status: "started".to_string(),
+            remote_name: None,
+            provider: None,
+            items: None,
+            notices: None,
+            message: None,
+            loaded_remote_count: 0,
+            total_remote_count: total_remotes,
+        },
+    );
+
+    if total_remotes == 0 {
+        emit_library_progress(
+            &app,
+            UnifiedLibraryLoadEvent {
+                request_id: request_id.clone(),
+                status: "completed".to_string(),
+                remote_name: None,
+                provider: None,
+                items: None,
+                notices: Some(Vec::new()),
+                message: None,
+                loaded_remote_count: 0,
+                total_remote_count: 0,
+            },
+        );
+
+        return Ok(StartUnifiedLibraryLoadResult {
+            status: "accepted".to_string(),
+            request_id,
+            total_remotes,
+        });
+    }
+
+    let request_id_for_thread = request_id.clone();
+    let app_for_thread = app.clone();
+    let config_path_for_thread = config_path.clone();
+
+    thread::spawn(move || {
+        let (sender, receiver) = mpsc::channel::<LibraryLoadMessage>();
+
+        for remote in remotes {
+            let sender = sender.clone();
+            let app = app_for_thread.clone();
+            let config_path = config_path_for_thread.clone();
+
+            thread::spawn(move || {
+                if remote.provider == "onedrive" {
+                    match stream_onedrive_remote_batches(
+                        &app,
+                        &config_path,
+                        &remote,
+                        sender.clone(),
+                    ) {
+                        Ok(notices) => {
+                            let _ =
+                                sender.send(LibraryLoadMessage::RemoteComplete { remote, notices });
+                        }
+                        Err(error) => {
+                            let _ = sender.send(LibraryLoadMessage::RemoteFailed { remote, error });
+                        }
+                    }
+                    return;
+                }
+
+                match load_items_for_remote(&app, &config_path, &remote.name, &remote.provider) {
+                    Ok(library) => {
+                        let _ = sender.send(LibraryLoadMessage::RemoteLoaded {
+                            remote,
+                            items: library.items,
+                            notices: library.notices,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = sender.send(LibraryLoadMessage::RemoteFailed { remote, error });
+                    }
+                }
+            });
+        }
+
+        drop(sender);
+
+        let mut loaded_remote_count = 0;
+
+        for message in receiver {
+            match message {
+                LibraryLoadMessage::Batch {
+                    remote,
+                    items,
+                    notices,
+                } => emit_library_progress(
+                    &app_for_thread,
+                    UnifiedLibraryLoadEvent {
+                        request_id: request_id_for_thread.clone(),
+                        status: "remote_loaded".to_string(),
+                        remote_name: Some(remote.name),
+                        provider: Some(remote.provider),
+                        items: Some(items),
+                        notices: Some(notices),
+                        message: None,
+                        loaded_remote_count,
+                        total_remote_count: total_remotes,
+                    },
+                ),
+                LibraryLoadMessage::RemoteLoaded {
+                    remote,
+                    items,
+                    notices,
+                } => {
+                    loaded_remote_count += 1;
+
+                    emit_library_progress(
+                        &app_for_thread,
+                        UnifiedLibraryLoadEvent {
+                            request_id: request_id_for_thread.clone(),
+                            status: "remote_loaded".to_string(),
+                            remote_name: Some(remote.name),
+                            provider: Some(remote.provider),
+                            items: Some(items),
+                            notices: Some(notices),
+                            message: None,
+                            loaded_remote_count,
+                            total_remote_count: total_remotes,
+                        },
+                    );
+                }
+                LibraryLoadMessage::RemoteComplete { remote, notices } => {
+                    loaded_remote_count += 1;
+
+                    emit_library_progress(
+                        &app_for_thread,
+                        UnifiedLibraryLoadEvent {
+                            request_id: request_id_for_thread.clone(),
+                            status: "remote_loaded".to_string(),
+                            remote_name: Some(remote.name),
+                            provider: Some(remote.provider),
+                            items: Some(Vec::new()),
+                            notices: Some(notices),
+                            message: None,
+                            loaded_remote_count,
+                            total_remote_count: total_remotes,
+                        },
+                    );
+                }
+                LibraryLoadMessage::RemoteFailed { remote, error } => {
+                    loaded_remote_count += 1;
+
+                    emit_library_progress(
+                        &app_for_thread,
+                        UnifiedLibraryLoadEvent {
+                            request_id: request_id_for_thread.clone(),
+                            status: "remote_failed".to_string(),
+                            remote_name: Some(remote.name),
+                            provider: Some(remote.provider),
+                            items: Some(Vec::new()),
+                            notices: Some(Vec::new()),
+                            message: Some(user_facing_command_error(&error)),
+                            loaded_remote_count,
+                            total_remote_count: total_remotes,
+                        },
+                    );
+                }
+            }
+        }
+
+        emit_library_progress(
+            &app_for_thread,
+            UnifiedLibraryLoadEvent {
+                request_id: request_id_for_thread,
+                status: "completed".to_string(),
+                remote_name: None,
+                provider: None,
+                items: None,
+                notices: Some(Vec::new()),
+                message: None,
+                loaded_remote_count: total_remotes,
+                total_remote_count: total_remotes,
+            },
+        );
+    });
+
+    Ok(StartUnifiedLibraryLoadResult {
+        status: "accepted".to_string(),
+        request_id,
+        total_remotes,
+    })
 }
 
 fn reconnect_remote_impl(app: AppHandle, name: String) -> Result<CreateRemoteResult, String> {
@@ -341,15 +634,149 @@ fn reconnect_remote_impl(app: AppHandle, name: String) -> Result<CreateRemoteRes
     start_auth_flow(&app, &name, "onedrive", "reconnect", &owned_args)
 }
 
+fn list_connected_remote_targets(
+    app: &AppHandle,
+    config_path: &Path,
+) -> Result<Vec<RemoteLoadTarget>, String> {
+    let stdout = run_rclone(
+        app,
+        &["listremotes", "--json", "--config"],
+        &[config_path.as_os_str()],
+        DEFAULT_COMMAND_TIMEOUT,
+    )?;
+    let remotes = parse_listremotes(&stdout)?;
+    let remote_config_by_name = load_remote_config_states(app, config_path)?;
+
+    Ok(remotes
+        .into_iter()
+        .filter_map(|remote_name| {
+            let config_state = remote_config_by_name
+                .get(&remote_name)
+                .cloned()
+                .unwrap_or_else(default_remote_config_state);
+
+            (remote_status(&config_state) == "connected").then_some(RemoteLoadTarget {
+                name: remote_name,
+                provider: config_state.provider,
+            })
+        })
+        .collect())
+}
+
+fn load_items_for_remote(
+    app: &AppHandle,
+    config_path: &Path,
+    remote_name: &str,
+    provider: &str,
+) -> Result<UnifiedLibraryResult, String> {
+    if provider == "onedrive" {
+        list_unified_items_for_onedrive_remote(app, config_path, remote_name, provider)
+    } else {
+        let output = run_rclone_owned(
+            app,
+            &[
+                "lsjson".to_string(),
+                format!("{remote_name}:"),
+                "-R".to_string(),
+                "--files-only".to_string(),
+                "--config".to_string(),
+                config_path.to_string_lossy().into_owned(),
+            ],
+            INVENTORY_COMMAND_TIMEOUT,
+        )?;
+
+        Ok(UnifiedLibraryResult {
+            items: parse_unified_items(&output, remote_name, provider)?,
+            notices: Vec::new(),
+        })
+    }
+}
+
 fn list_unified_items_for_onedrive_remote(
     app: &AppHandle,
     config_path: &Path,
     remote_name: &str,
     provider: &str,
 ) -> Result<UnifiedLibraryResult, String> {
-    let mut items = Vec::new();
+    let stage = list_onedrive_root_stage(app, config_path, remote_name, provider)?;
+    let mut items = stage.root_files;
     let mut notices = Vec::new();
 
+    if stage.folders.is_empty() {
+        return Ok(UnifiedLibraryResult { items, notices });
+    }
+
+    for result in
+        spawn_onedrive_folder_workers(app, config_path, remote_name, provider, stage.folders)
+    {
+        match result {
+            Ok(batch) => {
+                items.extend(batch.items);
+                notices.extend(batch.notices);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    notices.sort();
+    notices.dedup();
+
+    Ok(UnifiedLibraryResult { items, notices })
+}
+
+fn stream_onedrive_remote_batches(
+    app: &AppHandle,
+    config_path: &Path,
+    remote: &RemoteLoadTarget,
+    sender: mpsc::Sender<LibraryLoadMessage>,
+) -> Result<Vec<String>, String> {
+    let stage = list_onedrive_root_stage(app, config_path, &remote.name, &remote.provider)?;
+
+    log::debug!(
+        "onedrive staged listing started remote={} root_files={} top_level_folders={}",
+        remote.name,
+        stage.root_files.len(),
+        stage.folders.len()
+    );
+
+    if !stage.root_files.is_empty() {
+        let _ = sender.send(LibraryLoadMessage::Batch {
+            remote: remote.clone(),
+            items: stage.root_files,
+            notices: Vec::new(),
+        });
+    }
+
+    for result in spawn_onedrive_folder_workers(
+        app,
+        config_path,
+        &remote.name,
+        &remote.provider,
+        stage.folders,
+    ) {
+        match result {
+            Ok(batch) => {
+                if !batch.items.is_empty() || !batch.notices.is_empty() {
+                    let _ = sender.send(LibraryLoadMessage::Batch {
+                        remote: remote.clone(),
+                        items: batch.items,
+                        notices: batch.notices,
+                    });
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+fn list_onedrive_root_stage(
+    app: &AppHandle,
+    config_path: &Path,
+    remote_name: &str,
+    provider: &str,
+) -> Result<OneDriveStage, String> {
     let root_items = parse_lsjson_items(&run_rclone_owned(
         app,
         &[
@@ -361,56 +788,163 @@ fn list_unified_items_for_onedrive_remote(
         DEFAULT_COMMAND_TIMEOUT,
     )?)?;
 
+    let mut root_files = Vec::new();
+    let mut folders = Vec::new();
+
     for root_item in root_items {
         if root_item.is_dir {
-            let target = if root_item.path.is_empty() {
-                format!("{remote_name}:")
-            } else {
-                format!("{remote_name}:{}", root_item.path)
-            };
-            let path_label = if root_item.path.is_empty() {
-                "/".to_string()
-            } else {
-                root_item.path.clone()
-            };
-
-            match run_rclone_owned(
-                app,
-                &[
-                    "lsjson".to_string(),
-                    target,
-                    "-R".to_string(),
-                    "--files-only".to_string(),
-                    "--config".to_string(),
-                    config_path.to_string_lossy().into_owned(),
-                ],
-                INVENTORY_COMMAND_TIMEOUT,
-            ) {
-                Ok(output) => items.extend(parse_unified_items(&output, remote_name, provider)?),
-                Err(error) => {
-                    log::warn!(
-                        "skipping onedrive folder remote={} folder={} reason={}",
-                        remote_name,
-                        path_label,
-                        summarize_output(&error)
-                    );
-                    notices.push(
-                        "Some protected or unsupported OneDrive folders were skipped.".to_string(),
-                    );
-                }
-            }
+            folders.push(onedrive_folder_target_from_root_item(
+                remote_name,
+                &root_item,
+            ));
         } else {
-            items.extend(parse_unified_items(
-                &serde_json::to_string(&vec![root_item]).map_err(|error| {
-                    format!("failed to serialize top-level lsjson item: {error}")
-                })?,
+            root_files.extend(parse_lsjson_batch(
+                std::slice::from_ref(&root_item),
                 remote_name,
                 provider,
             )?);
         }
     }
 
-    Ok(UnifiedLibraryResult { items, notices })
+    Ok(OneDriveStage {
+        root_files,
+        folders,
+    })
+}
+
+fn onedrive_folder_target_from_root_item(
+    remote_name: &str,
+    root_item: &LsjsonItem,
+) -> OneDriveFolderTarget {
+    OneDriveFolderTarget {
+        target: if root_item.path.is_empty() {
+            format!("{remote_name}:")
+        } else {
+            format!("{remote_name}:{}", root_item.path)
+        },
+        path_label: if root_item.path.is_empty() {
+            "/".to_string()
+        } else {
+            root_item.path.clone()
+        },
+    }
+}
+
+fn parse_lsjson_batch(
+    items: &[LsjsonItem],
+    remote_name: &str,
+    provider: &str,
+) -> Result<Vec<UnifiedItem>, String> {
+    parse_unified_items(
+        &serde_json::to_string(items)
+            .map_err(|error| format!("failed to serialize lsjson item batch: {error}"))?,
+        remote_name,
+        provider,
+    )
+}
+
+fn spawn_onedrive_folder_workers(
+    app: &AppHandle,
+    config_path: &Path,
+    remote_name: &str,
+    provider: &str,
+    folders: Vec<OneDriveFolderTarget>,
+) -> mpsc::Receiver<Result<UnifiedLibraryResult, String>> {
+    let (sender, receiver) = mpsc::channel();
+
+    if folders.is_empty() {
+        drop(sender);
+        return receiver;
+    }
+
+    let queue = Arc::new(Mutex::new(VecDeque::from(folders)));
+    let worker_count = queue
+        .lock()
+        .map(|guard| guard.len().min(4))
+        .unwrap_or_default();
+
+    for _ in 0..worker_count {
+        let sender = sender.clone();
+        let queue = queue.clone();
+        let app = app.clone();
+        let config_path = config_path.to_path_buf();
+        let remote_name = remote_name.to_string();
+        let provider = provider.to_string();
+
+        thread::spawn(move || loop {
+            let folder = match queue.lock() {
+                Ok(mut guard) => guard.pop_front(),
+                Err(_) => None,
+            };
+
+            let Some(folder) = folder else {
+                break;
+            };
+
+            let result =
+                load_onedrive_folder_batch(&app, &config_path, &remote_name, &provider, folder);
+
+            if sender.send(result).is_err() {
+                break;
+            }
+        });
+    }
+
+    drop(sender);
+    receiver
+}
+
+fn load_onedrive_folder_batch(
+    app: &AppHandle,
+    config_path: &Path,
+    remote_name: &str,
+    provider: &str,
+    folder: OneDriveFolderTarget,
+) -> Result<UnifiedLibraryResult, String> {
+    match run_rclone_owned(
+        app,
+        &[
+            "lsjson".to_string(),
+            folder.target.clone(),
+            "-R".to_string(),
+            "--files-only".to_string(),
+            "--config".to_string(),
+            config_path.to_string_lossy().into_owned(),
+        ],
+        INVENTORY_COMMAND_TIMEOUT,
+    ) {
+        Ok(output) => {
+            let mut nested_items = parse_unified_items(&output, remote_name, provider)?;
+            prefix_unified_item_paths(&mut nested_items, &folder.path_label);
+
+            log::debug!(
+                "onedrive folder batch loaded remote={} folder={} items={}",
+                remote_name,
+                folder.path_label,
+                nested_items.len()
+            );
+
+            Ok(UnifiedLibraryResult {
+                items: nested_items,
+                notices: Vec::new(),
+            })
+        }
+        Err(error) => {
+            log::warn!(
+                "skipping onedrive folder remote={} folder={} reason={}",
+                remote_name,
+                folder.path_label,
+                summarize_output(&error)
+            );
+
+            Ok(UnifiedLibraryResult {
+                items: Vec::new(),
+                notices: vec![
+                    "Some protected or unsupported OneDrive folders were skipped.".to_string(),
+                ],
+            })
+        }
+    }
 }
 
 fn list_onedrive_drive_candidates_impl(
@@ -463,6 +997,215 @@ fn delete_remote_impl(app: AppHandle, name: String) -> Result<ActionResult, Stri
             message: user_facing_command_error(&error),
         }),
     }
+}
+
+fn start_download_impl(
+    app: AppHandle,
+    input: StartDownloadInput,
+) -> Result<DownloadAcceptedResult, String> {
+    validate_remote_name(&input.source_remote)?;
+
+    if input.download_id.trim().is_empty() {
+        return Err("Download ID is required.".to_string());
+    }
+
+    if input.source_path.trim().is_empty() {
+        return Err("Source path is required.".to_string());
+    }
+
+    let downloads_dir = resolve_downloads_dir(&app)?;
+    let file_name = select_download_file_name(&input.display_name, &input.source_path);
+    let target_path = resolve_unique_download_target(&downloads_dir, &file_name);
+    let target_path_label = target_path.to_string_lossy().into_owned();
+    let download_id = input.download_id.clone();
+
+    emit_download_progress(
+        &app,
+        DownloadProgressEvent {
+            download_id: download_id.clone(),
+            status: "queued".to_string(),
+            progress_percent: Some(0.0),
+            bytes_transferred: Some(0),
+            total_bytes: input.size,
+            target_path: Some(target_path_label.clone()),
+            error_message: None,
+        },
+    );
+
+    spawn_download_task(app, input, target_path.clone());
+
+    Ok(DownloadAcceptedResult {
+        download_id,
+        status: "accepted".to_string(),
+        target_path: target_path_label,
+    })
+}
+
+fn spawn_download_task(app: AppHandle, input: StartDownloadInput, target_path: PathBuf) {
+    thread::spawn(move || {
+        let target_path_label = target_path.to_string_lossy().into_owned();
+
+        let config_path = match ensure_rclone_config(&app) {
+            Ok(path) => path,
+            Err(error) => {
+                emit_download_progress(
+                    &app,
+                    DownloadProgressEvent {
+                        download_id: input.download_id.clone(),
+                        status: "failed".to_string(),
+                        progress_percent: None,
+                        bytes_transferred: None,
+                        total_bytes: input.size,
+                        target_path: Some(target_path_label),
+                        error_message: Some(error),
+                    },
+                );
+                return;
+            }
+        };
+
+        let source = format!("{}:{}", input.source_remote, input.source_path);
+        let args = vec![
+            "copyto".to_string(),
+            source,
+            target_path.to_string_lossy().into_owned(),
+            "--local-no-set-modtime".to_string(),
+            "--config".to_string(),
+            config_path.to_string_lossy().into_owned(),
+        ];
+
+        log::debug!(
+            "starting download download_id={} source={} target={} local_no_set_modtime=true",
+            input.download_id,
+            input.source_path,
+            target_path.to_string_lossy()
+        );
+
+        let child = match spawn_rclone_owned(&app, &args) {
+            Ok(child) => child,
+            Err(error) => {
+                emit_download_progress(
+                    &app,
+                    DownloadProgressEvent {
+                        download_id: input.download_id.clone(),
+                        status: "failed".to_string(),
+                        progress_percent: None,
+                        bytes_transferred: None,
+                        total_bytes: input.size,
+                        target_path: Some(target_path_label),
+                        error_message: Some(user_facing_download_error(&error)),
+                    },
+                );
+                return;
+            }
+        };
+
+        emit_download_progress(
+            &app,
+            DownloadProgressEvent {
+                download_id: input.download_id.clone(),
+                status: "running".to_string(),
+                progress_percent: Some(0.0),
+                bytes_transferred: Some(0),
+                total_bytes: input.size,
+                target_path: Some(target_path.to_string_lossy().into_owned()),
+                error_message: None,
+            },
+        );
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher = spawn_download_progress_watcher(
+            app.clone(),
+            input.download_id.clone(),
+            target_path.clone(),
+            input.size,
+            stop.clone(),
+        );
+
+        let result = collect_child_output(child);
+
+        stop.store(true, Ordering::Relaxed);
+        let _ = watcher.join();
+
+        match result {
+            Ok(_) => {
+                let bytes_transferred = fs::metadata(&target_path).map(|meta| meta.len()).ok();
+                let progress_percent = completion_progress(bytes_transferred, input.size);
+
+                emit_download_progress(
+                    &app,
+                    DownloadProgressEvent {
+                        download_id: input.download_id,
+                        status: "succeeded".to_string(),
+                        progress_percent,
+                        bytes_transferred,
+                        total_bytes: input.size,
+                        target_path: Some(target_path.to_string_lossy().into_owned()),
+                        error_message: None,
+                    },
+                );
+            }
+            Err(error) => {
+                let bytes_transferred = fs::metadata(&target_path).map(|meta| meta.len()).ok();
+                let _ = fs::remove_file(&target_path);
+
+                emit_download_progress(
+                    &app,
+                    DownloadProgressEvent {
+                        download_id: input.download_id,
+                        status: "failed".to_string(),
+                        progress_percent: completion_progress(bytes_transferred, input.size),
+                        bytes_transferred,
+                        total_bytes: input.size,
+                        target_path: Some(target_path.to_string_lossy().into_owned()),
+                        error_message: Some(user_facing_download_error(&error)),
+                    },
+                );
+            }
+        }
+    });
+}
+
+fn spawn_download_progress_watcher(
+    app: AppHandle,
+    download_id: String,
+    target_path: PathBuf,
+    total_bytes: Option<u64>,
+    stop: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut first_tick = true;
+        let mut last_bytes = None;
+
+        loop {
+            let bytes_transferred = fs::metadata(&target_path)
+                .map(|meta| meta.len())
+                .unwrap_or(0);
+
+            if first_tick || Some(bytes_transferred) != last_bytes {
+                emit_download_progress(
+                    &app,
+                    DownloadProgressEvent {
+                        download_id: download_id.clone(),
+                        status: "running".to_string(),
+                        progress_percent: completion_progress(Some(bytes_transferred), total_bytes),
+                        bytes_transferred: Some(bytes_transferred),
+                        total_bytes,
+                        target_path: Some(target_path.to_string_lossy().into_owned()),
+                        error_message: None,
+                    },
+                );
+                first_tick = false;
+                last_bytes = Some(bytes_transferred);
+            }
+
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            thread::sleep(DOWNLOAD_POLL_INTERVAL);
+        }
+    })
 }
 
 fn validate_remote_after_setup(
@@ -1129,7 +1872,9 @@ pub fn run() {
             list_onedrive_drive_candidates,
             finalize_onedrive_remote,
             get_auth_session_status,
-            delete_remote
+            delete_remote,
+            start_download,
+            start_unified_library_load
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1152,6 +1897,95 @@ fn ensure_rclone_config(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     Ok(config_path)
+}
+
+fn resolve_downloads_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let downloads_dir = app
+        .path()
+        .download_dir()
+        .map_err(|error| format!("failed to resolve the Downloads folder: {error}"))?;
+
+    fs::create_dir_all(&downloads_dir)
+        .map_err(|error| format!("failed to prepare the Downloads folder: {error}"))?;
+
+    Ok(downloads_dir)
+}
+
+fn select_download_file_name(display_name: &str, source_path: &str) -> String {
+    let display_candidate = Path::new(display_name)
+        .components()
+        .rev()
+        .find_map(component_to_normal_path_part);
+    let source_candidate = Path::new(source_path)
+        .components()
+        .rev()
+        .find_map(component_to_normal_path_part);
+
+    display_candidate
+        .or(source_candidate)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "downloaded-file".to_string())
+}
+
+fn component_to_normal_path_part(component: Component<'_>) -> Option<String> {
+    match component {
+        Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+        _ => None,
+    }
+}
+
+fn resolve_unique_download_target(downloads_dir: &Path, file_name: &str) -> PathBuf {
+    let direct_path = downloads_dir.join(file_name);
+
+    if !direct_path.exists() {
+        return direct_path;
+    }
+
+    let candidate_path = Path::new(file_name);
+    let stem = candidate_path
+        .file_stem()
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "downloaded-file".to_string());
+    let extension = candidate_path
+        .extension()
+        .map(|value| value.to_string_lossy().into_owned());
+
+    for index in 1.. {
+        let next_name = match extension.as_deref() {
+            Some(ext) => format!("{stem} ({index}).{ext}"),
+            None => format!("{stem} ({index})"),
+        };
+        let next_path = downloads_dir.join(next_name);
+
+        if !next_path.exists() {
+            return next_path;
+        }
+    }
+
+    unreachable!("the loop above always returns once an unused path is found")
+}
+
+fn emit_download_progress(app: &AppHandle, event: DownloadProgressEvent) {
+    if let Err(error) = app.emit(DOWNLOAD_PROGRESS_EVENT, event) {
+        log::warn!("failed to emit download progress event: {error}");
+    }
+}
+
+fn emit_library_progress(app: &AppHandle, event: UnifiedLibraryLoadEvent) {
+    if let Err(error) = app.emit(LIBRARY_PROGRESS_EVENT, event) {
+        log::warn!("failed to emit unified library progress event: {error}");
+    }
+}
+
+fn completion_progress(bytes_transferred: Option<u64>, total_bytes: Option<u64>) -> Option<f64> {
+    match (bytes_transferred, total_bytes) {
+        (_, Some(0)) => Some(100.0),
+        (Some(bytes), Some(total)) if total > 0 => {
+            Some(((bytes as f64 / total as f64) * 100.0).clamp(0.0, 100.0))
+        }
+        _ => None,
+    }
 }
 
 fn resolve_rclone_binary(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1340,6 +2174,17 @@ fn user_facing_command_error(detail: &str) -> String {
     }
 }
 
+fn user_facing_download_error(detail: &str) -> String {
+    match classify_rclone_error(detail) {
+        RcloneErrorKind::RcloneUnavailable => {
+            "The bundled rclone binary could not be found. Run the rclone setup step and restart the app."
+                .to_string()
+        }
+        _ if detail.is_empty() => "The file could not be downloaded. Try again.".to_string(),
+        _ => format!("The file could not be downloaded: {detail}"),
+    }
+}
+
 fn pending_auth_session(
     remote_name: &str,
     provider: &str,
@@ -1397,4 +2242,63 @@ fn remove_auth_session_record(app: &AppHandle, remote_name: &str) {
         return;
     };
     sessions.remove(remote_name);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        completion_progress, resolve_unique_download_target, select_download_file_name,
+        user_facing_download_error,
+    };
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn select_download_file_name_prefers_leaf_name() {
+        assert_eq!(
+            select_download_file_name("folder/report.pdf", "docs/report.pdf"),
+            "report.pdf"
+        );
+        assert_eq!(
+            select_download_file_name("", "nested/photos/image.png"),
+            "image.png"
+        );
+    }
+
+    #[test]
+    fn resolve_unique_download_target_appends_numeric_suffix() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let base_dir = std::env::temp_dir().join(format!("cloud-weave-download-test-{unique}"));
+
+        fs::create_dir_all(&base_dir).expect("temp directory should be created");
+        fs::write(base_dir.join("report.pdf"), b"first").expect("base file should be written");
+        fs::write(base_dir.join("report (1).pdf"), b"second")
+            .expect("suffix file should be written");
+
+        let next = resolve_unique_download_target(&base_dir, "report.pdf");
+        assert_eq!(
+            next.file_name().and_then(|value| value.to_str()),
+            Some("report (2).pdf")
+        );
+
+        fs::remove_dir_all(&base_dir).expect("temp directory should be removed");
+    }
+
+    #[test]
+    fn completion_progress_uses_total_bytes() {
+        assert_eq!(completion_progress(Some(25), Some(100)), Some(25.0));
+        assert_eq!(completion_progress(Some(0), Some(0)), Some(100.0));
+        assert_eq!(completion_progress(Some(50), None), None);
+    }
+
+    #[test]
+    fn user_facing_download_error_falls_back_to_detail() {
+        let message = user_facing_download_error("access denied");
+        assert!(message.contains("access denied"));
+    }
 }

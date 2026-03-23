@@ -70,6 +70,24 @@
           "name": "binaries/rclone",
           "sidecar": true,
           "args": [
+            "copyto",
+            {
+              "validator": "[^\\s]+"
+            },
+            {
+              "validator": ".+"
+            },
+            "--local-no-set-modtime",
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
             "config",
             "show",
             "--config",
