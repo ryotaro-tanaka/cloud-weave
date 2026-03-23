@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import {
   resolvePendingSession,
   type AuthSessionRecord,
@@ -20,6 +21,15 @@ import {
   type LogicalView,
   type UnifiedItem,
 } from './features/storage/unifiedItems'
+import {
+  applyDownloadProgressEvent,
+  getDownloadStateSummary,
+  IDLE_DOWNLOAD_STATE,
+  type DownloadAcceptedResult,
+  type DownloadProgressEvent,
+  type DownloadRequest,
+  type DownloadState,
+} from './features/storage/downloads'
 import './App.css'
 
 type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
@@ -51,6 +61,8 @@ type UnifiedLibraryResult = {
   items: UnifiedItem[]
   notices: string[]
 }
+
+type DownloadStateMap = Record<string, DownloadState>
 
 type ProviderDefinition = {
   id: StorageProvider
@@ -122,6 +134,7 @@ function App() {
   const [itemsError, setItemsError] = useState('')
   const [addError, setAddError] = useState('')
   const [removeError, setRemoveError] = useState('')
+  const [downloadStates, setDownloadStates] = useState<DownloadStateMap>({})
 
   const selectedProviderConfig = useMemo(
     () => STORAGE_PROVIDERS.find((provider) => provider.id === selectedProvider) ?? STORAGE_PROVIDERS[0],
@@ -211,6 +224,23 @@ function App() {
 
   useEffect(() => {
     void refreshLibrary()
+  }, [])
+
+  useEffect(() => {
+    let isSubscribed = true
+
+    const unlistenPromise = listen<DownloadProgressEvent>('download://progress', (event) => {
+      if (!isSubscribed) {
+        return
+      }
+
+      setDownloadStates((current) => applyDownloadProgressEvent(current, event.payload))
+    })
+
+    return () => {
+      isSubscribed = false
+      void unlistenPromise.then((unlisten) => unlisten())
+    }
   }, [])
 
   useEffect(() => {
@@ -490,6 +520,52 @@ function App() {
     setActiveModal('remove-confirm')
   }
 
+  const handleDownload = async (item: UnifiedItem) => {
+    if (item.isDir) {
+      return
+    }
+
+    const request = {
+      downloadId: item.id,
+      sourceRemote: item.sourceRemote,
+      sourcePath: item.sourcePath,
+      displayName: item.name,
+      size: item.size > 0 ? item.size : undefined,
+    } satisfies DownloadRequest
+
+    setDownloadStates((current) =>
+      applyDownloadProgressEvent(current, {
+        downloadId: request.downloadId,
+        status: 'queued',
+        totalBytes: request.size ?? null,
+        errorMessage: null,
+      }),
+    )
+
+    try {
+      const result = await invoke<DownloadAcceptedResult>('start_download', { input: request })
+
+      setDownloadStates((current) =>
+        applyDownloadProgressEvent(current, {
+          downloadId: result.downloadId,
+          status: 'queued',
+          targetPath: result.targetPath,
+          totalBytes: request.size ?? null,
+          errorMessage: null,
+        }),
+      )
+    } catch (error) {
+      setDownloadStates((current) =>
+        applyDownloadProgressEvent(current, {
+          downloadId: request.downloadId,
+          status: 'failed',
+          totalBytes: request.size ?? null,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    }
+  }
+
   const closePendingModal = () => {
     setActiveModal('none')
     setSelectedDriveId('')
@@ -643,9 +719,14 @@ function App() {
                         <span>{group.items.length}</span>
                       </div>
 
-                      <div className="item-list">
+                        <div className="item-list">
                         {group.items.map((item) => (
-                          <UnifiedListItem key={item.id} item={item} />
+                          <UnifiedListItem
+                            key={item.id}
+                            item={item}
+                            downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                            onDownload={handleDownload}
+                          />
                         ))}
                       </div>
                     </section>
@@ -654,13 +735,23 @@ function App() {
               ) : isVisualGrid ? (
                 <div className="item-grid">
                   {displayedItems.map((item) => (
-                    <UnifiedGridItem key={item.id} item={item} />
+                    <UnifiedGridItem
+                      key={item.id}
+                      item={item}
+                      downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                      onDownload={handleDownload}
+                    />
                   ))}
                 </div>
               ) : (
                 <div className="item-list">
                   {displayedItems.map((item) => (
-                    <UnifiedListItem key={item.id} item={item} />
+                    <UnifiedListItem
+                      key={item.id}
+                      item={item}
+                      downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                      onDownload={handleDownload}
+                    />
                   ))}
                 </div>
               )
@@ -951,7 +1042,19 @@ function App() {
   )
 }
 
-function UnifiedListItem({ item }: { item: UnifiedItem }) {
+function UnifiedListItem({
+  item,
+  downloadState,
+  onDownload,
+}: {
+  item: UnifiedItem
+  downloadState: DownloadState
+  onDownload: (item: UnifiedItem) => Promise<void>
+}) {
+  const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
+  const actionLabel =
+    downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
+
   return (
     <article className="unified-item list-item">
       <div className="item-leading">
@@ -975,12 +1078,30 @@ function UnifiedListItem({ item }: { item: UnifiedItem }) {
       <div className="item-trailing">
         <span>{formatFileSize(item.size)}</span>
         <span>{formatModifiedTime(item.modTime)}</span>
+        <div className="item-actions">
+          <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
+            {actionLabel}
+          </button>
+          <DownloadStatusView state={downloadState} />
+        </div>
       </div>
     </article>
   )
 }
 
-function UnifiedGridItem({ item }: { item: UnifiedItem }) {
+function UnifiedGridItem({
+  item,
+  downloadState,
+  onDownload,
+}: {
+  item: UnifiedItem
+  downloadState: DownloadState
+  onDownload: (item: UnifiedItem) => Promise<void>
+}) {
+  const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
+  const actionLabel =
+    downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
+
   return (
     <article className="unified-item grid-item">
       <div className={`grid-preview ${item.category}`}>
@@ -995,8 +1116,36 @@ function UnifiedGridItem({ item }: { item: UnifiedItem }) {
         </div>
         <p className="grid-path">{item.sourcePath}</p>
         <p className="grid-date">{formatModifiedTime(item.modTime)}</p>
+        <div className="grid-actions">
+          <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
+            {actionLabel}
+          </button>
+          <DownloadStatusView state={downloadState} />
+        </div>
       </div>
     </article>
+  )
+}
+
+function DownloadStatusView({ state }: { state: DownloadState }) {
+  if (state.status === 'idle') {
+    return null
+  }
+
+  const isRunning = state.status === 'queued' || state.status === 'running'
+
+  return (
+    <div className={`download-status ${state.status}`} aria-live="polite">
+      <p className="download-status-copy">{getDownloadStateSummary(state)}</p>
+      {isRunning ? (
+        <div className="download-progress" aria-hidden="true">
+          <div
+            className="download-progress-fill"
+            style={{ width: `${Math.max(6, Math.min(100, state.progressPercent ?? 8))}%` }}
+          />
+        </div>
+      ) : null}
+    </div>
   )
 }
 

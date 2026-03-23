@@ -208,6 +208,27 @@ pub fn parse_unified_items(
         .collect())
 }
 
+pub fn prefix_unified_item_paths(items: &mut [UnifiedItem], prefix: &str) {
+    let normalized_prefix = prefix.trim_matches('/');
+
+    if normalized_prefix.is_empty() {
+        return;
+    }
+
+    for item in items {
+        item.source_path = if item.source_path.trim().is_empty() {
+            normalized_prefix.to_string()
+        } else {
+            format!("{normalized_prefix}/{}", item.source_path)
+        };
+        item.id = format!("{}::{}", item.source_remote, item.source_path);
+
+        if item.name.trim().is_empty() {
+            item.name = basename_from_path(&item.source_path);
+        }
+    }
+}
+
 pub fn parse_lsjson_items(raw: &str) -> Result<Vec<LsjsonItem>, String> {
     if raw.trim().is_empty() {
         return Ok(Vec::new());
@@ -392,15 +413,23 @@ fn normalize_unified_item(
     source_remote: &str,
     source_provider: &str,
 ) -> UnifiedItem {
-    let name = item.name.unwrap_or_else(|| basename_from_path(&item.path));
+    let name = item
+        .name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| basename_from_path(&item.path));
+    let source_path = if item.path.trim().is_empty() {
+        name.clone()
+    } else {
+        item.path
+    };
     let extension = derive_extension(&name);
     let category = classify_item(item.mime_type.as_deref(), extension.as_deref()).to_string();
 
     UnifiedItem {
-        id: format!("{source_remote}::{path}", path = item.path),
+        id: format!("{source_remote}::{path}", path = source_path),
         source_remote: source_remote.to_string(),
         source_provider: source_provider.to_string(),
-        source_path: item.path,
+        source_path,
         name,
         is_dir: item.is_dir,
         size: item.size.max(0) as u64,
@@ -421,8 +450,8 @@ mod tests {
         classify_item, classify_rclone_error, derive_extension,
         is_system_like_onedrive_drive_label, normalize_onedrive_drive_candidates,
         parse_listremotes, parse_lsjson_items, parse_provider_map, parse_remote_config_state_map,
-        parse_unified_items, select_auto_onedrive_drive_candidate, OneDriveDriveCandidate,
-        RcloneErrorKind,
+        parse_unified_items, prefix_unified_item_paths, select_auto_onedrive_drive_candidate,
+        OneDriveDriveCandidate, RcloneErrorKind,
     };
 
     #[test]
@@ -718,6 +747,52 @@ mod tests {
         assert_eq!(parsed[0].path, "Documents");
         assert_eq!(parsed[0].size, -1);
         assert!(!parsed[1].is_dir);
+    }
+
+    #[test]
+    fn parse_unified_items_uses_name_when_path_is_empty() {
+        let raw = r#"
+      [
+        {
+          "Path": "",
+          "Name": "DESKTOP-ANB6EI2.txt",
+          "Size": 15,
+          "MimeType": "text/plain",
+          "IsDir": false
+        }
+      ]
+    "#;
+
+        let parsed =
+            parse_unified_items(raw, "onedrive-main", "onedrive").expect("lsjson should parse");
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "DESKTOP-ANB6EI2.txt");
+        assert_eq!(parsed[0].source_path, "DESKTOP-ANB6EI2.txt");
+        assert_eq!(parsed[0].id, "onedrive-main::DESKTOP-ANB6EI2.txt");
+    }
+
+    #[test]
+    fn prefix_unified_item_paths_adds_root_folder_prefix() {
+        let raw = r#"
+      [
+        {
+          "Path": "resume.docx",
+          "Name": "resume.docx",
+          "Size": 128,
+          "MimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "IsDir": false
+        }
+      ]
+    "#;
+
+        let mut parsed =
+            parse_unified_items(raw, "onedrive-main", "onedrive").expect("lsjson should parse");
+        prefix_unified_item_paths(&mut parsed, "Documents");
+
+        assert_eq!(parsed[0].source_path, "Documents/resume.docx");
+        assert_eq!(parsed[0].id, "onedrive-main::Documents/resume.docx");
+        assert_eq!(parsed[0].name, "resume.docx");
     }
 
     #[test]

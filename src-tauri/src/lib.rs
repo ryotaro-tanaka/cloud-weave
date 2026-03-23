@@ -1,21 +1,26 @@
 use rclone_logic::{
     classify_rclone_error, is_system_like_onedrive_drive_label,
     normalize_onedrive_drive_candidates, parse_listremotes, parse_lsjson_items,
-    parse_remote_config_state_map, parse_unified_items, select_auto_onedrive_drive_candidate,
-    OneDriveDriveCandidate, RcloneErrorKind, RemoteConfigState, UnifiedItem, UnifiedLibraryResult,
+    parse_remote_config_state_map, parse_unified_items, prefix_unified_item_paths,
+    select_auto_onedrive_drive_candidate, OneDriveDriveCandidate, RcloneErrorKind,
+    RemoteConfigState, UnifiedLibraryResult,
 };
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
+    path::Component,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const RCLONE_BINARY: &str = "rclone-x86_64-pc-windows-msvc.exe";
 const AUTH_COMMAND_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -25,6 +30,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const AUTH_START_GRACE_PERIOD: Duration = Duration::from_millis(350);
 const GRAPH_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 const GRAPH_BASE_URL: &str = "https://graph.microsoft.com/v1.0";
+const DOWNLOAD_PROGRESS_EVENT: &str = "download://progress";
+const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(400);
 
 #[derive(Default)]
 struct AuthSessionStore {
@@ -78,6 +85,41 @@ struct AuthSessionRecord {
 struct ActionResult {
     status: String,
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartDownloadInput {
+    download_id: String,
+    source_remote: String,
+    source_path: String,
+    display_name: String,
+    size: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadAcceptedResult {
+    download_id: String,
+    status: String,
+    target_path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadProgressEvent {
+    download_id: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    progress_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes_transferred: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_message: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +231,16 @@ async fn delete_remote(app: AppHandle, name: String) -> Result<ActionResult, Str
     tauri::async_runtime::spawn_blocking(move || delete_remote_impl(app, name))
         .await
         .map_err(|error| format!("failed to join delete task: {error}"))?
+}
+
+#[tauri::command]
+async fn start_download(
+    app: AppHandle,
+    input: StartDownloadInput,
+) -> Result<DownloadAcceptedResult, String> {
+    tauri::async_runtime::spawn_blocking(move || start_download_impl(app, input))
+        .await
+        .map_err(|error| format!("failed to join download task: {error}"))?
 }
 
 fn list_storage_remotes_impl(app: AppHandle) -> Result<Vec<RemoteSummary>, String> {
@@ -386,7 +438,11 @@ fn list_unified_items_for_onedrive_remote(
                 ],
                 INVENTORY_COMMAND_TIMEOUT,
             ) {
-                Ok(output) => items.extend(parse_unified_items(&output, remote_name, provider)?),
+                Ok(output) => {
+                    let mut nested_items = parse_unified_items(&output, remote_name, provider)?;
+                    prefix_unified_item_paths(&mut nested_items, &root_item.path);
+                    items.extend(nested_items);
+                }
                 Err(error) => {
                     log::warn!(
                         "skipping onedrive folder remote={} folder={} reason={}",
@@ -463,6 +519,205 @@ fn delete_remote_impl(app: AppHandle, name: String) -> Result<ActionResult, Stri
             message: user_facing_command_error(&error),
         }),
     }
+}
+
+fn start_download_impl(
+    app: AppHandle,
+    input: StartDownloadInput,
+) -> Result<DownloadAcceptedResult, String> {
+    validate_remote_name(&input.source_remote)?;
+
+    if input.download_id.trim().is_empty() {
+        return Err("Download ID is required.".to_string());
+    }
+
+    if input.source_path.trim().is_empty() {
+        return Err("Source path is required.".to_string());
+    }
+
+    let downloads_dir = resolve_downloads_dir(&app)?;
+    let file_name = select_download_file_name(&input.display_name, &input.source_path);
+    let target_path = resolve_unique_download_target(&downloads_dir, &file_name);
+    let target_path_label = target_path.to_string_lossy().into_owned();
+    let download_id = input.download_id.clone();
+
+    emit_download_progress(
+        &app,
+        DownloadProgressEvent {
+            download_id: download_id.clone(),
+            status: "queued".to_string(),
+            progress_percent: Some(0.0),
+            bytes_transferred: Some(0),
+            total_bytes: input.size,
+            target_path: Some(target_path_label.clone()),
+            error_message: None,
+        },
+    );
+
+    spawn_download_task(app, input, target_path.clone());
+
+    Ok(DownloadAcceptedResult {
+        download_id,
+        status: "accepted".to_string(),
+        target_path: target_path_label,
+    })
+}
+
+fn spawn_download_task(app: AppHandle, input: StartDownloadInput, target_path: PathBuf) {
+    thread::spawn(move || {
+        let target_path_label = target_path.to_string_lossy().into_owned();
+
+        let config_path = match ensure_rclone_config(&app) {
+            Ok(path) => path,
+            Err(error) => {
+                emit_download_progress(
+                    &app,
+                    DownloadProgressEvent {
+                        download_id: input.download_id.clone(),
+                        status: "failed".to_string(),
+                        progress_percent: None,
+                        bytes_transferred: None,
+                        total_bytes: input.size,
+                        target_path: Some(target_path_label),
+                        error_message: Some(error),
+                    },
+                );
+                return;
+            }
+        };
+
+        let source = format!("{}:{}", input.source_remote, input.source_path);
+        let args = vec![
+            "copyto".to_string(),
+            source,
+            target_path.to_string_lossy().into_owned(),
+            "--config".to_string(),
+            config_path.to_string_lossy().into_owned(),
+        ];
+
+        let child = match spawn_rclone_owned(&app, &args) {
+            Ok(child) => child,
+            Err(error) => {
+                emit_download_progress(
+                    &app,
+                    DownloadProgressEvent {
+                        download_id: input.download_id.clone(),
+                        status: "failed".to_string(),
+                        progress_percent: None,
+                        bytes_transferred: None,
+                        total_bytes: input.size,
+                        target_path: Some(target_path_label),
+                        error_message: Some(user_facing_download_error(&error)),
+                    },
+                );
+                return;
+            }
+        };
+
+        emit_download_progress(
+            &app,
+            DownloadProgressEvent {
+                download_id: input.download_id.clone(),
+                status: "running".to_string(),
+                progress_percent: Some(0.0),
+                bytes_transferred: Some(0),
+                total_bytes: input.size,
+                target_path: Some(target_path.to_string_lossy().into_owned()),
+                error_message: None,
+            },
+        );
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher = spawn_download_progress_watcher(
+            app.clone(),
+            input.download_id.clone(),
+            target_path.clone(),
+            input.size,
+            stop.clone(),
+        );
+
+        let result = collect_child_output(child);
+
+        stop.store(true, Ordering::Relaxed);
+        let _ = watcher.join();
+
+        match result {
+            Ok(_) => {
+                let bytes_transferred = fs::metadata(&target_path).map(|meta| meta.len()).ok();
+                let progress_percent = completion_progress(bytes_transferred, input.size);
+
+                emit_download_progress(
+                    &app,
+                    DownloadProgressEvent {
+                        download_id: input.download_id,
+                        status: "succeeded".to_string(),
+                        progress_percent,
+                        bytes_transferred,
+                        total_bytes: input.size,
+                        target_path: Some(target_path.to_string_lossy().into_owned()),
+                        error_message: None,
+                    },
+                );
+            }
+            Err(error) => {
+                let bytes_transferred = fs::metadata(&target_path).map(|meta| meta.len()).ok();
+                let _ = fs::remove_file(&target_path);
+
+                emit_download_progress(
+                    &app,
+                    DownloadProgressEvent {
+                        download_id: input.download_id,
+                        status: "failed".to_string(),
+                        progress_percent: completion_progress(bytes_transferred, input.size),
+                        bytes_transferred,
+                        total_bytes: input.size,
+                        target_path: Some(target_path.to_string_lossy().into_owned()),
+                        error_message: Some(user_facing_download_error(&error)),
+                    },
+                );
+            }
+        }
+    });
+}
+
+fn spawn_download_progress_watcher(
+    app: AppHandle,
+    download_id: String,
+    target_path: PathBuf,
+    total_bytes: Option<u64>,
+    stop: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut first_tick = true;
+        let mut last_bytes = None;
+
+        loop {
+            let bytes_transferred = fs::metadata(&target_path).map(|meta| meta.len()).unwrap_or(0);
+
+            if first_tick || Some(bytes_transferred) != last_bytes {
+                emit_download_progress(
+                    &app,
+                    DownloadProgressEvent {
+                        download_id: download_id.clone(),
+                        status: "running".to_string(),
+                        progress_percent: completion_progress(Some(bytes_transferred), total_bytes),
+                        bytes_transferred: Some(bytes_transferred),
+                        total_bytes,
+                        target_path: Some(target_path.to_string_lossy().into_owned()),
+                        error_message: None,
+                    },
+                );
+                first_tick = false;
+                last_bytes = Some(bytes_transferred);
+            }
+
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            thread::sleep(DOWNLOAD_POLL_INTERVAL);
+        }
+    })
 }
 
 fn validate_remote_after_setup(
@@ -1129,7 +1384,8 @@ pub fn run() {
             list_onedrive_drive_candidates,
             finalize_onedrive_remote,
             get_auth_session_status,
-            delete_remote
+            delete_remote,
+            start_download
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1152,6 +1408,87 @@ fn ensure_rclone_config(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     Ok(config_path)
+}
+
+fn resolve_downloads_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let downloads_dir = app
+        .path()
+        .download_dir()
+        .map_err(|error| format!("failed to resolve the Downloads folder: {error}"))?;
+
+    fs::create_dir_all(&downloads_dir)
+        .map_err(|error| format!("failed to prepare the Downloads folder: {error}"))?;
+
+    Ok(downloads_dir)
+}
+
+fn select_download_file_name(display_name: &str, source_path: &str) -> String {
+    let display_candidate = Path::new(display_name)
+        .components()
+        .rev()
+        .find_map(component_to_normal_path_part);
+    let source_candidate = Path::new(source_path)
+        .components()
+        .rev()
+        .find_map(component_to_normal_path_part);
+
+    display_candidate
+        .or(source_candidate)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "downloaded-file".to_string())
+}
+
+fn component_to_normal_path_part(component: Component<'_>) -> Option<String> {
+    match component {
+        Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+        _ => None,
+    }
+}
+
+fn resolve_unique_download_target(downloads_dir: &Path, file_name: &str) -> PathBuf {
+    let direct_path = downloads_dir.join(file_name);
+
+    if !direct_path.exists() {
+        return direct_path;
+    }
+
+    let candidate_path = Path::new(file_name);
+    let stem = candidate_path
+        .file_stem()
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "downloaded-file".to_string());
+    let extension = candidate_path.extension().map(|value| value.to_string_lossy().into_owned());
+
+    for index in 1.. {
+        let next_name = match extension.as_deref() {
+            Some(ext) => format!("{stem} ({index}).{ext}"),
+            None => format!("{stem} ({index})"),
+        };
+        let next_path = downloads_dir.join(next_name);
+
+        if !next_path.exists() {
+            return next_path;
+        }
+    }
+
+    unreachable!("the loop above always returns once an unused path is found")
+}
+
+fn emit_download_progress(app: &AppHandle, event: DownloadProgressEvent) {
+    if let Err(error) = app.emit(DOWNLOAD_PROGRESS_EVENT, event) {
+        log::warn!("failed to emit download progress event: {error}");
+    }
+}
+
+fn completion_progress(bytes_transferred: Option<u64>, total_bytes: Option<u64>) -> Option<f64> {
+    match (bytes_transferred, total_bytes) {
+        (_, Some(0)) => Some(100.0),
+        (Some(bytes), Some(total)) if total > 0 => {
+            Some(((bytes as f64 / total as f64) * 100.0).clamp(0.0, 100.0))
+        }
+        _ => None,
+    }
 }
 
 fn resolve_rclone_binary(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1340,6 +1677,17 @@ fn user_facing_command_error(detail: &str) -> String {
     }
 }
 
+fn user_facing_download_error(detail: &str) -> String {
+    match classify_rclone_error(detail) {
+        RcloneErrorKind::RcloneUnavailable => {
+            "The bundled rclone binary could not be found. Run the rclone setup step and restart the app."
+                .to_string()
+        }
+        _ if detail.is_empty() => "The file could not be downloaded. Try again.".to_string(),
+        _ => format!("The file could not be downloaded: {detail}"),
+    }
+}
+
 fn pending_auth_session(
     remote_name: &str,
     provider: &str,
@@ -1397,4 +1745,56 @@ fn remove_auth_session_record(app: &AppHandle, remote_name: &str) {
         return;
     };
     sessions.remove(remote_name);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        completion_progress, resolve_unique_download_target, select_download_file_name,
+        user_facing_download_error,
+    };
+    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+
+    #[test]
+    fn select_download_file_name_prefers_leaf_name() {
+        assert_eq!(
+            select_download_file_name("folder/report.pdf", "docs/report.pdf"),
+            "report.pdf"
+        );
+        assert_eq!(
+            select_download_file_name("", "nested/photos/image.png"),
+            "image.png"
+        );
+    }
+
+    #[test]
+    fn resolve_unique_download_target_appends_numeric_suffix() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let base_dir = std::env::temp_dir().join(format!("cloud-weave-download-test-{unique}"));
+
+        fs::create_dir_all(&base_dir).expect("temp directory should be created");
+        fs::write(base_dir.join("report.pdf"), b"first").expect("base file should be written");
+        fs::write(base_dir.join("report (1).pdf"), b"second").expect("suffix file should be written");
+
+        let next = resolve_unique_download_target(&base_dir, "report.pdf");
+        assert_eq!(next.file_name().and_then(|value| value.to_str()), Some("report (2).pdf"));
+
+        fs::remove_dir_all(&base_dir).expect("temp directory should be removed");
+    }
+
+    #[test]
+    fn completion_progress_uses_total_bytes() {
+        assert_eq!(completion_progress(Some(25), Some(100)), Some(25.0));
+        assert_eq!(completion_progress(Some(0), Some(0)), Some(100.0));
+        assert_eq!(completion_progress(Some(50), None), None);
+    }
+
+    #[test]
+    fn user_facing_download_error_falls_back_to_detail() {
+        let message = user_facing_download_error("access denied");
+        assert!(message.contains("access denied"));
+    }
 }
