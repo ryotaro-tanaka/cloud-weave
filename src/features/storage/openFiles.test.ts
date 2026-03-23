@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canOpenInDefaultApp,
   canPreviewItem,
   getOpenStateSummary,
   IDLE_OPEN_STATE,
@@ -76,5 +77,19 @@ describe('canPreviewItem', () => {
         extension: 'docx',
       }),
     ).toBe(false)
+  })
+})
+
+describe('canOpenInDefaultApp', () => {
+  it('allows document files only', () => {
+    expect(canOpenInDefaultApp({ mimeType: 'text/plain', extension: 'txt' })).toBe(true)
+    expect(
+      canOpenInDefaultApp({
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        extension: 'docx',
+      }),
+    ).toBe(true)
+    expect(canOpenInDefaultApp({ mimeType: 'application/zip', extension: 'zip' })).toBe(false)
+    expect(canOpenInDefaultApp({ mimeType: 'image/jpeg', extension: 'jpg' })).toBe(false)
   })
 })

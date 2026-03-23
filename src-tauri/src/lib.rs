@@ -1088,7 +1088,7 @@ fn prepare_open_file_impl(
     }
 
     let Some(open_mode) = select_open_mode(input.mime_type.as_deref(), input.extension.as_deref()) else {
-        return Err("Preview is only available for image and PDF files.".to_string());
+        return Err("Open is only available for previewable files and supported documents.".to_string());
     };
 
     let config_path = ensure_rclone_config(&app)?;
@@ -2138,6 +2138,23 @@ fn select_open_mode(mime_type: Option<&str>, extension: Option<&str>) -> Option<
         Some("preview-image")
     } else if normalized_mime == "application/pdf" || normalized_extension == "pdf" {
         Some("preview-pdf")
+    } else if matches!(
+        normalized_mime.as_str(),
+        "text/plain"
+            | "text/markdown"
+            | "text/csv"
+            | "application/json"
+            | "application/msword"
+            | "application/vnd.ms-excel"
+            | "application/vnd.ms-powerpoint"
+            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    ) || matches!(
+        normalized_extension.as_str(),
+        "txt" | "md" | "csv" | "json" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx"
+    ) {
+        Some("system-default")
     } else {
         None
     }
@@ -2542,6 +2559,10 @@ mod tests {
                 Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
                 Some("docx")
             ),
+            Some("system-default")
+        );
+        assert_eq!(
+            select_open_mode(Some("application/zip"), Some("zip")),
             None
         );
     }

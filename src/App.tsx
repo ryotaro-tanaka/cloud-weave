@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { open as openPath } from '@tauri-apps/plugin-shell'
 import {
   resolvePendingSession,
   type AuthSessionRecord,
@@ -32,6 +33,7 @@ import {
   type DownloadState,
 } from './features/storage/downloads'
 import {
+  canOpenInDefaultApp,
   canPreviewItem,
   getOpenStateSummary,
   IDLE_OPEN_STATE,
@@ -703,7 +705,7 @@ function App() {
   }
 
   const handleOpen = async (item: UnifiedItem) => {
-    if (item.isDir || !canPreviewItem(item)) {
+    if (item.isDir || (!canPreviewItem(item) && !canOpenInDefaultApp(item))) {
       return
     }
 
@@ -734,6 +736,8 @@ function App() {
         setPreviewPayload(preview)
         return
       }
+
+      await openPath(result.localPath)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setOpenStates((current) => ({
@@ -1261,6 +1265,7 @@ function UnifiedListItem({
 }) {
   const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
   const canPreview = canPreviewItem(item)
+  const canOpen = canOpenInDefaultApp(item)
   const isPreparingOpen = openState.status === 'preparing'
   const actionLabel =
     downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
@@ -1293,6 +1298,10 @@ function UnifiedListItem({
             <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
               {isPreparingOpen ? 'Previewing...' : 'Preview'}
             </button>
+          ) : canOpen ? (
+            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
+              {isPreparingOpen ? 'Opening...' : 'Open'}
+            </button>
           ) : null}
           <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
             {actionLabel}
@@ -1320,6 +1329,7 @@ function UnifiedGridItem({
 }) {
   const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
   const canPreview = canPreviewItem(item)
+  const canOpen = canOpenInDefaultApp(item)
   const isPreparingOpen = openState.status === 'preparing'
   const actionLabel =
     downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
@@ -1342,6 +1352,10 @@ function UnifiedGridItem({
           {canPreview ? (
             <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
               {isPreparingOpen ? 'Previewing...' : 'Preview'}
+            </button>
+          ) : canOpen ? (
+            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
+              {isPreparingOpen ? 'Opening...' : 'Open'}
             </button>
           ) : null}
           <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
