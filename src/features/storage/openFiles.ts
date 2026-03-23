@@ -1,4 +1,6 @@
-export type OpenMode = 'preview-image' | 'preview-pdf' | 'system-default'
+import type { UnifiedItem } from './unifiedItems'
+
+export type OpenMode = 'preview-image' | 'preview-pdf'
 
 export type OpenRequest = {
   requestId: string
@@ -69,11 +71,11 @@ export function getOpenStateSummary(state: OpenState): string | null {
     case 'idle':
       return null
     case 'preparing':
-      return 'Preparing file...'
+      return 'Preparing preview...'
     case 'ready':
-      return state.openMode === 'system-default' ? 'Opened in your default app' : 'Ready to preview'
+      return 'Ready to preview'
     case 'failed':
-      return state.errorMessage || 'The file could not be opened.'
+      return state.errorMessage || 'The preview could not be opened.'
   }
 }
 
@@ -97,4 +99,15 @@ export function toPreviewPayload(itemId: string, itemName: string, result: OpenR
   }
 
   return null
+}
+
+export function canPreviewItem(item: Pick<UnifiedItem, 'mimeType' | 'extension'>): boolean {
+  const mimeType = item.mimeType?.trim().toLowerCase() ?? ''
+  const extension = item.extension?.trim().replace(/^\./, '').toLowerCase() ?? ''
+
+  return (
+    mimeType.startsWith('image/') ||
+    mimeType === 'application/pdf' ||
+    ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'pdf'].includes(extension)
+  )
 }

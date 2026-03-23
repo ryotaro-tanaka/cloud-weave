@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canPreviewItem,
   getOpenStateSummary,
   IDLE_OPEN_STATE,
   toFailedOpenState,
@@ -9,20 +10,20 @@ import {
 
 describe('getOpenStateSummary', () => {
   it('renders preparing state', () => {
-    expect(getOpenStateSummary({ ...IDLE_OPEN_STATE, status: 'preparing' })).toBe('Preparing file...')
+    expect(getOpenStateSummary({ ...IDLE_OPEN_STATE, status: 'preparing' })).toBe('Preparing preview...')
   })
 
-  it('renders ready system state', () => {
+  it('renders ready preview state', () => {
     expect(
       getOpenStateSummary(
         toReadyOpenState({
           requestId: '1',
           status: 'ready',
           localPath: 'C:/temp/file.docx',
-          openMode: 'system-default',
+          openMode: 'preview-pdf',
         }),
       ),
-    ).toBe('Opened in your default app')
+    ).toBe('Ready to preview')
   })
 
   it('renders failure state', () => {
@@ -47,14 +48,33 @@ describe('toPreviewPayload', () => {
     })
   })
 
-  it('returns null for system default mode', () => {
+  it('creates preview payloads for pdfs', () => {
     expect(
       toPreviewPayload('a', 'doc.docx', {
         requestId: '1',
         status: 'ready',
         localPath: 'C:/temp/doc.docx',
-        openMode: 'system-default',
+        openMode: 'preview-pdf',
       }),
-    ).toBeNull()
+    ).toEqual({
+      itemId: 'a',
+      itemName: 'doc.docx',
+      localPath: 'C:/temp/doc.docx',
+      previewKind: 'pdf',
+    })
+  })
+})
+
+describe('canPreviewItem', () => {
+  it('allows images and pdfs only', () => {
+    expect(canPreviewItem({ mimeType: 'image/jpeg', extension: 'jpg' })).toBe(true)
+    expect(canPreviewItem({ mimeType: 'application/pdf', extension: 'pdf' })).toBe(true)
+    expect(canPreviewItem({ mimeType: 'application/zip', extension: 'zip' })).toBe(false)
+    expect(
+      canPreviewItem({
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        extension: 'docx',
+      }),
+    ).toBe(false)
   })
 })

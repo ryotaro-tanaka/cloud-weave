@@ -1087,6 +1087,10 @@ fn prepare_open_file_impl(
         return Err("Source path is required.".to_string());
     }
 
+    let Some(open_mode) = select_open_mode(input.mime_type.as_deref(), input.extension.as_deref()) else {
+        return Err("Preview is only available for image and PDF files.".to_string());
+    };
+
     let config_path = ensure_rclone_config(&app)?;
     let temp_dir = resolve_open_temp_dir(&app)?;
     let target_path = resolve_open_cache_target(&temp_dir, &input.display_name, &input);
@@ -1110,7 +1114,7 @@ fn prepare_open_file_impl(
         request_id: input.request_id,
         status: "ready".to_string(),
         local_path: target_path.to_string_lossy().into_owned(),
-        open_mode: select_open_mode(input.mime_type.as_deref(), input.extension.as_deref()).to_string(),
+        open_mode: open_mode.to_string(),
     })
 }
 
@@ -2117,7 +2121,7 @@ fn build_open_cache_key(source_remote: &str, source_path: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-fn select_open_mode(mime_type: Option<&str>, extension: Option<&str>) -> &'static str {
+fn select_open_mode(mime_type: Option<&str>, extension: Option<&str>) -> Option<&'static str> {
     let normalized_mime = mime_type.unwrap_or_default().trim().to_ascii_lowercase();
     let normalized_extension = extension
         .unwrap_or_default()
@@ -2131,11 +2135,11 @@ fn select_open_mode(mime_type: Option<&str>, extension: Option<&str>) -> &'stati
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
         )
     {
-        "preview-image"
+        Some("preview-image")
     } else if normalized_mime == "application/pdf" || normalized_extension == "pdf" {
-        "preview-pdf"
+        Some("preview-pdf")
     } else {
-        "system-default"
+        None
     }
 }
 
@@ -2400,8 +2404,8 @@ fn user_facing_open_error(detail: &str) -> String {
             "The bundled rclone binary could not be found. Run the rclone setup step and restart the app."
                 .to_string()
         }
-        _ if detail.is_empty() => "The file could not be prepared for opening. Try again.".to_string(),
-        _ => format!("The file could not be prepared for opening: {detail}"),
+        _ if detail.is_empty() => "The file could not be prepared for preview. Try again.".to_string(),
+        _ => format!("The file could not be prepared for preview: {detail}"),
     }
 }
 
@@ -2525,14 +2529,20 @@ mod tests {
 
     #[test]
     fn select_open_mode_prefers_previewable_types() {
-        assert_eq!(select_open_mode(Some("image/jpeg"), Some("jpg")), "preview-image");
-        assert_eq!(select_open_mode(Some("application/pdf"), Some("pdf")), "preview-pdf");
+        assert_eq!(
+            select_open_mode(Some("image/jpeg"), Some("jpg")),
+            Some("preview-image")
+        );
+        assert_eq!(
+            select_open_mode(Some("application/pdf"), Some("pdf")),
+            Some("preview-pdf")
+        );
         assert_eq!(
             select_open_mode(
                 Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
                 Some("docx")
             ),
-            "system-default"
+            None
         );
     }
 

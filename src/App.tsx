@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { open as openPath } from '@tauri-apps/plugin-shell'
 import {
   resolvePendingSession,
   type AuthSessionRecord,
@@ -33,6 +32,7 @@ import {
   type DownloadState,
 } from './features/storage/downloads'
 import {
+  canPreviewItem,
   getOpenStateSummary,
   IDLE_OPEN_STATE,
   toFailedOpenState,
@@ -703,7 +703,7 @@ function App() {
   }
 
   const handleOpen = async (item: UnifiedItem) => {
-    if (item.isDir) {
+    if (item.isDir || !canPreviewItem(item)) {
       return
     }
 
@@ -734,8 +734,6 @@ function App() {
         setPreviewPayload(preview)
         return
       }
-
-      await openPath(result.localPath)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setOpenStates((current) => ({
@@ -963,7 +961,6 @@ function App() {
         <PreviewModal
           payload={previewPayload}
           onClose={() => setPreviewPayload(null)}
-          onOpenInDefaultApp={() => openPath(previewPayload.localPath)}
         />
       ) : null}
 
@@ -1263,6 +1260,7 @@ function UnifiedListItem({
   onDownload: (item: UnifiedItem) => Promise<void>
 }) {
   const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
+  const canPreview = canPreviewItem(item)
   const isPreparingOpen = openState.status === 'preparing'
   const actionLabel =
     downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
@@ -1291,9 +1289,11 @@ function UnifiedListItem({
         <span>{formatFileSize(item.size)}</span>
         <span>{formatModifiedTime(item.modTime)}</span>
         <div className="item-actions">
-          <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
-            {isPreparingOpen ? 'Opening...' : 'Open'}
-          </button>
+          {canPreview ? (
+            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
+              {isPreparingOpen ? 'Previewing...' : 'Preview'}
+            </button>
+          ) : null}
           <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
             {actionLabel}
           </button>
@@ -1319,6 +1319,7 @@ function UnifiedGridItem({
   onDownload: (item: UnifiedItem) => Promise<void>
 }) {
   const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
+  const canPreview = canPreviewItem(item)
   const isPreparingOpen = openState.status === 'preparing'
   const actionLabel =
     downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
@@ -1338,9 +1339,11 @@ function UnifiedGridItem({
         <p className="grid-path">{item.sourcePath}</p>
         <p className="grid-date">{formatModifiedTime(item.modTime)}</p>
         <div className="grid-actions">
-          <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
-            {isPreparingOpen ? 'Opening...' : 'Open'}
-          </button>
+          {canPreview ? (
+            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
+              {isPreparingOpen ? 'Previewing...' : 'Preview'}
+            </button>
+          ) : null}
           <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
             {actionLabel}
           </button>
@@ -1391,11 +1394,9 @@ function DownloadStatusView({ state }: { state: DownloadState }) {
 function PreviewModal({
   payload,
   onClose,
-  onOpenInDefaultApp,
 }: {
   payload: PreviewPayload
   onClose: () => void
-  onOpenInDefaultApp: () => Promise<void>
 }) {
   const assetUrl = convertFileSrc(payload.localPath, PREVIEW_ASSET_PROTOCOL)
   const [previewUrl, setPreviewUrl] = useState<string | null>(payload.previewKind === 'image' ? assetUrl : null)
@@ -1427,17 +1428,12 @@ function PreviewModal({
           setPreviewUrl(objectUrl)
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!isActive) {
           return
         }
 
-        setPreviewError('Inline preview was unavailable. Opening in your default app...')
-        void onOpenInDefaultApp().finally(() => {
-          if (isActive) {
-            onClose()
-          }
-        })
+        setPreviewError(error instanceof Error ? error.message : 'The preview could not be displayed here.')
       })
 
     return () => {
@@ -1446,7 +1442,7 @@ function PreviewModal({
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [assetUrl, onClose, onOpenInDefaultApp, payload.previewKind])
+  }, [assetUrl, payload.previewKind])
 
   return (
     <div className="modal-overlay" role="presentation">
@@ -1486,9 +1482,6 @@ function PreviewModal({
         <div className="modal-actions">
           <button className="ghost-button" type="button" onClick={onClose}>
             Close
-          </button>
-          <button className="primary-button" type="button" onClick={onOpenInDefaultApp}>
-            Open in default app
           </button>
         </div>
       </div>
