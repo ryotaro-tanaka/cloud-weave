@@ -1087,8 +1087,11 @@ fn prepare_open_file_impl(
         return Err("Source path is required.".to_string());
     }
 
-    let Some(open_mode) = select_open_mode(input.mime_type.as_deref(), input.extension.as_deref()) else {
-        return Err("Open is only available for previewable files and supported documents.".to_string());
+    let Some(open_mode) = select_open_mode(input.mime_type.as_deref(), input.extension.as_deref())
+    else {
+        return Err(
+            "Open is only available for previewable files and supported documents.".to_string(),
+        );
     };
 
     let config_path = ensure_rclone_config(&app)?;
@@ -2079,7 +2082,12 @@ fn resolve_open_cache_target(
     let extension = candidate_path
         .extension()
         .map(|value| value.to_string_lossy().into_owned())
-        .or_else(|| input.extension.clone().filter(|value| !value.trim().is_empty()));
+        .or_else(|| {
+            input
+                .extension
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+        });
 
     let sanitized_stem = sanitize_file_name_component(&stem);
     let cache_key = build_open_cache_key(&input.source_remote, &input.source_path);
@@ -2561,10 +2569,7 @@ mod tests {
             ),
             Some("system-default")
         );
-        assert_eq!(
-            select_open_mode(Some("application/zip"), Some("zip")),
-            None
-        );
+        assert_eq!(select_open_mode(Some("application/zip"), Some("zip")), None);
     }
 
     #[test]

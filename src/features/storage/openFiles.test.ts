@@ -11,7 +11,7 @@ import {
 
 describe('getOpenStateSummary', () => {
   it('renders preparing state', () => {
-    expect(getOpenStateSummary({ ...IDLE_OPEN_STATE, status: 'preparing' })).toBe('Preparing preview...')
+    expect(getOpenStateSummary({ ...IDLE_OPEN_STATE, status: 'preparing' })).toBe('Preparing file...')
   })
 
   it('renders ready preview state', () => {
