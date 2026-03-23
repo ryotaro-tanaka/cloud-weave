@@ -412,7 +412,9 @@ fn list_unified_items_impl(app: AppHandle) -> Result<UnifiedLibraryResult, Strin
     Ok(UnifiedLibraryResult { items, notices })
 }
 
-fn start_unified_library_load_impl(app: AppHandle) -> Result<StartUnifiedLibraryLoadResult, String> {
+fn start_unified_library_load_impl(
+    app: AppHandle,
+) -> Result<StartUnifiedLibraryLoadResult, String> {
     let config_path = ensure_rclone_config(&app)?;
     let remotes = list_connected_remote_targets(&app, &config_path)?;
     let request_id = format!(
@@ -483,10 +485,8 @@ fn start_unified_library_load_impl(app: AppHandle) -> Result<StartUnifiedLibrary
                         sender.clone(),
                     ) {
                         Ok(notices) => {
-                            let _ = sender.send(LibraryLoadMessage::RemoteComplete {
-                                remote,
-                                notices,
-                            });
+                            let _ =
+                                sender.send(LibraryLoadMessage::RemoteComplete { remote, notices });
                         }
                         Err(error) => {
                             let _ = sender.send(LibraryLoadMessage::RemoteFailed { remote, error });
@@ -706,7 +706,8 @@ fn list_unified_items_for_onedrive_remote(
         return Ok(UnifiedLibraryResult { items, notices });
     }
 
-    for result in spawn_onedrive_folder_workers(app, config_path, remote_name, provider, stage.folders)
+    for result in
+        spawn_onedrive_folder_workers(app, config_path, remote_name, provider, stage.folders)
     {
         match result {
             Ok(batch) => {
@@ -746,9 +747,13 @@ fn stream_onedrive_remote_batches(
         });
     }
 
-    for result in
-        spawn_onedrive_folder_workers(app, config_path, &remote.name, &remote.provider, stage.folders)
-    {
+    for result in spawn_onedrive_folder_workers(
+        app,
+        config_path,
+        &remote.name,
+        &remote.provider,
+        stage.folders,
+    ) {
         match result {
             Ok(batch) => {
                 if !batch.items.is_empty() || !batch.notices.is_empty() {
@@ -788,7 +793,10 @@ fn list_onedrive_root_stage(
 
     for root_item in root_items {
         if root_item.is_dir {
-            folders.push(onedrive_folder_target_from_root_item(remote_name, &root_item));
+            folders.push(onedrive_folder_target_from_root_item(
+                remote_name,
+                &root_item,
+            ));
         } else {
             root_files.extend(parse_lsjson_batch(
                 std::slice::from_ref(&root_item),
@@ -1170,7 +1178,9 @@ fn spawn_download_progress_watcher(
         let mut last_bytes = None;
 
         loop {
-            let bytes_transferred = fs::metadata(&target_path).map(|meta| meta.len()).unwrap_or(0);
+            let bytes_transferred = fs::metadata(&target_path)
+                .map(|meta| meta.len())
+                .unwrap_or(0);
 
             if first_tick || Some(bytes_transferred) != last_bytes {
                 emit_download_progress(
@@ -1937,7 +1947,9 @@ fn resolve_unique_download_target(downloads_dir: &Path, file_name: &str) -> Path
         .map(|value| value.to_string_lossy().into_owned())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "downloaded-file".to_string());
-    let extension = candidate_path.extension().map(|value| value.to_string_lossy().into_owned());
+    let extension = candidate_path
+        .extension()
+        .map(|value| value.to_string_lossy().into_owned());
 
     for index in 1.. {
         let next_name = match extension.as_deref() {
@@ -2238,7 +2250,10 @@ mod tests {
         completion_progress, resolve_unique_download_target, select_download_file_name,
         user_facing_download_error,
     };
-    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn select_download_file_name_prefers_leaf_name() {
@@ -2262,10 +2277,14 @@ mod tests {
 
         fs::create_dir_all(&base_dir).expect("temp directory should be created");
         fs::write(base_dir.join("report.pdf"), b"first").expect("base file should be written");
-        fs::write(base_dir.join("report (1).pdf"), b"second").expect("suffix file should be written");
+        fs::write(base_dir.join("report (1).pdf"), b"second")
+            .expect("suffix file should be written");
 
         let next = resolve_unique_download_target(&base_dir, "report.pdf");
-        assert_eq!(next.file_name().and_then(|value| value.to_str()), Some("report (2).pdf"));
+        assert_eq!(
+            next.file_name().and_then(|value| value.to_str()),
+            Some("report (2).pdf")
+        );
 
         fs::remove_dir_all(&base_dir).expect("temp directory should be removed");
     }
