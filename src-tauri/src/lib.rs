@@ -591,9 +591,17 @@ fn spawn_download_task(app: AppHandle, input: StartDownloadInput, target_path: P
             "copyto".to_string(),
             source,
             target_path.to_string_lossy().into_owned(),
+            "--local-no-set-modtime".to_string(),
             "--config".to_string(),
             config_path.to_string_lossy().into_owned(),
         ];
+
+        log::debug!(
+            "starting download download_id={} source={} target={} local_no_set_modtime=true",
+            input.download_id,
+            input.source_path,
+            target_path.to_string_lossy()
+        );
 
         let child = match spawn_rclone_owned(&app, &args) {
             Ok(child) => child,
