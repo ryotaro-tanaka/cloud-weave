@@ -302,7 +302,7 @@ button:disabled {
   display: flex;
   min-width: 0;
   min-height: 0;
-  height: 100%;
+  box-sizing: border-box;
   padding: 24px 28px;
   background:
     radial-gradient(circle at 20% 20%, rgba(15, 141, 122, 0.14), transparent 28%),
@@ -387,6 +387,7 @@ button:disabled {
   flex-direction: column;
   gap: 20px;
   min-width: 0;
+  padding-bottom: 24px;
 }
 
 .info-banner {
@@ -1001,5 +1002,9 @@ button:disabled {
 
   .download-status {
     width: 100%;
+  }
+
+  .library-content {
+    padding-bottom: 16px;
   }
 }
