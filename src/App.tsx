@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { open as openPath } from '@tauri-apps/plugin-shell'
 import {
   resolvePendingSession,
   type AuthSessionRecord,
@@ -31,6 +32,18 @@ import {
   type DownloadRequest,
   type DownloadState,
 } from './features/storage/downloads'
+import {
+  getOpenStateSummary,
+  IDLE_OPEN_STATE,
+  toFailedOpenState,
+  toPreparingOpenState,
+  toPreviewPayload,
+  toReadyOpenState,
+  type OpenRequest,
+  type OpenResult,
+  type OpenState,
+  type PreviewPayload,
+} from './features/storage/openFiles'
 import {
   mergeNotices,
   mergeUnifiedItems,
@@ -70,6 +83,7 @@ type UnifiedLibraryResult = {
 }
 
 type DownloadStateMap = Record<string, DownloadState>
+type OpenStateMap = Record<string, OpenState>
 type LibraryLoadProgress = {
   requestId: string | null
   loadedRemoteCount: number
@@ -117,6 +131,7 @@ const STORAGE_PROVIDERS: ProviderDefinition[] = [
 
 const LOGICAL_VIEWS: LogicalView[] = ['recent', 'documents', 'photos', 'videos', 'audio', 'other']
 const EMPTY_PENDING_MESSAGE = 'Complete authentication in your browser.'
+const PREVIEW_ASSET_PROTOCOL = 'asset'
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -148,6 +163,8 @@ function App() {
   const [addError, setAddError] = useState('')
   const [removeError, setRemoveError] = useState('')
   const [downloadStates, setDownloadStates] = useState<DownloadStateMap>({})
+  const [openStates, setOpenStates] = useState<OpenStateMap>({})
+  const [previewPayload, setPreviewPayload] = useState<PreviewPayload | null>(null)
   const [libraryLoadProgress, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
     requestId: null,
     loadedRemoteCount: 0,
@@ -685,6 +702,49 @@ function App() {
     }
   }
 
+  const handleOpen = async (item: UnifiedItem) => {
+    if (item.isDir) {
+      return
+    }
+
+    const request = {
+      requestId: item.id,
+      sourceRemote: item.sourceRemote,
+      sourcePath: item.sourcePath,
+      displayName: item.name,
+      mimeType: item.mimeType,
+      extension: item.extension,
+    } satisfies OpenRequest
+
+    setOpenStates((current) => ({
+      ...current,
+      [item.id]: toPreparingOpenState(current[item.id]),
+    }))
+
+    try {
+      const result = await invoke<OpenResult>('prepare_open_file', { input: request })
+
+      setOpenStates((current) => ({
+        ...current,
+        [item.id]: toReadyOpenState(result),
+      }))
+
+      const preview = toPreviewPayload(item.id, item.name, result)
+      if (preview) {
+        setPreviewPayload(preview)
+        return
+      }
+
+      await openPath(result.localPath)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setOpenStates((current) => ({
+        ...current,
+        [item.id]: toFailedOpenState(message, current[item.id]),
+      }))
+    }
+  }
+
   const closePendingModal = () => {
     setActiveModal('none')
     setSelectedDriveId('')
@@ -858,6 +918,8 @@ function App() {
                             key={item.id}
                             item={item}
                             downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                            openState={openStates[item.id] ?? IDLE_OPEN_STATE}
+                            onOpen={handleOpen}
                             onDownload={handleDownload}
                           />
                         ))}
@@ -872,6 +934,8 @@ function App() {
                       key={item.id}
                       item={item}
                       downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                      openState={openStates[item.id] ?? IDLE_OPEN_STATE}
+                      onOpen={handleOpen}
                       onDownload={handleDownload}
                     />
                   ))}
@@ -883,6 +947,8 @@ function App() {
                       key={item.id}
                       item={item}
                       downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                      openState={openStates[item.id] ?? IDLE_OPEN_STATE}
+                      onOpen={handleOpen}
                       onDownload={handleDownload}
                     />
                   ))}
@@ -892,6 +958,14 @@ function App() {
           </div>
         </div>
       </section>
+
+      {previewPayload ? (
+        <PreviewModal
+          payload={previewPayload}
+          onClose={() => setPreviewPayload(null)}
+          onOpenInDefaultApp={() => openPath(previewPayload.localPath)}
+        />
+      ) : null}
 
       {activeModal === 'add-storage' ? (
         <div className="modal-overlay" role="presentation">
@@ -1178,13 +1252,18 @@ function App() {
 function UnifiedListItem({
   item,
   downloadState,
+  openState,
+  onOpen,
   onDownload,
 }: {
   item: UnifiedItem
   downloadState: DownloadState
+  openState: OpenState
+  onOpen: (item: UnifiedItem) => Promise<void>
   onDownload: (item: UnifiedItem) => Promise<void>
 }) {
   const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
+  const isPreparingOpen = openState.status === 'preparing'
   const actionLabel =
     downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
 
@@ -1212,9 +1291,13 @@ function UnifiedListItem({
         <span>{formatFileSize(item.size)}</span>
         <span>{formatModifiedTime(item.modTime)}</span>
         <div className="item-actions">
+          <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
+            {isPreparingOpen ? 'Opening...' : 'Open'}
+          </button>
           <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
             {actionLabel}
           </button>
+          <OpenStatusView state={openState} />
           <DownloadStatusView state={downloadState} />
         </div>
       </div>
@@ -1225,13 +1308,18 @@ function UnifiedListItem({
 function UnifiedGridItem({
   item,
   downloadState,
+  openState,
+  onOpen,
   onDownload,
 }: {
   item: UnifiedItem
   downloadState: DownloadState
+  openState: OpenState
+  onOpen: (item: UnifiedItem) => Promise<void>
   onDownload: (item: UnifiedItem) => Promise<void>
 }) {
   const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
+  const isPreparingOpen = openState.status === 'preparing'
   const actionLabel =
     downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
 
@@ -1250,13 +1338,31 @@ function UnifiedGridItem({
         <p className="grid-path">{item.sourcePath}</p>
         <p className="grid-date">{formatModifiedTime(item.modTime)}</p>
         <div className="grid-actions">
+          <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
+            {isPreparingOpen ? 'Opening...' : 'Open'}
+          </button>
           <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
             {actionLabel}
           </button>
+          <OpenStatusView state={openState} />
           <DownloadStatusView state={downloadState} />
         </div>
       </div>
     </article>
+  )
+}
+
+function OpenStatusView({ state }: { state: OpenState }) {
+  const summary = getOpenStateSummary(state)
+
+  if (!summary) {
+    return null
+  }
+
+  return (
+    <div className={`open-status ${state.status}`} aria-live="polite">
+      <p className="open-status-copy">{summary}</p>
+    </div>
   )
 }
 
@@ -1278,6 +1384,114 @@ function DownloadStatusView({ state }: { state: DownloadState }) {
           />
         </div>
       ) : null}
+    </div>
+  )
+}
+
+function PreviewModal({
+  payload,
+  onClose,
+  onOpenInDefaultApp,
+}: {
+  payload: PreviewPayload
+  onClose: () => void
+  onOpenInDefaultApp: () => Promise<void>
+}) {
+  const assetUrl = convertFileSrc(payload.localPath, PREVIEW_ASSET_PROTOCOL)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(payload.previewKind === 'image' ? assetUrl : null)
+  const [previewError, setPreviewError] = useState('')
+
+  useEffect(() => {
+    if (payload.previewKind === 'image') {
+      setPreviewUrl(assetUrl)
+      setPreviewError('')
+      return
+    }
+
+    let isActive = true
+    let objectUrl: string | null = null
+
+    setPreviewUrl(null)
+    setPreviewError('')
+
+    void fetch(assetUrl)
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Preview request failed with ${response.status}`)
+        }
+
+        const blob = await response.blob()
+        objectUrl = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }))
+
+        if (isActive) {
+          setPreviewUrl(objectUrl)
+        }
+      })
+      .catch(() => {
+        if (!isActive) {
+          return
+        }
+
+        setPreviewError('Inline preview was unavailable. Opening in your default app...')
+        void onOpenInDefaultApp().finally(() => {
+          if (isActive) {
+            onClose()
+          }
+        })
+      })
+
+    return () => {
+      isActive = false
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+      }
+    }
+  }, [assetUrl, onClose, onOpenInDefaultApp, payload.previewKind])
+
+  return (
+    <div className="modal-overlay" role="presentation">
+      <div className="preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">{payload.previewKind === 'image' ? 'Image Preview' : 'PDF Preview'}</p>
+            <h2 id="preview-title">{payload.itemName}</h2>
+          </div>
+
+          <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close preview">
+            ×
+          </button>
+        </div>
+
+        <div className="preview-surface">
+          {previewError ? (
+            <div className="preview-fallback">
+              <p>The preview could not be displayed here.</p>
+              <p>{previewError}</p>
+            </div>
+          ) : payload.previewKind === 'image' && previewUrl ? (
+            <img className="preview-image" src={assetUrl} alt={payload.itemName} />
+          ) : payload.previewKind === 'pdf' && previewUrl ? (
+            <object className="preview-frame" data={previewUrl} type="application/pdf" aria-label={payload.itemName}>
+              <div className="preview-fallback">
+                <p>PDF preview is unavailable in this view.</p>
+              </div>
+            </object>
+          ) : (
+            <div className="preview-fallback">
+              <p>Loading preview...</p>
+            </div>
+          )}
+        </div>
+
+        <div className="modal-actions">
+          <button className="ghost-button" type="button" onClick={onClose}>
+            Close
+          </button>
+          <button className="primary-button" type="button" onClick={onOpenInDefaultApp}>
+            Open in default app
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
     fs,
+    hash::{Hash, Hasher},
     path::Component,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -34,6 +35,7 @@ const GRAPH_BASE_URL: &str = "https://graph.microsoft.com/v1.0";
 const DOWNLOAD_PROGRESS_EVENT: &str = "download://progress";
 const LIBRARY_PROGRESS_EVENT: &str = "library://progress";
 const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(400);
+const OPEN_TEMP_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 
 #[derive(Default)]
 struct AuthSessionStore {
@@ -99,12 +101,32 @@ struct StartDownloadInput {
     size: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrepareOpenFileInput {
+    request_id: String,
+    source_remote: String,
+    source_path: String,
+    display_name: String,
+    mime_type: Option<String>,
+    extension: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DownloadAcceptedResult {
     download_id: String,
     status: String,
     target_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrepareOpenFileResult {
+    request_id: String,
+    status: String,
+    local_path: String,
+    open_mode: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -309,6 +331,16 @@ async fn start_download(
     tauri::async_runtime::spawn_blocking(move || start_download_impl(app, input))
         .await
         .map_err(|error| format!("failed to join download task: {error}"))?
+}
+
+#[tauri::command]
+async fn prepare_open_file(
+    app: AppHandle,
+    input: PrepareOpenFileInput,
+) -> Result<PrepareOpenFileResult, String> {
+    tauri::async_runtime::spawn_blocking(move || prepare_open_file_impl(app, input))
+        .await
+        .map_err(|error| format!("failed to join open preparation task: {error}"))?
 }
 
 #[tauri::command]
@@ -1038,6 +1070,47 @@ fn start_download_impl(
         download_id,
         status: "accepted".to_string(),
         target_path: target_path_label,
+    })
+}
+
+fn prepare_open_file_impl(
+    app: AppHandle,
+    input: PrepareOpenFileInput,
+) -> Result<PrepareOpenFileResult, String> {
+    validate_remote_name(&input.source_remote)?;
+
+    if input.request_id.trim().is_empty() {
+        return Err("Open request ID is required.".to_string());
+    }
+
+    if input.source_path.trim().is_empty() {
+        return Err("Source path is required.".to_string());
+    }
+
+    let config_path = ensure_rclone_config(&app)?;
+    let temp_dir = resolve_open_temp_dir(&app)?;
+    let target_path = resolve_open_cache_target(&temp_dir, &input.display_name, &input);
+
+    if !target_path.exists() {
+        let source = format!("{}:{}", input.source_remote, input.source_path);
+        let args = vec![
+            "copyto".to_string(),
+            source,
+            target_path.to_string_lossy().into_owned(),
+            "--local-no-set-modtime".to_string(),
+            "--config".to_string(),
+            config_path.to_string_lossy().into_owned(),
+        ];
+
+        run_rclone_owned(&app, &args, INVENTORY_COMMAND_TIMEOUT)
+            .map_err(|error| user_facing_open_error(&error))?;
+    }
+
+    Ok(PrepareOpenFileResult {
+        request_id: input.request_id,
+        status: "ready".to_string(),
+        local_path: target_path.to_string_lossy().into_owned(),
+        open_mode: select_open_mode(input.mime_type.as_deref(), input.extension.as_deref()).to_string(),
     })
 }
 
@@ -1864,6 +1937,13 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        .setup(|app| {
+            let handle = app.handle().clone();
+            if let Err(error) = cleanup_stale_open_temp_files(&handle) {
+                log::warn!("failed to clean stale open file cache: {error}");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_storage_remotes,
             create_onedrive_remote,
@@ -1874,6 +1954,7 @@ pub fn run() {
             get_auth_session_status,
             delete_remote,
             start_download,
+            prepare_open_file,
             start_unified_library_load
         ])
         .run(tauri::generate_context!())
@@ -1909,6 +1990,19 @@ fn resolve_downloads_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("failed to prepare the Downloads folder: {error}"))?;
 
     Ok(downloads_dir)
+}
+
+fn resolve_open_temp_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let temp_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve the app data directory: {error}"))?
+        .join("open-cache");
+
+    fs::create_dir_all(&temp_dir)
+        .map_err(|error| format!("failed to prepare the open file cache: {error}"))?;
+
+    Ok(temp_dir)
 }
 
 fn select_download_file_name(display_name: &str, source_path: &str) -> String {
@@ -1964,6 +2058,121 @@ fn resolve_unique_download_target(downloads_dir: &Path, file_name: &str) -> Path
     }
 
     unreachable!("the loop above always returns once an unused path is found")
+}
+
+fn resolve_open_cache_target(
+    open_temp_dir: &Path,
+    display_name: &str,
+    input: &PrepareOpenFileInput,
+) -> PathBuf {
+    let base_name = select_download_file_name(display_name, &input.source_path);
+    let candidate_path = Path::new(&base_name);
+    let stem = candidate_path
+        .file_stem()
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "open-file".to_string());
+    let extension = candidate_path
+        .extension()
+        .map(|value| value.to_string_lossy().into_owned())
+        .or_else(|| input.extension.clone().filter(|value| !value.trim().is_empty()));
+
+    let sanitized_stem = sanitize_file_name_component(&stem);
+    let cache_key = build_open_cache_key(&input.source_remote, &input.source_path);
+    let file_name = match extension.as_deref().filter(|value| !value.is_empty()) {
+        Some(extension) => format!("{sanitized_stem}-{cache_key}.{extension}"),
+        None => format!("{sanitized_stem}-{cache_key}"),
+    };
+
+    open_temp_dir.join(file_name)
+}
+
+fn sanitize_file_name_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(48)
+        .collect::<String>();
+
+    if sanitized.is_empty() {
+        "open-file".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn build_open_cache_key(source_remote: &str, source_path: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source_remote.hash(&mut hasher);
+    source_path.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn select_open_mode(mime_type: Option<&str>, extension: Option<&str>) -> &'static str {
+    let normalized_mime = mime_type.unwrap_or_default().trim().to_ascii_lowercase();
+    let normalized_extension = extension
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase();
+
+    if normalized_mime.starts_with("image/")
+        || matches!(
+            normalized_extension.as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
+        )
+    {
+        "preview-image"
+    } else if normalized_mime == "application/pdf" || normalized_extension == "pdf" {
+        "preview-pdf"
+    } else {
+        "system-default"
+    }
+}
+
+fn cleanup_stale_open_temp_files(app: &AppHandle) -> Result<(), String> {
+    let temp_dir = resolve_open_temp_dir(app)?;
+    let now = std::time::SystemTime::now();
+
+    for entry in fs::read_dir(&temp_dir)
+        .map_err(|error| format!("failed to read the open file cache: {error}"))?
+    {
+        let Ok(entry) = entry else {
+            continue;
+        };
+
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let Ok(modified_at) = metadata.modified() else {
+            continue;
+        };
+
+        let Ok(age) = now.duration_since(modified_at) else {
+            continue;
+        };
+
+        if age >= OPEN_TEMP_MAX_AGE {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    Ok(())
 }
 
 fn emit_download_progress(app: &AppHandle, event: DownloadProgressEvent) {
@@ -2185,6 +2394,17 @@ fn user_facing_download_error(detail: &str) -> String {
     }
 }
 
+fn user_facing_open_error(detail: &str) -> String {
+    match classify_rclone_error(detail) {
+        RcloneErrorKind::RcloneUnavailable => {
+            "The bundled rclone binary could not be found. Run the rclone setup step and restart the app."
+                .to_string()
+        }
+        _ if detail.is_empty() => "The file could not be prepared for opening. Try again.".to_string(),
+        _ => format!("The file could not be prepared for opening: {detail}"),
+    }
+}
+
 fn pending_auth_session(
     remote_name: &str,
     provider: &str,
@@ -2247,7 +2467,8 @@ fn remove_auth_session_record(app: &AppHandle, remote_name: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        completion_progress, resolve_unique_download_target, select_download_file_name,
+        build_open_cache_key, completion_progress, resolve_unique_download_target,
+        sanitize_file_name_component, select_download_file_name, select_open_mode,
         user_facing_download_error,
     };
     use std::{
@@ -2300,5 +2521,34 @@ mod tests {
     fn user_facing_download_error_falls_back_to_detail() {
         let message = user_facing_download_error("access denied");
         assert!(message.contains("access denied"));
+    }
+
+    #[test]
+    fn select_open_mode_prefers_previewable_types() {
+        assert_eq!(select_open_mode(Some("image/jpeg"), Some("jpg")), "preview-image");
+        assert_eq!(select_open_mode(Some("application/pdf"), Some("pdf")), "preview-pdf");
+        assert_eq!(
+            select_open_mode(
+                Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                Some("docx")
+            ),
+            "system-default"
+        );
+    }
+
+    #[test]
+    fn build_open_cache_key_is_stable() {
+        let first = build_open_cache_key("onedrive-main", "folder/file.pdf");
+        let second = build_open_cache_key("onedrive-main", "folder/file.pdf");
+        let third = build_open_cache_key("onedrive-main", "folder/other.pdf");
+
+        assert_eq!(first, second);
+        assert_ne!(first, third);
+    }
+
+    #[test]
+    fn sanitize_file_name_component_preserves_safe_characters() {
+        assert_eq!(sanitize_file_name_component("report.v1"), "report.v1");
+        assert_eq!(sanitize_file_name_component("bad name/?"), "bad-name");
     }
 }

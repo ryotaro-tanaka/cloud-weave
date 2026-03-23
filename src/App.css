@@ -239,6 +239,12 @@
   font-size: 14px;
 }
 
+.row-action.primary-open-action {
+  color: #fcfdff;
+  background: linear-gradient(135deg, #2364ff, #0f8d7a);
+  box-shadow: 0 18px 32px -24px rgba(15, 141, 122, 0.9);
+}
+
 .row-action.danger {
   color: var(--danger);
 }
@@ -569,6 +575,11 @@ button:disabled {
   gap: 6px;
 }
 
+.open-status {
+  width: min(240px, 100%);
+}
+
+.open-status-copy,
 .download-status-copy {
   margin: 0;
   font-size: 12px;
@@ -578,10 +589,12 @@ button:disabled {
   word-break: break-word;
 }
 
+.open-status.failed .open-status-copy,
 .download-status.failed .download-status-copy {
   color: var(--danger);
 }
 
+.open-status.ready .open-status-copy,
 .download-status.succeeded .download-status-copy {
   color: var(--text-h);
 }
@@ -680,6 +693,58 @@ button:disabled {
     radial-gradient(circle at top left, rgba(35, 100, 255, 0.12), transparent 34%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 254, 0.98));
   box-shadow: 0 40px 80px -50px rgba(9, 18, 30, 0.75);
+}
+
+.preview-modal {
+  width: min(1120px, 100%);
+  max-height: min(92svh, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 32px;
+  background:
+    radial-gradient(circle at top left, rgba(35, 100, 255, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 251, 254, 0.98));
+  box-shadow: 0 40px 80px -50px rgba(9, 18, 30, 0.75);
+}
+
+.preview-surface {
+  min-height: 60svh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: rgba(14, 21, 34, 0.06);
+}
+
+.preview-image,
+.preview-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 60svh;
+  border: 0;
+}
+
+.preview-image {
+  object-fit: contain;
+}
+
+.preview-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.preview-fallback p {
+  margin: 0;
 }
 
 .pending-modal {
