@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import pathlib
 import unittest
 
@@ -65,6 +66,34 @@ JA: プレビュー対応を追加しました。
         self.assertLessEqual(len(text), MODULE.THREADS_MAX_LENGTH)
         self.assertIn("#12 https://github.com/example/repo/pull/12", text)
         self.assertTrue(text.endswith("#12 https://github.com/example/repo/pull/12"))
+
+    def test_build_manual_post_text_truncates_to_threads_limit(self) -> None:
+        text = MODULE.build_manual_post_text(
+            english="A" * 400,
+            japanese="B" * 400,
+        )
+
+        self.assertLessEqual(len(text), MODULE.THREADS_MAX_LENGTH)
+        self.assertTrue(text.startswith("New in CloudWeave: "))
+
+    def test_get_manual_config_reads_environment(self) -> None:
+        original_en = os.environ.get("THREADS_TEST_EN")
+        original_ja = os.environ.get("THREADS_TEST_JA")
+        try:
+            os.environ["THREADS_TEST_EN"] = "Manual English"
+            os.environ["THREADS_TEST_JA"] = "手動テスト"
+            config = MODULE.get_manual_config()
+        finally:
+            if original_en is None:
+                os.environ.pop("THREADS_TEST_EN", None)
+            else:
+                os.environ["THREADS_TEST_EN"] = original_en
+            if original_ja is None:
+                os.environ.pop("THREADS_TEST_JA", None)
+            else:
+                os.environ["THREADS_TEST_JA"] = original_ja
+
+        self.assertEqual(config, {"en": "Manual English", "ja": "手動テスト"})
 
 
 if __name__ == "__main__":

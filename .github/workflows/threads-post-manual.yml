@@ -1,0 +1,36 @@
+name: Threads Post Manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      english:
+        description: English text for the Threads post
+        required: true
+        type: string
+      japanese:
+        description: Japanese text for the Threads post
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  post-to-threads:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Post manual Threads update
+        env:
+          THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
+          THREADS_TEST_EN: ${{ inputs.english }}
+          THREADS_TEST_JA: ${{ inputs.japanese }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: python .github/scripts/post_threads_from_pr.py
