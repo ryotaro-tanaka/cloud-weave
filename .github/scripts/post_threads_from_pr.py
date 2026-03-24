@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 from urllib.error import HTTPError
@@ -11,6 +12,9 @@ from typing import Any
 THREADS_MAX_LENGTH = 500
 THREADS_SECTION_NAME = "Threads"
 SKIP_LABELS = {"skip-threads", "no-threads"}
+THREADS_PUBLISH_MAX_ATTEMPTS = 5
+THREADS_PUBLISH_INITIAL_DELAY_SECONDS = 3
+THREADS_PUBLISH_BACKOFF_SECONDS = 2
 
 
 def load_event(path: str) -> dict[str, Any]:
@@ -101,6 +105,13 @@ def log_warning(message: str) -> None:
     print(f"::warning::{message}")
 
 
+class ThreadsApiError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int | None = None, payload: Any = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.payload = payload
+
+
 def get_threads_user_id(token: str) -> str:
     url = f"https://graph.threads.net/v1.0/me?fields=id&access_token={urllib.parse.quote(token)}"
     with urllib.request.urlopen(url) as response:
@@ -123,8 +134,10 @@ def post_form(url: str, form_data: dict[str, str]) -> dict[str, Any]:
             payload = json.loads(response_text)
         except json.JSONDecodeError:
             payload = {"raw": response_text}
-        raise RuntimeError(
-            f"Threads API request failed ({error.code} {error.reason}) at {url}: {sanitize_payload(payload)}"
+        raise ThreadsApiError(
+            f"Threads API request failed ({error.code} {error.reason}) at {url}: {sanitize_payload(payload)}",
+            status_code=error.code,
+            payload=payload,
         ) from error
 
 
@@ -137,6 +150,52 @@ def sanitize_payload(payload: Any) -> Any:
     if isinstance(payload, list):
         return [sanitize_payload(value) for value in payload]
     return payload
+
+
+def is_transient_threads_error(error: ThreadsApiError) -> bool:
+    if error.status_code and error.status_code >= 500:
+        return True
+
+    payload = error.payload if isinstance(error.payload, dict) else {}
+    details = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    if details.get("is_transient") is True:
+        return True
+    if details.get("code") == 2:
+        return True
+    return False
+
+
+def publish_with_retry(*, publish_url: str, token: str, creation_id: str) -> dict[str, Any]:
+    delay_seconds = THREADS_PUBLISH_INITIAL_DELAY_SECONDS
+    last_error: ThreadsApiError | None = None
+
+    for attempt in range(1, THREADS_PUBLISH_MAX_ATTEMPTS + 1):
+        if attempt == 1:
+            log_notice(
+                f"Waiting {delay_seconds}s before publishing Threads post so the creation can become available."
+            )
+        else:
+            log_warning(f"Retrying Threads publish ({attempt}/{THREADS_PUBLISH_MAX_ATTEMPTS}) after {delay_seconds}s.")
+        time.sleep(delay_seconds)
+
+        try:
+            return post_form(
+                publish_url,
+                {
+                    "creation_id": creation_id,
+                    "access_token": token,
+                },
+            )
+        except ThreadsApiError as error:
+            last_error = error
+            if not is_transient_threads_error(error) or attempt == THREADS_PUBLISH_MAX_ATTEMPTS:
+                raise
+            log_warning(str(error))
+            delay_seconds *= THREADS_PUBLISH_BACKOFF_SECONDS
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Threads publish retry loop ended unexpectedly.")
 
 
 def publish_text_post(*, user_id: str, token: str, text: str) -> str:
@@ -154,12 +213,10 @@ def publish_text_post(*, user_id: str, token: str, text: str) -> str:
         raise RuntimeError(f"Failed to create Threads post: {sanitize_payload(created)}")
 
     publish_url = f"https://graph.threads.net/v1.0/{user_id}/threads_publish"
-    published = post_form(
-        publish_url,
-        {
-            "creation_id": creation_id,
-            "access_token": token,
-        },
+    published = publish_with_retry(
+        publish_url=publish_url,
+        token=token,
+        creation_id=creation_id,
     )
     post_id = published.get("id")
     if not post_id:
