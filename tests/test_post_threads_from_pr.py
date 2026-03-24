@@ -2,6 +2,7 @@ import importlib.util
 import os
 import pathlib
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(".github/scripts/post_threads_from_pr.py")
@@ -94,6 +95,48 @@ JA: プレビュー対応を追加しました。
                 os.environ["THREADS_TEST_JA"] = original_ja
 
         self.assertEqual(config, {"en": "Manual English", "ja": "手動テスト"})
+
+    def test_is_transient_threads_error_for_server_error(self) -> None:
+        error = MODULE.ThreadsApiError("boom", status_code=500, payload={"error": {"message": "retry later"}})
+
+        self.assertTrue(MODULE.is_transient_threads_error(error))
+
+    def test_publish_with_retry_retries_transient_error(self) -> None:
+        transient_error = MODULE.ThreadsApiError(
+            "retry later",
+            status_code=500,
+            payload={"error": {"is_transient": True, "code": 2}},
+        )
+
+        with mock.patch.object(MODULE, "post_form", side_effect=[transient_error, {"id": "published-123"}]) as post_form:
+            with mock.patch.object(MODULE.time, "sleep") as sleep:
+                result = MODULE.publish_with_retry(
+                    publish_url="https://graph.threads.net/v1.0/test/threads_publish",
+                    token="token",
+                    creation_id="creation",
+                )
+
+        self.assertEqual(result, {"id": "published-123"})
+        self.assertEqual(post_form.call_count, 2)
+        sleep.assert_any_call(MODULE.THREADS_PUBLISH_INITIAL_DELAY_SECONDS)
+
+    def test_publish_with_retry_does_not_retry_non_transient_error(self) -> None:
+        fatal_error = MODULE.ThreadsApiError(
+            "bad request",
+            status_code=400,
+            payload={"error": {"is_transient": False, "code": 100}},
+        )
+
+        with mock.patch.object(MODULE, "post_form", side_effect=fatal_error) as post_form:
+            with mock.patch.object(MODULE.time, "sleep"):
+                with self.assertRaises(MODULE.ThreadsApiError):
+                    MODULE.publish_with_retry(
+                        publish_url="https://graph.threads.net/v1.0/test/threads_publish",
+                        token="token",
+                        creation_id="creation",
+                    )
+
+        self.assertEqual(post_form.call_count, 1)
 
 
 if __name__ == "__main__":
