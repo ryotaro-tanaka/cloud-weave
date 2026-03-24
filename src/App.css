@@ -868,6 +868,16 @@ button:disabled {
   margin: 0;
 }
 
+.upload-queue-status p:first-child,
+.upload-queue-copy .item-name {
+  color: var(--text-h);
+}
+
+.upload-queue-copy .item-meta,
+.upload-queue-status .grid-path {
+  color: var(--text);
+}
+
 .upload-progress-fill {
   width: 52%;
   animation: upload-pulse 1.1s ease-in-out infinite alternate;
@@ -1120,8 +1130,40 @@ button:disabled {
   .unified-item,
   .main-empty-state,
   .search-field,
-  .info-banner {
+  .info-banner,
+  .upload-dropzone,
+  .upload-summary-card,
+  .upload-queue-item {
     background: rgba(20, 24, 33, 0.82);
+  }
+
+  .upload-dropzone,
+  .upload-summary-card,
+  .upload-queue-item {
+    border-color: rgba(114, 163, 255, 0.18);
+  }
+
+  .upload-dropzone.active {
+    background:
+      linear-gradient(180deg, rgba(19, 31, 54, 0.96), rgba(15, 25, 43, 0.94));
+    border-color: rgba(114, 163, 255, 0.46);
+    box-shadow: 0 24px 54px -36px rgba(114, 163, 255, 0.55);
+  }
+
+  .upload-dropzone-copy,
+  .upload-summary-meta,
+  .upload-relative-path,
+  .upload-queue-copy .item-meta,
+  .upload-queue-status,
+  .upload-queue-status .grid-path {
+    color: #b7c4d8;
+  }
+
+  .upload-queue-status p:first-child,
+  .upload-summary-label,
+  .upload-dropzone-title,
+  .upload-queue-copy .item-name {
+    color: #f7fbff;
   }
 
   .workspace-main {
