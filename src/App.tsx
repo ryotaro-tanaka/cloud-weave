@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { open as openPath } from '@tauri-apps/plugin-shell'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   resolvePendingSession,
   type AuthSessionRecord,
@@ -52,11 +54,25 @@ import {
   type StartUnifiedLibraryLoadResult,
   type UnifiedLibraryLoadEvent,
 } from './features/storage/libraryLoad'
+import {
+  applyUploadProgressEvent,
+  describeUploadTarget,
+  formatUploadItemMeta,
+  getUploadBatchSummary,
+  getUploadStateSummary,
+  IDLE_UPLOAD_STATE,
+  type PreparedUploadBatch,
+  type PreparedUploadItem,
+  type UploadAcceptedResult,
+  type UploadProgressEvent,
+  type UploadSelection,
+  type UploadState,
+} from './features/storage/uploads'
 import './App.css'
 
 type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
 type AuthType = 'oauth' | 'form'
-type ModalName = 'none' | 'add-storage' | 'oauth-pending' | 'remove-confirm'
+type ModalName = 'none' | 'add-storage' | 'oauth-pending' | 'remove-confirm' | 'upload'
 type AddFlowStep = 'providers' | 'form'
 
 type CreateOneDriveRemoteInput = {
@@ -86,6 +102,7 @@ type UnifiedLibraryResult = {
 
 type DownloadStateMap = Record<string, DownloadState>
 type OpenStateMap = Record<string, OpenState>
+type UploadStateMap = Record<string, UploadState>
 type LibraryLoadProgress = {
   requestId: string | null
   loadedRemoteCount: number
@@ -166,7 +183,14 @@ function App() {
   const [removeError, setRemoveError] = useState('')
   const [downloadStates, setDownloadStates] = useState<DownloadStateMap>({})
   const [openStates, setOpenStates] = useState<OpenStateMap>({})
+  const [uploadStates, setUploadStates] = useState<UploadStateMap>({})
+  const [uploadBatch, setUploadBatch] = useState<PreparedUploadBatch | null>(null)
   const [previewPayload, setPreviewPayload] = useState<PreviewPayload | null>(null)
+  const [uploadError, setUploadError] = useState('')
+  const [isPreparingUpload, setIsPreparingUpload] = useState(false)
+  const [isStartingUpload, setIsStartingUpload] = useState(false)
+  const [isUploadDragActive, setIsUploadDragActive] = useState(false)
+  const [hasPendingUploadRefresh, setHasPendingUploadRefresh] = useState(false)
   const [libraryLoadProgress, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
     requestId: null,
     loadedRemoteCount: 0,
@@ -193,6 +217,10 @@ function App() {
   }, [activeView, displayedItems])
 
   const isVisualGrid = activeView === 'photos' || activeView === 'videos'
+  const uploadSummary = useMemo(
+    () => getUploadBatchSummary(uploadBatch?.items ?? [], uploadStates),
+    [uploadBatch, uploadStates],
+  )
 
   const fetchRemotes = async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false
@@ -291,6 +319,23 @@ function App() {
   useEffect(() => {
     let isSubscribed = true
 
+    const unlistenPromise = listen<UploadProgressEvent>('upload://progress', (event) => {
+      if (!isSubscribed) {
+        return
+      }
+
+      setUploadStates((current) => applyUploadProgressEvent(current, event.payload))
+    })
+
+    return () => {
+      isSubscribed = false
+      void unlistenPromise.then((unlisten) => unlisten())
+    }
+  }, [])
+
+  useEffect(() => {
+    let isSubscribed = true
+
     const unlistenPromise = listen<UnifiedLibraryLoadEvent>('library://progress', (event) => {
       if (!isSubscribed) {
         return
@@ -336,6 +381,41 @@ function App() {
       void unlistenPromise.then((unlisten) => unlisten())
     }
   }, [])
+
+  useEffect(() => {
+    if (activeModal !== 'upload') {
+      setIsUploadDragActive(false)
+      return
+    }
+
+    let isSubscribed = true
+
+    const unlistenPromise = getCurrentWindow().onDragDropEvent((event) => {
+      if (!isSubscribed) {
+        return
+      }
+
+      if (event.payload.type === 'enter' || event.payload.type === 'over') {
+        setIsUploadDragActive(true)
+        return
+      }
+
+      if (event.payload.type === 'leave') {
+        setIsUploadDragActive(false)
+        return
+      }
+
+      if (event.payload.type === 'drop') {
+        setIsUploadDragActive(false)
+        void prepareUploadSelections(toUploadSelections(event.payload.paths))
+      }
+    })
+
+    return () => {
+      isSubscribed = false
+      void unlistenPromise.then((unlisten) => unlisten())
+    }
+  }, [activeModal])
 
   const initializeLibrary = async () => {
     setIsLoadingItems(true)
@@ -407,6 +487,24 @@ function App() {
     setSelectedDriveId(preferred?.id ?? '')
   }, [pendingSession])
 
+  useEffect(() => {
+    if (!hasPendingUploadRefresh) {
+      return
+    }
+
+    if (uploadSummary.active > 0 || isStartingUpload) {
+      return
+    }
+
+    if (uploadSummary.completed === 0) {
+      setHasPendingUploadRefresh(false)
+      return
+    }
+
+    setHasPendingUploadRefresh(false)
+    void refreshLibrary({ silent: true })
+  }, [hasPendingUploadRefresh, isStartingUpload, uploadSummary.active, uploadSummary.completed])
+
   const resetAddFlow = () => {
     setAddFlowStep('providers')
     setSelectedProvider('onedrive')
@@ -421,6 +519,16 @@ function App() {
   const openAddModal = () => {
     resetAddFlow()
     setActiveModal('add-storage')
+  }
+
+  const openUploadModal = () => {
+    setUploadError('')
+    setActiveModal('upload')
+  }
+
+  const closeUploadModal = () => {
+    setActiveModal('none')
+    setIsUploadDragActive(false)
   }
 
   const closeAddModal = () => {
@@ -704,6 +812,132 @@ function App() {
     }
   }
 
+  const resetUploadBatch = () => {
+    setUploadBatch(null)
+    setUploadStates({})
+    setUploadError('')
+    setIsPreparingUpload(false)
+    setIsStartingUpload(false)
+    setIsUploadDragActive(false)
+    setHasPendingUploadRefresh(false)
+  }
+
+  const prepareUploadSelections = async (selections: UploadSelection[]) => {
+    if (selections.length === 0) {
+      return
+    }
+
+    setIsPreparingUpload(true)
+    setUploadError('')
+
+    try {
+      const nextBatch = await invoke<PreparedUploadBatch>('prepare_upload_batch', { input: { selections } })
+
+      setUploadBatch((current) => {
+        if (!current) {
+          return nextBatch
+        }
+
+        const seen = new Set(current.items.map((item) => item.itemId))
+        const mergedItems = [...current.items]
+
+        for (const item of nextBatch.items) {
+          if (!seen.has(item.itemId)) {
+            mergedItems.push(item)
+            seen.add(item.itemId)
+          }
+        }
+
+        return {
+          uploadId: current.uploadId,
+          items: mergedItems,
+          notices: [...current.notices, ...nextBatch.notices].filter(
+            (notice, index, notices) => notices.indexOf(notice) === index,
+          ),
+        }
+      })
+      setActiveModal('upload')
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : String(error))
+      setActiveModal('upload')
+    } finally {
+      setIsPreparingUpload(false)
+    }
+  }
+
+  const handleChooseUploadFiles = async () => {
+    try {
+      const selected = await openDialog({
+        multiple: true,
+        directory: false,
+        title: 'Choose files to upload',
+      })
+
+      const paths = normalizeDialogSelection(selected)
+      await prepareUploadSelections(toUploadSelections(paths, 'file'))
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const handleChooseUploadFolder = async () => {
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        directory: true,
+        title: 'Choose a folder to upload',
+      })
+
+      const paths = normalizeDialogSelection(selected)
+      await prepareUploadSelections(toUploadSelections(paths, 'directory'))
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const handleStartUpload = async () => {
+    if (!uploadBatch || uploadBatch.items.length === 0) {
+      setUploadError('Add files or folders before starting the upload.')
+      return
+    }
+
+    setIsStartingUpload(true)
+    setUploadError('')
+    setHasPendingUploadRefresh(true)
+
+    const queuedStates = Object.fromEntries(
+      uploadBatch.items.map((item) => [
+        item.itemId,
+        {
+          ...IDLE_UPLOAD_STATE,
+          status: 'queued' as const,
+          completedCount: 0,
+          totalCount: uploadBatch.items.length,
+          errorMessage: null,
+        },
+      ]),
+    )
+
+    setUploadStates((current) => ({
+      ...current,
+      ...queuedStates,
+    }))
+
+    try {
+      await invoke<UploadAcceptedResult>('start_upload_batch', {
+        input: { uploadId: uploadBatch.uploadId, items: uploadBatch.items },
+      })
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : String(error))
+      setHasPendingUploadRefresh(false)
+    } finally {
+      setIsStartingUpload(false)
+    }
+  }
+
+  const canStartUpload =
+    !!uploadBatch && uploadBatch.items.length > 0 && uploadSummary.active === 0 && !isPreparingUpload && !isStartingUpload
+
   const handleOpen = async (item: UnifiedItem) => {
     if (item.isDir || (!canPreviewItem(item) && !canOpenInDefaultApp(item))) {
       return
@@ -832,17 +1066,25 @@ function App() {
       <section className="workspace-main">
         <div className="library-shell">
           <header className="library-topbar">
-            <label className="search-field" aria-label="Search files">
-              <span className="search-icon" aria-hidden="true">
-                /
-              </span>
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search files, paths, or storage names"
-              />
-            </label>
+            <div className="library-toolbar">
+              <label className="search-field" aria-label="Search files">
+                <span className="search-icon" aria-hidden="true">
+                  /
+                </span>
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search files, paths, or storage names"
+                />
+              </label>
+
+              <div className="library-actions">
+                <button className="primary-button" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
+                  Upload
+                </button>
+              </div>
+            </div>
 
             <nav className="view-tabs" aria-label="Logical views">
               {LOGICAL_VIEWS.map((view) => (
@@ -1246,6 +1488,86 @@ function App() {
           </div>
         </div>
       ) : null}
+
+      {activeModal === 'upload' ? (
+        <div className="modal-overlay" role="presentation">
+          <div className="full-modal upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">Upload</p>
+                <h2 id="upload-title">Send files to Cloud Weave</h2>
+              </div>
+
+              <button className="icon-button modal-close" type="button" onClick={closeUploadModal} aria-label="Close upload modal">
+                ×
+              </button>
+            </div>
+
+            <div className="upload-body">
+              <div className={`upload-dropzone ${isUploadDragActive ? 'active' : ''}`}>
+                <p className="upload-dropzone-title">Drop files or folders here</p>
+                <p className="upload-dropzone-copy">
+                  Cloud Weave keeps folder structure, classifies files by category, and routes them to the best connected destination.
+                </p>
+
+                <div className="upload-picker-actions">
+                  <button className="ghost-button" type="button" onClick={() => void handleChooseUploadFiles()} disabled={isPreparingUpload || isStartingUpload}>
+                    Choose files
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => void handleChooseUploadFolder()} disabled={isPreparingUpload || isStartingUpload}>
+                    Choose folder
+                  </button>
+                </div>
+              </div>
+
+              <div className="upload-summary-card">
+                <p className="upload-summary-label">{uploadSummary.label}</p>
+                <p className="upload-summary-meta">
+                  {uploadSummary.total > 0
+                    ? `${uploadSummary.completed} complete • ${uploadSummary.failed} failed • ${uploadSummary.total} total`
+                    : 'No files queued yet'}
+                </p>
+                {uploadBatch?.notices.map((notice) => (
+                  <p key={notice} className="pending-help">
+                    {notice}
+                  </p>
+                ))}
+                {uploadError ? <p className="error-text">{uploadError}</p> : null}
+              </div>
+
+              {uploadBatch?.items.length ? (
+                <div className="upload-queue" role="list" aria-label="Upload queue">
+                  {uploadBatch.items.map((item) => (
+                    <UploadQueueItem
+                      key={item.itemId}
+                      item={item}
+                      state={uploadStates[item.itemId] ?? IDLE_UPLOAD_STATE}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="main-empty-state compact upload-empty-state">
+                  <p className="eyebrow">Queue</p>
+                  <h2>Nothing queued yet.</h2>
+                  <p>Drop a folder or choose files from disk to prepare the upload batch.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-actions">
+              <button className="ghost-button" type="button" onClick={resetUploadBatch} disabled={uploadSummary.active > 0}>
+                Clear
+              </button>
+              <button className="ghost-button" type="button" onClick={closeUploadModal}>
+                Close
+              </button>
+              <button className="primary-button" type="button" onClick={() => void handleStartUpload()} disabled={!canStartUpload}>
+                {isPreparingUpload ? 'Preparing...' : isStartingUpload ? 'Starting...' : 'Start upload'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   )
 }
@@ -1405,6 +1727,42 @@ function DownloadStatusView({ state }: { state: DownloadState }) {
   )
 }
 
+function UploadQueueItem({
+  item,
+  state,
+}: {
+  item: PreparedUploadItem
+  state: UploadState
+}) {
+  const isRunning = state.status === 'queued' || state.status === 'running' || state.status === 'retrying'
+
+  return (
+    <article className="upload-queue-item" role="listitem">
+      <div className="upload-queue-copy">
+        <div className="item-title-row">
+          <p className="item-name">{item.displayName}</p>
+          <span className="source-badge">{item.category}</span>
+        </div>
+        <p className="upload-relative-path">{item.relativePath}</p>
+        <div className="item-meta">
+          <span>{formatUploadItemMeta(item)}</span>
+          <span>{describeUploadTarget(item)}</span>
+        </div>
+      </div>
+
+      <div className="upload-queue-status">
+        <p>{getUploadStateSummary(state)}</p>
+        {state.remoteName ? <p className="grid-path">{state.remoteName}</p> : null}
+        {isRunning ? (
+          <div className="download-progress" aria-hidden="true">
+            <div className="download-progress-fill upload-progress-fill" />
+          </div>
+        ) : null}
+      </div>
+    </article>
+  )
+}
+
 function PreviewModal({
   payload,
   onClose,
@@ -1516,6 +1874,18 @@ function getProviderLabel(provider: string): string {
     default:
       return provider
   }
+}
+
+function normalizeDialogSelection(selection: string | string[] | null): string[] {
+  if (!selection) {
+    return []
+  }
+
+  return Array.isArray(selection) ? selection : [selection]
+}
+
+function toUploadSelections(paths: string[], kind: UploadSelection['kind'] = 'file'): UploadSelection[] {
+  return paths.map((path) => ({ path, kind }))
 }
 
 export default App

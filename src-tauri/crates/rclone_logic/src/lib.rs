@@ -78,6 +78,10 @@ pub struct OneDriveDriveCandidate {
 #[derive(Debug, PartialEq, Eq)]
 pub enum RcloneErrorKind {
     DuplicateRemote,
+    AlreadyExists,
+    InsufficientSpace,
+    UnsupportedAbout,
+    AuthError,
     AuthFlow,
     AuthCancelled,
     RcloneUnavailable,
@@ -378,11 +382,44 @@ pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
     let normalized = detail.to_lowercase();
 
     if normalized.contains("already exists") {
-        return RcloneErrorKind::DuplicateRemote;
+        if normalized.contains("remote ") {
+            return RcloneErrorKind::DuplicateRemote;
+        }
+
+        return RcloneErrorKind::AlreadyExists;
+    }
+
+    if normalized.contains("insufficient space")
+        || normalized.contains("not enough space")
+        || normalized.contains("no space left")
+        || normalized.contains("quota exceeded")
+        || normalized.contains("storagefull")
+        || normalized.contains("out of space")
+    {
+        return RcloneErrorKind::InsufficientSpace;
+    }
+
+    if normalized.contains("doesn't support about")
+        || normalized.contains("does not support about")
+        || normalized.contains("unknown command \"about\"")
+        || normalized.contains("unknown command: about")
+        || normalized.contains("usage: rclone about")
+    {
+        return RcloneErrorKind::UnsupportedAbout;
     }
 
     if normalized.contains("failed to run rclone") || normalized.contains("binary was not found") {
         return RcloneErrorKind::RcloneUnavailable;
+    }
+
+    if normalized.contains("unauthorized")
+        || normalized.contains("forbidden")
+        || normalized.contains("authentication failed")
+        || normalized.contains("login required")
+        || normalized.contains("token has expired")
+        || normalized.contains("invalid_grant")
+    {
+        return RcloneErrorKind::AuthError;
     }
 
     if normalized.contains("timed out")
@@ -800,6 +837,38 @@ mod tests {
         assert!(matches!(
             classify_rclone_error("remote onedrive-main already exists"),
             RcloneErrorKind::DuplicateRemote
+        ));
+    }
+
+    #[test]
+    fn classify_rclone_error_detects_already_existing_path() {
+        assert!(matches!(
+            classify_rclone_error("copy failed: destination file already exists"),
+            RcloneErrorKind::AlreadyExists
+        ));
+    }
+
+    #[test]
+    fn classify_rclone_error_detects_insufficient_space() {
+        assert!(matches!(
+            classify_rclone_error("upload failed: insufficient space on the destination"),
+            RcloneErrorKind::InsufficientSpace
+        ));
+    }
+
+    #[test]
+    fn classify_rclone_error_detects_unsupported_about() {
+        assert!(matches!(
+            classify_rclone_error("this backend does not support about"),
+            RcloneErrorKind::UnsupportedAbout
+        ));
+    }
+
+    #[test]
+    fn classify_rclone_error_detects_auth_error() {
+        assert!(matches!(
+            classify_rclone_error("authentication failed: token has expired"),
+            RcloneErrorKind::AuthError
         ));
     }
 
