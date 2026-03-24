@@ -137,3 +137,20 @@ The current workflow uses only one repository secret:
 - `THREADS_LONG_LIVED_TOKEN`
 
 Register the token obtained above as the GitHub Actions secret value.
+
+## PR body contract
+
+If the pull request body contains a `## Threads` section, the workflow posts it automatically after merge to `main`.
+
+```md
+## Threads
+EN: Added file preview support for downloads.
+JA: ダウンロードしたファイルのプレビューに対応しました。
+```
+
+Notes:
+
+- There is no `Ready: true|false` flag anymore
+- Delete the whole `## Threads` section when you do not want a post
+- `EN` and `JA` are both required
+- `skip-threads` or `no-threads` labels still force a skip

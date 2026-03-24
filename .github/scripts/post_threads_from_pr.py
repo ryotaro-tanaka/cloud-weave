@@ -59,10 +59,6 @@ def parse_threads_config(markdown: str) -> dict[str, str]:
     return config
 
 
-def is_ready(config: dict[str, str]) -> bool:
-    return config.get("ready", "").strip().lower() == "true"
-
-
 def has_skip_label(pr: dict[str, Any]) -> bool:
     labels = pr.get("labels") or []
     names = {label.get("name", "").strip().lower() for label in labels}
@@ -169,8 +165,6 @@ def should_post(pr: dict[str, Any], config: dict[str, str]) -> tuple[bool, str]:
         return False, "Skipping Threads post because a skip label is present."
     if not config:
         return False, "Skipping Threads post because the PR body has no ## Threads section."
-    if not is_ready(config):
-        return False, "Skipping Threads post because Ready is not true."
     if not config.get("en") or not config.get("ja"):
         return False, "Skipping Threads post because EN or JA content is empty."
     return True, ""
