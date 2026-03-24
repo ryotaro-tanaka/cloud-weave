@@ -5,6 +5,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from urllib.error import HTTPError
 from typing import Any
 
 THREADS_MAX_LENGTH = 500
@@ -108,8 +109,18 @@ def get_threads_user_id(token: str) -> str:
 def post_form(url: str, form_data: dict[str, str]) -> dict[str, Any]:
     encoded = urllib.parse.urlencode(form_data).encode("utf-8")
     request = urllib.request.Request(url, data=encoded, method="POST")
-    with urllib.request.urlopen(request) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        response_text = error.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(response_text)
+        except json.JSONDecodeError:
+            payload = {"raw": response_text}
+        raise RuntimeError(
+            f"Threads API request failed ({error.code} {error.reason}) at {url}: {sanitize_payload(payload)}"
+        ) from error
 
 
 def sanitize_payload(payload: Any) -> Any:
