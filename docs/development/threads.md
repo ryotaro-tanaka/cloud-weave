@@ -154,3 +154,14 @@ Notes:
 - Delete the whole `## Threads` section when you do not want a post
 - `EN` and `JA` are both required
 - `skip-threads` or `no-threads` labels still force a skip
+
+## Manual GitHub Actions test
+
+To test Threads posting without creating and merging a pull request:
+
+1. Open the `Threads Post Manual` workflow in the GitHub Actions tab
+2. Click `Run workflow`
+3. Enter `english` and `japanese`
+4. Run the workflow
+
+This uses the same Python posting script as the merged-PR workflow, but it reads the text directly from workflow inputs instead of a PR body.

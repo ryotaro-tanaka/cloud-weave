@@ -69,6 +69,15 @@ def collapse_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def build_manual_post_text(*, english: str, japanese: str) -> str:
+    text = f"New in CloudWeave: {collapse_whitespace(english)} / CloudWeave更新: {collapse_whitespace(japanese)}"
+    if len(text) <= THREADS_MAX_LENGTH:
+        return text
+
+    text = text[: THREADS_MAX_LENGTH - 1].rstrip()
+    return f"{text}…"
+
+
 def build_post_text(*, pr_number: int, pr_url: str, english: str, japanese: str) -> str:
     prefix = f"New in CloudWeave: {collapse_whitespace(english)} / CloudWeave更新: {collapse_whitespace(japanese)}"
     suffix = f" #{pr_number} {pr_url}"
@@ -170,36 +179,59 @@ def should_post(pr: dict[str, Any], config: dict[str, str]) -> tuple[bool, str]:
     return True, ""
 
 
+def get_manual_config() -> dict[str, str]:
+    english = os.getenv("THREADS_TEST_EN", "").strip()
+    japanese = os.getenv("THREADS_TEST_JA", "").strip()
+    if not english and not japanese:
+        return {}
+    return {"en": english, "ja": japanese}
+
+
 def main() -> int:
     token = os.getenv("THREADS_LONG_LIVED_TOKEN", "").strip()
     event_path = os.getenv("GITHUB_EVENT_PATH", "").strip()
+    manual_config = get_manual_config()
 
     if not token:
         log_notice("THREADS_LONG_LIVED_TOKEN is not set; skipping Threads posting.")
         return 0
-    if not event_path:
-        print("GITHUB_EVENT_PATH is missing.", file=sys.stderr)
-        return 1
 
-    event = load_event(event_path)
-    pr = extract_pr(event)
-    config = parse_threads_config(pr.get("body") or "")
+    if manual_config:
+        if not manual_config.get("en") or not manual_config.get("ja"):
+            print("THREADS_TEST_EN and THREADS_TEST_JA are both required for manual posting.", file=sys.stderr)
+            return 1
+        post_text = build_manual_post_text(
+            english=manual_config["en"],
+            japanese=manual_config["ja"],
+        )
+        log_notice("Using manual Threads test inputs from workflow_dispatch.")
+    else:
+        if not event_path:
+            print("GITHUB_EVENT_PATH is missing.", file=sys.stderr)
+            return 1
 
-    allowed, reason = should_post(pr, config)
-    if not allowed:
-        log_warning(reason)
-        return 0
+        event = load_event(event_path)
+        pr = extract_pr(event)
+        config = parse_threads_config(pr.get("body") or "")
 
-    post_text = build_post_text(
-        pr_number=pr["number"],
-        pr_url=pr["html_url"],
-        english=config["en"],
-        japanese=config["ja"],
-    )
+        allowed, reason = should_post(pr, config)
+        if not allowed:
+            log_warning(reason)
+            return 0
+
+        post_text = build_post_text(
+            pr_number=pr["number"],
+            pr_url=pr["html_url"],
+            english=config["en"],
+            japanese=config["ja"],
+        )
 
     user_id = get_threads_user_id(token)
     post_id = publish_text_post(user_id=user_id, token=token, text=post_text)
-    log_notice(f"Posted merged PR #{pr['number']} to Threads as {post_id}.")
+    if manual_config:
+        log_notice(f"Posted manual Threads test as {post_id}.")
+    else:
+        log_notice(f"Posted merged PR #{pr['number']} to Threads as {post_id}.")
     return 0
 
 
