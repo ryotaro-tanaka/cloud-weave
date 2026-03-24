@@ -26,5 +26,9 @@ dist-ssr
 # local notes
 .notes/
 
+# Python cache
+__pycache__/
+*.py[cod]
+
 # binaries
 src-tauri/binaries/

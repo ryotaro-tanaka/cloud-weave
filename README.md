@@ -76,6 +76,24 @@ npm run pr:check
 - `npm run pr:check`
   Run the standard pre-PR checks: Rust formatting, formatting check, frontend tests, and UI build.
 
+## GitHub Automation
+
+Merged pull requests into `main` can auto-post a short bilingual update to Threads.
+
+- Add the following section to the PR body and set `Ready: true` when you want a post after merge:
+
+```md
+## Threads
+Ready: true
+EN: Added file preview support for downloads.
+JA: ダウンロードしたファイルのプレビューに対応しました。
+```
+
+- Repository secret required: `THREADS_LONG_LIVED_TOKEN`
+- Add the label `skip-threads` or `no-threads` to opt out even when `Ready: true`
+- If the `## Threads` section is missing, `Ready` is not `true`, or `EN` / `JA` is empty, the workflow skips posting
+- Threads token setup and manual `curl` verification: [docs/development/threads.md](docs/development/threads.md)
+
 Node.js version:
 
 ```bash
