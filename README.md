@@ -80,18 +80,17 @@ npm run pr:check
 
 Merged pull requests into `main` can auto-post a short bilingual update to Threads.
 
-- Add the following section to the PR body and set `Ready: true` when you want a post after merge:
+- Add the following section to the PR body when you want a post after merge:
 
 ```md
 ## Threads
-Ready: true
 EN: Added file preview support for downloads.
 JA: ダウンロードしたファイルのプレビューに対応しました。
 ```
 
 - Repository secret required: `THREADS_LONG_LIVED_TOKEN`
-- Add the label `skip-threads` or `no-threads` to opt out even when `Ready: true`
-- If the `## Threads` section is missing, `Ready` is not `true`, or `EN` / `JA` is empty, the workflow skips posting
+- Add the label `skip-threads` or `no-threads` to opt out even when the `## Threads` section exists
+- If the `## Threads` section is missing, or `EN` / `JA` is empty, the workflow skips posting
 - Threads token setup and manual `curl` verification: [docs/development/threads.md](docs/development/threads.md)
 
 Node.js version:

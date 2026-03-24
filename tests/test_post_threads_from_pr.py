@@ -17,21 +17,18 @@ class ThreadsPostTests(unittest.TestCase):
 Something changed.
 
 ## Threads
-Ready: true
 EN: Added preview support.
 JA: プレビュー対応を追加しました。
 Image: ignored
 """
         config = MODULE.parse_threads_config(body)
 
-        self.assertEqual(config["ready"], "true")
         self.assertEqual(config["en"], "Added preview support.")
         self.assertEqual(config["ja"], "プレビュー対応を追加しました。")
         self.assertEqual(config["image"], "ignored")
 
     def test_parse_threads_config_supports_indented_continuation_lines(self) -> None:
         body = """## Threads
-Ready: true
 EN: Added preview support.
   Works for downloaded files too.
 JA: プレビュー対応を追加しました。
@@ -51,7 +48,7 @@ JA: プレビュー対応を追加しました。
     def test_should_post_rejects_missing_copy(self) -> None:
         allowed, reason = MODULE.should_post(
             {"draft": False, "labels": []},
-            {"ready": "true", "en": "Only English"},
+            {"en": "Only English"},
         )
 
         self.assertFalse(allowed)

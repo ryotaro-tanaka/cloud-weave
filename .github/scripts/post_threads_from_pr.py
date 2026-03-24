@@ -5,6 +5,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from urllib.error import HTTPError
 from typing import Any
 
 THREADS_MAX_LENGTH = 500
@@ -58,10 +59,6 @@ def parse_threads_config(markdown: str) -> dict[str, str]:
     return config
 
 
-def is_ready(config: dict[str, str]) -> bool:
-    return config.get("ready", "").strip().lower() == "true"
-
-
 def has_skip_label(pr: dict[str, Any]) -> bool:
     labels = pr.get("labels") or []
     names = {label.get("name", "").strip().lower() for label in labels}
@@ -108,8 +105,18 @@ def get_threads_user_id(token: str) -> str:
 def post_form(url: str, form_data: dict[str, str]) -> dict[str, Any]:
     encoded = urllib.parse.urlencode(form_data).encode("utf-8")
     request = urllib.request.Request(url, data=encoded, method="POST")
-    with urllib.request.urlopen(request) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        response_text = error.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(response_text)
+        except json.JSONDecodeError:
+            payload = {"raw": response_text}
+        raise RuntimeError(
+            f"Threads API request failed ({error.code} {error.reason}) at {url}: {sanitize_payload(payload)}"
+        ) from error
 
 
 def sanitize_payload(payload: Any) -> Any:
@@ -158,8 +165,6 @@ def should_post(pr: dict[str, Any], config: dict[str, str]) -> tuple[bool, str]:
         return False, "Skipping Threads post because a skip label is present."
     if not config:
         return False, "Skipping Threads post because the PR body has no ## Threads section."
-    if not is_ready(config):
-        return False, "Skipping Threads post because Ready is not true."
     if not config.get("en") or not config.get("ja"):
         return False, "Skipping Threads post because EN or JA content is empty."
     return True, ""
