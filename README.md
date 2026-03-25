@@ -84,14 +84,15 @@ Merged pull requests into `main` can auto-post a short bilingual update to Threa
 
 ```md
 ## Threads
-EN: Added file preview support for downloads.
-JA: ダウンロードしたファイルのプレビューに対応しました。
+Cloud Weave now supports file preview for downloads.
+
+Cloud Weave でダウンロードしたファイルのプレビューに対応しました。
 ```
 
 - Repository secret required: `THREADS_LONG_LIVED_TOKEN`
 - Add the label `skip-threads` or `no-threads` to opt out even when the `## Threads` section exists
-- If the `## Threads` section is missing, or `EN` / `JA` is empty, the workflow skips posting
-- For quick testing without a PR merge, run the `Threads Post Manual` workflow from the Actions tab and enter `EN` / `JA` directly
+- If the `## Threads` section is missing, or either the English or Japanese paragraph is empty, the workflow skips posting
+- For quick testing without a PR merge, run the `Threads Post Manual` workflow from the Actions tab and enter the English paragraph first and the Japanese paragraph second
 - Threads token setup and manual `curl` verification: [docs/development/threads.md](docs/development/threads.md)
 
 Node.js version:

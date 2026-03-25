@@ -13,33 +13,43 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ThreadsPostTests(unittest.TestCase):
-    def test_parse_threads_config_extracts_known_fields(self) -> None:
+    def test_parse_threads_config_extracts_english_and_japanese_paragraphs(self) -> None:
         body = """## Summary
 
 Something changed.
 
 ## Threads
+Cloud Weave now supports preview for downloaded files.
+
+Cloud Weave でダウンロード済みファイルのプレビューに対応しました。
+"""
+        config = MODULE.parse_threads_config(body)
+
+        self.assertEqual(config["en"], "Cloud Weave now supports preview for downloaded files.")
+        self.assertEqual(config["ja"], "Cloud Weave でダウンロード済みファイルのプレビューに対応しました。")
+
+    def test_parse_threads_config_collapses_multiline_paragraphs(self) -> None:
+        body = """## Threads
+Cloud Weave now supports preview.
+Works for downloaded files too.
+
+Cloud Weave でプレビューに対応しました。
+ダウンロード済みファイルにも対応します。
+"""
+        config = MODULE.parse_threads_config(body)
+
+        self.assertEqual(config["en"], "Cloud Weave now supports preview. Works for downloaded files too.")
+        self.assertEqual(config["ja"], "Cloud Weave でプレビューに対応しました。 ダウンロード済みファイルにも対応します。")
+
+    def test_parse_threads_config_still_supports_legacy_key_value_lines(self) -> None:
+        body = """## Threads
 EN: Added preview support.
 JA: プレビュー対応を追加しました。
-Image: ignored
 """
         config = MODULE.parse_threads_config(body)
 
         self.assertEqual(config["en"], "Added preview support.")
         self.assertEqual(config["ja"], "プレビュー対応を追加しました。")
-        self.assertEqual(config["image"], "ignored")
-
-    def test_parse_threads_config_supports_indented_continuation_lines(self) -> None:
-        body = """## Threads
-EN: Added preview support.
-  Works for downloaded files too.
-JA: プレビュー対応を追加しました。
-  ダウンロード済みファイルにも対応します。
-"""
-        config = MODULE.parse_threads_config(body)
-
-        self.assertEqual(config["en"], "Added preview support.\nWorks for downloaded files too.")
-        self.assertEqual(config["ja"], "プレビュー対応を追加しました。\nダウンロード済みファイルにも対応します。")
 
     def test_should_post_rejects_missing_section(self) -> None:
         allowed, reason = MODULE.should_post({"draft": False, "labels": []}, {})
@@ -78,21 +88,21 @@ JA: プレビュー対応を追加しました。
         self.assertTrue(text.startswith("New in CloudWeave: "))
 
     def test_get_manual_config_reads_environment(self) -> None:
-        original_en = os.environ.get("THREADS_TEST_EN")
-        original_ja = os.environ.get("THREADS_TEST_JA")
+        original_en = os.environ.get("THREADS_TEST_ENGLISH")
+        original_ja = os.environ.get("THREADS_TEST_JAPANESE")
         try:
-            os.environ["THREADS_TEST_EN"] = "Manual English"
-            os.environ["THREADS_TEST_JA"] = "手動テスト"
+            os.environ["THREADS_TEST_ENGLISH"] = "Manual English"
+            os.environ["THREADS_TEST_JAPANESE"] = "手動テスト"
             config = MODULE.get_manual_config()
         finally:
             if original_en is None:
-                os.environ.pop("THREADS_TEST_EN", None)
+                os.environ.pop("THREADS_TEST_ENGLISH", None)
             else:
-                os.environ["THREADS_TEST_EN"] = original_en
+                os.environ["THREADS_TEST_ENGLISH"] = original_en
             if original_ja is None:
-                os.environ.pop("THREADS_TEST_JA", None)
+                os.environ.pop("THREADS_TEST_JAPANESE", None)
             else:
-                os.environ["THREADS_TEST_JA"] = original_ja
+                os.environ["THREADS_TEST_JAPANESE"] = original_ja
 
         self.assertEqual(config, {"en": "Manual English", "ja": "手動テスト"})
 
