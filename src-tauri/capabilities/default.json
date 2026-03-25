@@ -8,6 +8,7 @@
   "permissions": [
     "core:default",
     "shell:allow-open",
+    "dialog:allow-open",
     {
       "identifier": "shell:allow-execute",
       "allow": [
@@ -43,7 +44,7 @@
           "args": [
             "lsjson",
             {
-              "validator": "[^\\s]+"
+              "validator": ".+"
             },
             "--config",
             {
@@ -57,7 +58,7 @@
           "args": [
             "lsjson",
             {
-              "validator": "[^\\s]+"
+              "validator": ".+"
             },
             "-R",
             "--files-only",
@@ -73,12 +74,58 @@
           "args": [
             "copyto",
             {
-              "validator": "[^\\s]+"
+              "validator": ".+"
             },
             {
               "validator": ".+"
             },
             "--local-no-set-modtime",
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "copyto",
+            {
+              "validator": ".+"
+            },
+            {
+              "validator": ".+"
+            },
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "about",
+            {
+              "validator": ".+"
+            },
+            "--json",
+            "--config",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        },
+        {
+          "name": "binaries/rclone",
+          "sidecar": true,
+          "args": [
+            "mkdir",
+            {
+              "validator": ".+"
+            },
             "--config",
             {
               "validator": "\\S+"
