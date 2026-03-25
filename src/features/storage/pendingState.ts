@@ -13,7 +13,7 @@ export type OneDriveDriveCandidate = {
 export type RemoteSummary = {
   name: string
   provider: string
-  status: 'connected' | 'error'
+  status: 'connected' | 'error' | 'reconnect_required'
   message?: string | null
 }
 
@@ -66,12 +66,16 @@ export function resolvePendingSession(
     }
   }
 
-  if (remote?.status === 'error') {
+  if (remote?.status === 'error' || remote?.status === 'reconnect_required') {
     return {
       ...currentPending,
       status: 'error',
       nextStep: 'retry',
-      message: remote.message ?? 'This storage connection is incomplete. Try again.',
+      message:
+        remote.message ??
+        (remote.status === 'reconnect_required'
+          ? 'Authentication expired for this storage. Reconnect it and try again.'
+          : 'This storage connection is incomplete. Try again.'),
       driveCandidates: undefined,
     }
   }

@@ -44,6 +44,11 @@ struct AuthSessionStore {
     sessions: Mutex<HashMap<String, AuthSessionRecord>>,
 }
 
+#[derive(Default)]
+struct ReconnectRequestStore {
+    remotes: Mutex<HashMap<String, ReconnectRequestRecord>>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteSummary {
@@ -51,6 +56,12 @@ struct RemoteSummary {
     provider: String,
     status: String,
     message: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ReconnectRequestRecord {
+    provider: String,
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -554,12 +565,20 @@ fn list_storage_remotes_impl(app: AppHandle) -> Result<Vec<RemoteSummary>, Strin
                 .get(&remote_name)
                 .cloned()
                 .unwrap_or_else(default_remote_config_state);
+            let reconnect_request = get_reconnect_request_record(&app, &remote_name);
 
             RemoteSummary {
                 name: remote_name,
-                provider: config_state.provider.clone(),
-                status: remote_status(&config_state).to_string(),
-                message: remote_status_message(&config_state),
+                provider: if config_state.provider == "unknown" {
+                    reconnect_request
+                        .as_ref()
+                        .map(|request| request.provider.clone())
+                        .unwrap_or(config_state.provider.clone())
+                } else {
+                    config_state.provider.clone()
+                },
+                status: remote_status(&config_state, reconnect_request.as_ref()).to_string(),
+                message: remote_status_message(&config_state, reconnect_request.as_ref()),
             }
         })
         .collect::<Vec<_>>();
@@ -701,10 +720,19 @@ fn start_unified_library_load_impl(
                         sender.clone(),
                     ) {
                         Ok(notices) => {
+                            clear_reconnect_request(&app, &remote.name);
                             let _ =
                                 sender.send(LibraryLoadMessage::RemoteComplete { remote, notices });
                         }
                         Err(error) => {
+                            if classify_rclone_error(&error) == RcloneErrorKind::AuthError {
+                                mark_remote_for_reconnect(
+                                    &app,
+                                    &remote.name,
+                                    &remote.provider,
+                                    "Authentication expired for this storage. Reconnect it to keep browsing and uploading.",
+                                );
+                            }
                             let _ = sender.send(LibraryLoadMessage::RemoteFailed { remote, error });
                         }
                     }
@@ -713,6 +741,7 @@ fn start_unified_library_load_impl(
 
                 match load_items_for_remote(&app, &config_path, &remote.name, &remote.provider) {
                     Ok(library) => {
+                        clear_reconnect_request(&app, &remote.name);
                         let _ = sender.send(LibraryLoadMessage::RemoteLoaded {
                             remote,
                             items: library.items,
@@ -720,6 +749,14 @@ fn start_unified_library_load_impl(
                         });
                     }
                     Err(error) => {
+                        if classify_rclone_error(&error) == RcloneErrorKind::AuthError {
+                            mark_remote_for_reconnect(
+                                &app,
+                                &remote.name,
+                                &remote.provider,
+                                "Authentication expired for this storage. Reconnect it to keep browsing and uploading.",
+                            );
+                        }
                         let _ = sender.send(LibraryLoadMessage::RemoteFailed { remote, error });
                     }
                 }
@@ -1203,6 +1240,7 @@ fn delete_remote_impl(app: AppHandle, name: String) -> Result<ActionResult, Stri
     match run_rclone_owned(&app, &owned_args, DEFAULT_COMMAND_TIMEOUT) {
         Ok(_) => {
             remove_auth_session_record(&app, &name);
+            clear_reconnect_request(&app, &name);
             Ok(ActionResult {
                 status: "success".to_string(),
                 message: format!("{name} was removed."),
@@ -1844,6 +1882,10 @@ fn build_success_result(
     };
     set_auth_session_record(app, session);
 
+    if result.status == "connected" {
+        clear_reconnect_request(app, &result.remote_name);
+    }
+
     Ok(result)
 }
 
@@ -2126,6 +2168,7 @@ fn summarize_output(output: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(AuthSessionStore::default())
+        .manage(ReconnectRequestStore::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -2775,6 +2818,7 @@ fn upload_prepared_item(
 
                 match run_rclone_owned(app, &args, INVENTORY_COMMAND_TIMEOUT) {
                     Ok(_) => {
+                        clear_reconnect_request(app, &candidate.remote_name);
                         let result = UploadResultItem {
                             item_id: item.item_id.clone(),
                             provider: candidate.provider.clone(),
@@ -2804,11 +2848,27 @@ fn upload_prepared_item(
                         return Ok(result);
                     }
                     Err(error) => {
+                        if classify_rclone_error(&error) == RcloneErrorKind::AuthError {
+                            mark_remote_for_reconnect(
+                                app,
+                                &candidate.remote_name,
+                                &candidate.provider,
+                                "Authentication expired for this storage. Reconnect it to keep browsing and uploading.",
+                            );
+                        }
                         last_error = Some(upload_candidate_error_message(&error));
                     }
                 }
             }
             Err(error) => {
+                if classify_rclone_error(&error) == RcloneErrorKind::AuthError {
+                    mark_remote_for_reconnect(
+                        app,
+                        &candidate.remote_name,
+                        &candidate.provider,
+                        "Authentication expired for this storage. Reconnect it to keep browsing and uploading.",
+                    );
+                }
                 last_error = Some(error);
             }
         }
@@ -3382,18 +3442,30 @@ fn default_remote_config_state() -> RemoteConfigState {
     }
 }
 
-fn remote_status(config_state: &RemoteConfigState) -> &'static str {
+fn remote_status(
+    config_state: &RemoteConfigState,
+    reconnect_request: Option<&ReconnectRequestRecord>,
+) -> &'static str {
     if config_state.provider == "onedrive"
         && (config_state.drive_id.is_none() || config_state.drive_type.is_none())
     {
         "error"
+    } else if reconnect_request.is_some() {
+        "reconnect_required"
     } else {
         "connected"
     }
 }
 
-fn remote_status_message(config_state: &RemoteConfigState) -> Option<String> {
-    if remote_status(config_state) == "error" {
+fn remote_status_message(
+    config_state: &RemoteConfigState,
+    reconnect_request: Option<&ReconnectRequestRecord>,
+) -> Option<String> {
+    if let Some(reconnect_request) = reconnect_request {
+        return Some(reconnect_request.message.clone());
+    }
+
+    if remote_status(config_state, None) == "error" {
         Some(
             "This OneDrive connection is incomplete. Reconnect it or remove it and connect again."
                 .to_string(),
@@ -3514,15 +3586,52 @@ fn remove_auth_session_record(app: &AppHandle, remote_name: &str) {
     sessions.remove(remote_name);
 }
 
+fn mark_remote_for_reconnect(app: &AppHandle, remote_name: &str, provider: &str, message: &str) {
+    let store = app.state::<ReconnectRequestStore>();
+    let Ok(mut remotes) = store.remotes.lock() else {
+        return;
+    };
+
+    remotes.insert(
+        remote_name.to_string(),
+        ReconnectRequestRecord {
+            provider: provider.to_string(),
+            message: message.to_string(),
+        },
+    );
+}
+
+fn clear_reconnect_request(app: &AppHandle, remote_name: &str) {
+    let store = app.state::<ReconnectRequestStore>();
+    let Ok(mut remotes) = store.remotes.lock() else {
+        return;
+    };
+    remotes.remove(remote_name);
+}
+
+fn get_reconnect_request_record(
+    app: &AppHandle,
+    remote_name: &str,
+) -> Option<ReconnectRequestRecord> {
+    let store = app.state::<ReconnectRequestStore>();
+    store
+        .remotes
+        .lock()
+        .ok()
+        .and_then(|remotes| remotes.get(remote_name).cloned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         build_open_cache_key, category_base_path, completion_progress,
-        default_upload_routing_config, expand_upload_directory, join_remote_path,
-        providers_for_extension, rank_upload_remotes_by_capacity, resolve_unique_download_target,
-        sanitize_file_name_component, select_download_file_name, select_open_mode,
-        user_facing_download_error, UploadRemoteCapacity,
+        default_upload_routing_config, expand_upload_directory, join_remote_path, remote_status,
+        remote_status_message, providers_for_extension, rank_upload_remotes_by_capacity,
+        resolve_unique_download_target, sanitize_file_name_component, select_download_file_name,
+        select_open_mode, user_facing_download_error, ReconnectRequestRecord,
+        UploadRemoteCapacity,
     };
+    use rclone_logic::RemoteConfigState;
     use std::{
         collections::HashMap,
         fs,
@@ -3538,6 +3647,49 @@ mod tests {
         assert_eq!(
             select_download_file_name("", "nested/photos/image.png"),
             "image.png"
+        );
+    }
+
+    #[test]
+    fn remote_status_prefers_reconnect_request_for_connected_remote() {
+        let config_state = RemoteConfigState {
+            provider: "onedrive".to_string(),
+            drive_id: Some("drive-1".to_string()),
+            drive_type: Some("personal".to_string()),
+            token: Some("token".to_string()),
+        };
+        let reconnect_request = ReconnectRequestRecord {
+            provider: "onedrive".to_string(),
+            message: "Reconnect required.".to_string(),
+        };
+
+        assert_eq!(
+            remote_status(&config_state, Some(&reconnect_request)),
+            "reconnect_required"
+        );
+        assert_eq!(
+            remote_status_message(&config_state, Some(&reconnect_request)),
+            Some("Reconnect required.".to_string())
+        );
+    }
+
+    #[test]
+    fn remote_status_keeps_incomplete_remote_as_error() {
+        let config_state = RemoteConfigState {
+            provider: "onedrive".to_string(),
+            drive_id: None,
+            drive_type: None,
+            token: Some("token".to_string()),
+        };
+        let reconnect_request = ReconnectRequestRecord {
+            provider: "onedrive".to_string(),
+            message: "Reconnect required.".to_string(),
+        };
+
+        assert_eq!(remote_status(&config_state, Some(&reconnect_request)), "error");
+        assert_eq!(
+            remote_status_message(&config_state, Some(&reconnect_request)),
+            Some("Reconnect required.".to_string())
         );
     }
 

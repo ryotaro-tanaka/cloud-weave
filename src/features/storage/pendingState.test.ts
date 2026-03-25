@@ -71,6 +71,25 @@ describe('resolvePendingSession', () => {
     })
   })
 
+  it('treats a reconnect-required remote as an error that can be retried', () => {
+    const remotes: RemoteSummary[] = [
+      {
+        name: 'onedrive-main',
+        provider: 'onedrive',
+        status: 'reconnect_required',
+        message: 'Authentication expired for this storage. Reconnect it to keep browsing and uploading.',
+      },
+    ]
+
+    expect(resolvePendingSession(basePending, remotes, null)).toEqual({
+      ...basePending,
+      status: 'error',
+      nextStep: 'retry',
+      message: 'Authentication expired for this storage. Reconnect it to keep browsing and uploading.',
+      driveCandidates: undefined,
+    })
+  })
+
   it('preserves drive candidates when the auth session requires drive selection', () => {
     const session: AuthSessionRecord = {
       remoteName: 'onedrive-main',

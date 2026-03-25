@@ -326,6 +326,13 @@ function App() {
         return
       }
 
+      if (
+        event.payload.status === 'failed' &&
+        event.payload.errorMessage?.toLowerCase().includes('reconnect')
+      ) {
+        void fetchRemotes({ silent: true })
+      }
+
       setUploadStates((current) => applyUploadProgressEvent(current, event.payload))
     })
 
@@ -364,6 +371,7 @@ function App() {
       }
 
       if (payload.status === 'remote_failed') {
+        void fetchRemotes({ silent: true })
         setLibraryNotices((current) =>
           mergeNotices(current, payload.message ? [payload.message, ...(payload.notices ?? [])] : (payload.notices ?? [])),
         )
@@ -1025,6 +1033,7 @@ function App() {
   }
 
   const hasConnectedStorage = remotes.length > 0
+  const reconnectRequiredRemotes = remotes.filter((remote) => remote.status === 'reconnect_required')
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
     hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
@@ -1066,11 +1075,14 @@ function App() {
                 <ul className="remote-list">
                   {remotes.map((remote) => {
                     const isHovered = hoveredRemote === remote.name
+                    const remoteStatusLabel = getRemoteStatusLabel(remote.status)
 
                     return (
                       <li
                         key={remote.name}
-                        className={`remote-item ${isHovered ? 'hovered' : ''}`}
+                        className={`remote-item ${isHovered ? 'hovered' : ''} ${
+                          remote.status === 'reconnect_required' ? 'requires-reconnect' : ''
+                        }`}
                         onMouseEnter={() => setHoveredRemote(remote.name)}
                         onMouseLeave={() => setHoveredRemote((current) => (current === remote.name ? null : current))}
                       >
@@ -1083,7 +1095,9 @@ function App() {
                         </div>
 
                         <div className={`remote-actions ${isHovered ? 'visible' : ''}`}>
-                          <span className="status-badge">{remote.status}</span>
+                          <span className={`status-badge ${remote.status === 'reconnect_required' ? 'warning' : ''}`}>
+                            {remoteStatusLabel}
+                          </span>
                           <button className="row-action" type="button" onClick={() => void handleReconnect(remote)}>
                             Reconnect
                           </button>
@@ -1139,6 +1153,18 @@ function App() {
           </header>
 
           <div className="library-content">
+            {reconnectRequiredRemotes.map((remote) => (
+              <div key={remote.name} className="info-banner warning" role="alert">
+                <p>
+                  {getProviderLabel(remote.provider)} `{remote.name}` needs to be reconnected.
+                  {remote.message ? ` ${remote.message}` : ''}
+                </p>
+                <button className="row-action" type="button" onClick={() => void handleReconnect(remote)}>
+                  Reconnect now
+                </button>
+              </div>
+            ))}
+
             {libraryNotices.map((notice) => (
               <div key={notice} className="info-banner" role="note">
                 <p>{notice}</p>
@@ -1958,6 +1984,17 @@ function getProviderLabel(provider: string): string {
       return 'iCloud Drive'
     default:
       return provider
+  }
+}
+
+function getRemoteStatusLabel(status: RemoteSummary['status']): string {
+  switch (status) {
+    case 'reconnect_required':
+      return 'Needs reconnect'
+    case 'connected':
+      return 'Connected'
+    case 'error':
+      return 'Error'
   }
 }
 

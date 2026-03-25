@@ -169,6 +169,11 @@
   background: rgba(255, 255, 255, 0.72);
 }
 
+.remote-item.requires-reconnect {
+  border-color: rgba(198, 112, 26, 0.28);
+  background: rgba(255, 248, 239, 0.9);
+}
+
 .remote-summary {
   display: flex;
   align-items: center;
@@ -226,6 +231,11 @@
 .status-badge {
   min-width: 74px;
   text-transform: capitalize;
+}
+
+.status-badge.warning {
+  color: #8a4b11;
+  background: rgba(241, 183, 84, 0.22);
 }
 
 .row-action,
@@ -413,12 +423,26 @@ button:disabled {
 }
 
 .info-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   padding: 12px 16px;
   border: 1px solid var(--border);
   border-radius: 18px;
   color: var(--muted);
   font-size: 14px;
   background: rgba(255, 255, 255, 0.62);
+}
+
+.info-banner p {
+  margin: 0;
+}
+
+.info-banner.warning {
+  border-color: rgba(198, 112, 26, 0.28);
+  color: #7a4a1d;
+  background: rgba(255, 248, 239, 0.9);
 }
 
 .main-empty-state {
@@ -1206,6 +1230,17 @@ button:disabled {
     box-shadow: 0 24px 54px -36px rgba(114, 163, 255, 0.55);
   }
 
+  .remote-item.requires-reconnect,
+  .info-banner.warning {
+    border-color: rgba(229, 169, 85, 0.26);
+    background: rgba(58, 40, 17, 0.72);
+  }
+
+  .status-badge.warning {
+    color: #ffd28d;
+    background: rgba(229, 169, 85, 0.18);
+  }
+
   .upload-dropzone-copy,
   .upload-summary-meta,
   .upload-relative-path,
@@ -1325,11 +1360,17 @@ button:disabled {
     width: 100%;
   }
 
+  .info-banner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .library-actions {
     width: 100%;
   }
 
   .library-actions .primary-button,
+  .info-banner .row-action,
   .upload-picker-actions .ghost-button,
   .upload-browse-chooser-actions .primary-button,
   .upload-browse-chooser-actions .ghost-button {
