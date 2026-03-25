@@ -3,12 +3,12 @@ name: Threads Post Manual
 on:
   workflow_dispatch:
     inputs:
-      english:
-        description: English text for the Threads post
+      english_paragraph:
+        description: First paragraph for the Threads post (English)
         required: true
         type: string
-      japanese:
-        description: Japanese text for the Threads post
+      japanese_paragraph:
+        description: Second paragraph for the Threads post (Japanese)
         required: true
         type: string
 
@@ -30,7 +30,7 @@ jobs:
       - name: Post manual Threads update
         env:
           THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
-          THREADS_TEST_EN: ${{ inputs.english }}
-          THREADS_TEST_JA: ${{ inputs.japanese }}
+          THREADS_TEST_ENGLISH: ${{ inputs.english_paragraph }}
+          THREADS_TEST_JAPANESE: ${{ inputs.japanese_paragraph }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: python .github/scripts/post_threads_from_pr.py

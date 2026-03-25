@@ -43,6 +43,13 @@ def parse_threads_config(markdown: str) -> dict[str, str]:
     if not section:
         return {}
 
+    paragraphs = [collapse_whitespace(part) for part in re.split(r"\n\s*\n", section.strip()) if part.strip()]
+    if len(paragraphs) >= 2:
+        return {
+            "en": paragraphs[0],
+            "ja": paragraphs[1],
+        }
+
     config: dict[str, str] = {}
     current_key: str | None = None
 
@@ -237,8 +244,8 @@ def should_post(pr: dict[str, Any], config: dict[str, str]) -> tuple[bool, str]:
 
 
 def get_manual_config() -> dict[str, str]:
-    english = os.getenv("THREADS_TEST_EN", "").strip()
-    japanese = os.getenv("THREADS_TEST_JA", "").strip()
+    english = os.getenv("THREADS_TEST_ENGLISH", "").strip() or os.getenv("THREADS_TEST_EN", "").strip()
+    japanese = os.getenv("THREADS_TEST_JAPANESE", "").strip() or os.getenv("THREADS_TEST_JA", "").strip()
     if not english and not japanese:
         return {}
     return {"en": english, "ja": japanese}
@@ -255,7 +262,7 @@ def main() -> int:
 
     if manual_config:
         if not manual_config.get("en") or not manual_config.get("ja"):
-            print("THREADS_TEST_EN and THREADS_TEST_JA are both required for manual posting.", file=sys.stderr)
+            print("English and Japanese manual Threads inputs are both required.", file=sys.stderr)
             return 1
         post_text = build_manual_post_text(
             english=manual_config["en"],
