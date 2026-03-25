@@ -2219,7 +2219,10 @@ fn expand_upload_selection(
     let path = PathBuf::from(&selection.path);
 
     if !path.exists() {
-        return Err(format!("The selected path does not exist: {}", selection.path));
+        return Err(format!(
+            "The selected path does not exist: {}",
+            selection.path
+        ));
     }
 
     let metadata = fs::metadata(&path)
@@ -2452,9 +2455,7 @@ fn default_upload_routing_config() -> UploadRoutingConfig {
         provider_priority_by_extension.insert(extension.to_string(), vec!["onedrive".to_string()]);
     }
 
-    for extension in [
-        "jpg", "jpeg", "png", "heic", "heif", "raw", "mp4", "mov",
-    ] {
+    for extension in ["jpg", "jpeg", "png", "heic", "heif", "raw", "mp4", "mov"] {
         provider_priority_by_extension.insert(
             extension.to_string(),
             vec![
@@ -2489,10 +2490,7 @@ fn default_upload_routing_config() -> UploadRoutingConfig {
     }
 }
 
-fn providers_for_extension(
-    routing: &UploadRoutingConfig,
-    extension: Option<&str>,
-) -> Vec<String> {
+fn providers_for_extension(routing: &UploadRoutingConfig, extension: Option<&str>) -> Vec<String> {
     let normalized = extension
         .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
         .filter(|value| !value.is_empty());
@@ -2586,7 +2584,9 @@ fn rank_upload_remotes_by_capacity(
         .filter(|remote_name| {
             matches!(
                 capacities.get(*remote_name),
-                Some(UploadRemoteCapacity::Unsupported | UploadRemoteCapacity::SupportedWithoutFree)
+                Some(
+                    UploadRemoteCapacity::Unsupported | UploadRemoteCapacity::SupportedWithoutFree
+                )
             )
         })
         .cloned()
@@ -2685,7 +2685,14 @@ fn spawn_upload_task(app: AppHandle, input: StartUploadBatchInput) {
                 },
             );
 
-            match upload_prepared_item(&app, &config_path, &input.upload_id, &item, completed_count, total_count) {
+            match upload_prepared_item(
+                &app,
+                &config_path,
+                &input.upload_id,
+                &item,
+                completed_count,
+                total_count,
+            ) {
                 Ok(_) => {
                     completed_count += 1;
                 }
@@ -2831,18 +2838,21 @@ fn prepare_candidate_destination(
     }
 
     let relative_path = item.relative_path.replace('\\', "/");
-    let parent_path = Path::new(&relative_path)
-        .parent()
-        .and_then(|value| {
-            let normalized = value
-                .components()
-                .filter_map(component_to_normal_path_part)
-                .collect::<Vec<_>>()
-                .join("/");
-            (!normalized.is_empty()).then_some(normalized)
-        });
+    let parent_path = Path::new(&relative_path).parent().and_then(|value| {
+        let normalized = value
+            .components()
+            .filter_map(component_to_normal_path_part)
+            .collect::<Vec<_>>()
+            .join("/");
+        (!normalized.is_empty()).then_some(normalized)
+    });
 
-    ensure_remote_directory(app, config_path, &candidate.remote_name, &candidate.base_path)?;
+    ensure_remote_directory(
+        app,
+        config_path,
+        &candidate.remote_name,
+        &candidate.base_path,
+    )?;
 
     if let Some(parent_path) = parent_path {
         ensure_remote_directory(
@@ -2853,7 +2863,13 @@ fn prepare_candidate_destination(
         )?;
     }
 
-    resolve_unique_remote_upload_path(app, config_path, &candidate.remote_name, &candidate.base_path, &relative_path)
+    resolve_unique_remote_upload_path(
+        app,
+        config_path,
+        &candidate.remote_name,
+        &candidate.base_path,
+        &relative_path,
+    )
 }
 
 fn remote_free_space(
@@ -2870,8 +2886,8 @@ fn remote_free_space(
     ];
 
     let output = run_rclone_owned(app, &args, DEFAULT_COMMAND_TIMEOUT)?;
-    let parsed: AboutJson =
-        serde_json::from_str(&output).map_err(|error| format!("failed to parse rclone about output: {error}"))?;
+    let parsed: AboutJson = serde_json::from_str(&output)
+        .map_err(|error| format!("failed to parse rclone about output: {error}"))?;
     Ok(parsed.free)
 }
 
@@ -3503,10 +3519,9 @@ mod tests {
     use super::{
         build_open_cache_key, category_base_path, completion_progress,
         default_upload_routing_config, expand_upload_directory, join_remote_path,
-        rank_upload_remotes_by_capacity,
-        providers_for_extension, resolve_unique_download_target, sanitize_file_name_component,
-        select_download_file_name, select_open_mode, user_facing_download_error,
-        UploadRemoteCapacity,
+        providers_for_extension, rank_upload_remotes_by_capacity, resolve_unique_download_target,
+        sanitize_file_name_component, select_download_file_name, select_open_mode,
+        user_facing_download_error, UploadRemoteCapacity,
     };
     use std::{
         collections::HashMap,
@@ -3692,7 +3707,16 @@ mod tests {
         let items = expand_upload_directory(&root).expect("directory expansion should succeed");
 
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].relative_path, format!("{}{}", root.file_name().and_then(|value| value.to_str()).expect("root name"), "/nested/photo.jpg"));
+        assert_eq!(
+            items[0].relative_path,
+            format!(
+                "{}{}",
+                root.file_name()
+                    .and_then(|value| value.to_str())
+                    .expect("root name"),
+                "/nested/photo.jpg"
+            )
+        );
 
         fs::remove_dir_all(&root).expect("temp directory should be removed");
     }

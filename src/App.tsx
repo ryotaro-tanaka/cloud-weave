@@ -190,6 +190,7 @@ function App() {
   const [isPreparingUpload, setIsPreparingUpload] = useState(false)
   const [isStartingUpload, setIsStartingUpload] = useState(false)
   const [isUploadDragActive, setIsUploadDragActive] = useState(false)
+  const [isUploadBrowseChooserOpen, setIsUploadBrowseChooserOpen] = useState(false)
   const [hasPendingUploadRefresh, setHasPendingUploadRefresh] = useState(false)
   const [libraryLoadProgress, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
     requestId: null,
@@ -197,6 +198,7 @@ function App() {
     totalRemoteCount: 0,
   })
   const activeLibraryRequestIdRef = useRef<string | null>(null)
+  const uploadBrowseFilesButtonRef = useRef<HTMLButtonElement | null>(null)
 
   const selectedProviderConfig = useMemo(
     () => STORAGE_PROVIDERS.find((provider) => provider.id === selectedProvider) ?? STORAGE_PROVIDERS[0],
@@ -417,6 +419,29 @@ function App() {
     }
   }, [activeModal])
 
+  useEffect(() => {
+    if (!isUploadBrowseChooserOpen) {
+      return
+    }
+
+    uploadBrowseFilesButtonRef.current?.focus()
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return
+      }
+
+      event.preventDefault()
+      setIsUploadBrowseChooserOpen(false)
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isUploadBrowseChooserOpen])
+
   const initializeLibrary = async () => {
     setIsLoadingItems(true)
     setIsLibraryStreaming(false)
@@ -529,6 +554,7 @@ function App() {
   const closeUploadModal = () => {
     setActiveModal('none')
     setIsUploadDragActive(false)
+    setIsUploadBrowseChooserOpen(false)
   }
 
   const closeAddModal = () => {
@@ -866,6 +892,8 @@ function App() {
   }
 
   const handleChooseUploadFiles = async () => {
+    setIsUploadBrowseChooserOpen(false)
+
     try {
       const selected = await openDialog({
         multiple: true,
@@ -881,6 +909,8 @@ function App() {
   }
 
   const handleChooseUploadFolder = async () => {
+    setIsUploadBrowseChooserOpen(false)
+
     try {
       const selected = await openDialog({
         multiple: false,
@@ -893,6 +923,14 @@ function App() {
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  const handleOpenUploadBrowseChooser = () => {
+    if (isPreparingUpload || isStartingUpload) {
+      return
+    }
+
+    setIsUploadBrowseChooserOpen(true)
   }
 
   const handleStartUpload = async () => {
@@ -1511,13 +1549,60 @@ function App() {
                 </p>
 
                 <div className="upload-picker-actions">
-                  <button className="ghost-button" type="button" onClick={() => void handleChooseUploadFiles()} disabled={isPreparingUpload || isStartingUpload}>
-                    Choose files
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => void handleChooseUploadFolder()} disabled={isPreparingUpload || isStartingUpload}>
-                    Choose folder
+                  <button className="ghost-button" type="button" onClick={handleOpenUploadBrowseChooser} disabled={isPreparingUpload || isStartingUpload}>
+                    Browse…
                   </button>
                 </div>
+
+                {isUploadBrowseChooserOpen ? (
+                  <div
+                    className="upload-browse-chooser-backdrop"
+                    role="presentation"
+                    onClick={() => setIsUploadBrowseChooserOpen(false)}
+                  >
+                    <div
+                      className="upload-browse-chooser"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-labelledby="upload-browse-title"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <p id="upload-browse-title" className="upload-browse-chooser-title">
+                        What would you like to add?
+                      </p>
+                      <p className="upload-browse-chooser-copy">
+                        Choose files or a folder, then Cloud Weave will open the matching system picker.
+                      </p>
+                      <div className="upload-browse-chooser-actions">
+                        <button
+                          ref={uploadBrowseFilesButtonRef}
+                          className="primary-button"
+                          type="button"
+                          onClick={() => void handleChooseUploadFiles()}
+                          disabled={isPreparingUpload || isStartingUpload}
+                        >
+                          Choose files
+                        </button>
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          onClick={() => void handleChooseUploadFolder()}
+                          disabled={isPreparingUpload || isStartingUpload}
+                        >
+                          Choose folder
+                        </button>
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          onClick={() => setIsUploadBrowseChooserOpen(false)}
+                          disabled={isPreparingUpload || isStartingUpload}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="upload-summary-card">
