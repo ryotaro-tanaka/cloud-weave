@@ -830,6 +830,13 @@ fn start_unified_library_load_impl(
                 LibraryLoadMessage::RemoteFailed { remote, error } => {
                     loaded_remote_count += 1;
 
+                    log::warn!(
+                        "library load failed remote={} provider={} error={}",
+                        remote.name,
+                        remote.provider,
+                        summarize_output(&error)
+                    );
+
                     emit_library_progress(
                         &app_for_thread,
                         UnifiedLibraryLoadEvent {
@@ -839,7 +846,7 @@ fn start_unified_library_load_impl(
                             provider: Some(remote.provider),
                             items: Some(Vec::new()),
                             notices: Some(Vec::new()),
-                            message: Some(user_facing_command_error(&error)),
+                            message: None,
                             loaded_remote_count,
                             total_remote_count: total_remotes,
                         },

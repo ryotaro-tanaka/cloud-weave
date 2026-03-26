@@ -371,9 +371,7 @@ function App() {
 
       if (payload.status === 'remote_failed') {
         void fetchRemotes({ silent: true })
-        setLibraryNotices((current) =>
-          mergeNotices(current, payload.message ? [payload.message, ...(payload.notices ?? [])] : (payload.notices ?? [])),
-        )
+        setLibraryNotices((current) => mergeNotices(current, payload.notices ?? []))
         setIsLoadingItems(false)
         return
       }
