@@ -1085,6 +1085,16 @@ button:disabled {
   margin: 0;
 }
 
+.manual-help summary {
+  cursor: pointer;
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.manual-help summary + p {
+  margin-top: 8px;
+}
+
 .drive-picker {
   display: flex;
   flex-direction: column;
