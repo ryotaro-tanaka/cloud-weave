@@ -82,6 +82,7 @@ pub enum RcloneErrorKind {
     InsufficientSpace,
     UnsupportedAbout,
     AuthError,
+    AuthCallbackUnavailable,
     AuthFlow,
     AuthCancelled,
     RcloneUnavailable,
@@ -420,6 +421,16 @@ pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
         || normalized.contains("invalid_grant")
     {
         return RcloneErrorKind::AuthError;
+    }
+
+    if (normalized.contains("failed to start auth webserver")
+        || normalized.contains("failed to start oauth webserver"))
+        && normalized.contains("listen tcp")
+        && (normalized.contains("bind:")
+            || normalized.contains("address already in use")
+            || normalized.contains("only one usage of each socket address"))
+    {
+        return RcloneErrorKind::AuthCallbackUnavailable;
     }
 
     if normalized.contains("timed out")
@@ -869,6 +880,16 @@ mod tests {
         assert!(matches!(
             classify_rclone_error("authentication failed: token has expired"),
             RcloneErrorKind::AuthError
+        ));
+    }
+
+    #[test]
+    fn classify_rclone_error_detects_auth_callback_unavailable() {
+        assert!(matches!(
+            classify_rclone_error(
+                "config failed to refresh token: failed to start auth webserver: listen tcp 127.0.0.1:53682: bind: address already in use"
+            ),
+            RcloneErrorKind::AuthCallbackUnavailable
         ));
     }
 

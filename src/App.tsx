@@ -6,8 +6,10 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { open as openPath } from '@tauri-apps/plugin-shell'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
+  overlayPendingRemote,
   resolvePendingSession,
   type AuthSessionRecord,
+  type AuthSessionStage,
   type OneDriveDriveCandidate,
   type PendingMode,
   type PendingSession,
@@ -151,6 +153,9 @@ const STORAGE_PROVIDERS: ProviderDefinition[] = [
 const LOGICAL_VIEWS: LogicalView[] = ['recent', 'documents', 'photos', 'videos', 'audio', 'other']
 const EMPTY_PENDING_MESSAGE = 'Complete authentication in your browser.'
 const PREVIEW_ASSET_PROTOCOL = 'asset'
+const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
+const CONNECT_SYNC_ATTEMPTS = 8
+const CONNECT_SYNC_DELAY_MS = 500
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -209,6 +214,8 @@ function App() {
     const viewItems = filterItemsByView(unifiedItems, activeView)
     return searchUnifiedItems(viewItems, searchQuery)
   }, [activeView, searchQuery, unifiedItems])
+
+  const displayedRemotes = useMemo(() => overlayPendingRemote(remotes, pendingSession), [pendingSession, remotes])
 
   const groupedRecentItems = useMemo(() => {
     if (activeView !== 'recent') {
@@ -572,6 +579,67 @@ function App() {
     return invoke<AuthSessionRecord | null>('get_auth_session_status', { name })
   }
 
+  const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+  const upsertOptimisticConnectedRemote = (remoteName: string, provider: string) => {
+    setRemotes((current) => {
+      const nextRemote: RemoteSummary = {
+        name: remoteName,
+        provider,
+        status: 'connected',
+        message: undefined,
+      }
+
+      const existingIndex = current.findIndex((entry) => entry.name === remoteName)
+
+      if (existingIndex === -1) {
+        return [...current, nextRemote].sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase()))
+      }
+
+      const next = [...current]
+      next[existingIndex] = nextRemote
+      return next
+    })
+  }
+
+  const synchronizeConnectedRemote = async (remoteName: string, provider: string) => {
+    upsertOptimisticConnectedRemote(remoteName, provider)
+
+    for (let attempt = 1; attempt <= CONNECT_SYNC_ATTEMPTS; attempt += 1) {
+      const latestRemotes = await fetchRemotes({ silent: true })
+      const matchedRemote = latestRemotes?.find((entry) => entry.name === remoteName) ?? null
+
+      console.info('[connect-sync]', {
+        remoteName,
+        provider,
+        attempt,
+        matchedRemoteStatus: matchedRemote?.status ?? null,
+      })
+
+      if (matchedRemote?.status === 'connected') {
+        await fetchUnifiedItems(latestRemotes, { silent: true })
+        return
+      }
+
+      if (attempt < CONNECT_SYNC_ATTEMPTS) {
+        await sleep(CONNECT_SYNC_DELAY_MS)
+      }
+    }
+
+    await refreshLibrary({ silent: true })
+  }
+
+  const handlePendingConnected = async (session: PendingSession) => {
+    setPendingSession({
+      ...session,
+      status: 'connected',
+      nextStep: 'done',
+      message: session.message || CONNECT_SUCCESS_MESSAGE,
+      driveCandidates: undefined,
+    })
+    await synchronizeConnectedRemote(session.remoteName, session.provider)
+  }
+
   const checkPendingSession = async (silent = false) => {
     if (!pendingSession) {
       return null
@@ -587,17 +655,36 @@ function App() {
         fetchAuthSession(pendingSession.remoteName),
       ])
 
-      const nextPending = resolvePendingSession(pendingSession, latestRemotes, session)
+      const nextPending = resolvePendingSession(pendingSession, latestRemotes, session, Date.now())
+
+      console.info('[pending-auth]', {
+        remoteName: pendingSession.remoteName,
+        previousStatus: pendingSession.status,
+        previousStage: pendingSession.stage,
+        remoteStatus: latestRemotes?.find((entry) => entry.name === pendingSession.remoteName)?.status ?? null,
+        sessionStatus: session?.status ?? null,
+        sessionStage: session?.stage ?? null,
+        resolvedStatus: nextPending.status,
+        resolvedStage: nextPending.stage,
+        operationAgeMs: Date.now() - pendingSession.operationStartedAtMs,
+      })
 
       setPendingSession(nextPending)
+
+      if (nextPending.status === 'connected') {
+        await handlePendingConnected(nextPending)
+      }
+
       return nextPending
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const failedPending = {
         ...pendingSession,
         status: 'error' as const,
+        stage: 'failed' as AuthSessionStage,
         nextStep: 'retry',
         message,
+        lastUpdatedAtMs: Date.now(),
       }
       setPendingSession(failedPending)
       return failedPending
@@ -610,13 +697,24 @@ function App() {
 
   const moveToPendingModal = (result: CreateRemoteResult, mode: PendingMode) => {
     setShowManualSetupHelp(false)
+    const nowMs = Date.now()
     setPendingSession({
       remoteName: result.remoteName,
       provider: result.provider,
       mode,
       status: result.status,
+      stage:
+        result.status === 'connected'
+          ? 'connected'
+          : result.status === 'requires_drive_selection'
+            ? 'requires_drive_selection'
+            : result.status === 'error'
+              ? 'failed'
+              : 'pending_auth',
       nextStep: result.nextStep,
       message: result.message || EMPTY_PENDING_MESSAGE,
+      operationStartedAtMs: nowMs,
+      lastUpdatedAtMs: nowMs,
       driveCandidates: result.driveCandidates ?? undefined,
     })
     setActiveModal('oauth-pending')
@@ -647,6 +745,24 @@ function App() {
         return
       }
 
+      if (result.status === 'connected') {
+        await handlePendingConnected({
+          remoteName: result.remoteName,
+          provider: result.provider,
+          mode: 'create',
+          status: result.status,
+          stage: 'connected',
+          nextStep: result.nextStep,
+          message: result.message || CONNECT_SUCCESS_MESSAGE,
+          operationStartedAtMs: Date.now(),
+          lastUpdatedAtMs: Date.now(),
+          driveCandidates: result.driveCandidates ?? undefined,
+        })
+        setActiveModal('none')
+        resetAddFlow()
+        return
+      }
+
       moveToPendingModal(result, 'create')
       await fetchRemotes({ silent: true })
     } catch (error) {
@@ -659,6 +775,23 @@ function App() {
   const handleReconnect = async (remote: RemoteSummary) => {
     try {
       const result = await invoke<CreateRemoteResult>('reconnect_remote', { name: remote.name })
+
+      if (result.status === 'connected') {
+        await handlePendingConnected({
+          remoteName: result.remoteName,
+          provider: result.provider,
+          mode: 'reconnect',
+          status: result.status,
+          stage: 'connected',
+          nextStep: result.nextStep,
+          message: result.message || CONNECT_SUCCESS_MESSAGE,
+          operationStartedAtMs: Date.now(),
+          lastUpdatedAtMs: Date.now(),
+          driveCandidates: result.driveCandidates ?? undefined,
+        })
+        return
+      }
+
       moveToPendingModal(result, 'reconnect')
       await fetchRemotes({ silent: true })
     } catch (error) {
@@ -667,8 +800,11 @@ function App() {
         provider: remote.provider,
         mode: 'reconnect',
         status: 'error',
+        stage: 'failed',
         nextStep: 'retry',
         message: error instanceof Error ? error.message : String(error),
+        operationStartedAtMs: Date.now(),
+        lastUpdatedAtMs: Date.now(),
       })
       setActiveModal('oauth-pending')
     }
@@ -704,7 +840,6 @@ function App() {
     const latest = await checkPendingSession()
 
     if (latest?.status === 'connected') {
-      await refreshLibrary({ silent: true })
       setActiveModal('none')
       setPendingSession(null)
       resetAddFlow()
@@ -729,8 +864,18 @@ function App() {
         provider: result.provider,
         mode: pendingSession.mode,
         status: result.status,
+        stage:
+          result.status === 'connected'
+            ? 'connected'
+            : result.status === 'requires_drive_selection'
+              ? 'requires_drive_selection'
+              : result.status === 'error'
+                ? 'failed'
+                : 'finalizing',
         nextStep: result.nextStep,
         message: result.message,
+        operationStartedAtMs: pendingSession.operationStartedAtMs,
+        lastUpdatedAtMs: Date.now(),
         driveCandidates: result.driveCandidates ?? undefined,
       })
 
@@ -741,8 +886,10 @@ function App() {
       setPendingSession({
         ...pendingSession,
         status: 'error',
+        stage: 'failed',
         nextStep: 'retry',
         message: error instanceof Error ? error.message : String(error),
+        lastUpdatedAtMs: Date.now(),
       })
     } finally {
       setIsFinalizingDrive(false)
@@ -1024,7 +1171,7 @@ function App() {
     setSelectedDriveId('')
   }
 
-  const hasConnectedStorage = remotes.length > 0
+  const hasConnectedStorage = displayedRemotes.length > 0
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
     hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
@@ -1062,9 +1209,9 @@ function App() {
               {!isLoadingRemotes && listError ? <p className="error-text">{listError}</p> : null}
               {shouldShowNoStorageState ? <p className="empty-state">No storage connected yet.</p> : null}
 
-              {!isLoadingRemotes && !listError && remotes.length > 0 ? (
+              {!isLoadingRemotes && !listError && displayedRemotes.length > 0 ? (
                 <ul className="remote-list">
-                  {remotes.map((remote) => {
+                  {displayedRemotes.map((remote) => {
                     const isHovered = hoveredRemote === remote.name
 
                     return (
