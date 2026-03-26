@@ -908,7 +908,7 @@ fn list_connected_remote_targets(
                 .cloned()
                 .unwrap_or_else(default_remote_config_state);
 
-            (remote_status(&config_state) == "connected").then_some(RemoteLoadTarget {
+            (remote_status(&config_state, None) == "connected").then_some(RemoteLoadTarget {
                 name: remote_name,
                 provider: config_state.provider,
             })
