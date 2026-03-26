@@ -58,7 +58,7 @@ describe('resolvePendingSession', () => {
         name: 'onedrive-main',
         provider: 'onedrive',
         status: 'error',
-        message: 'This OneDrive connection is incomplete. Reconnect it or remove it and connect again.',
+        message: 'Cloud Weave could not finish setting up this OneDrive connection.',
       },
     ]
 
@@ -66,7 +66,7 @@ describe('resolvePendingSession', () => {
       ...basePending,
       status: 'error',
       nextStep: 'retry',
-      message: 'This OneDrive connection is incomplete. Reconnect it or remove it and connect again.',
+      message: 'Cloud Weave could not finish setting up this OneDrive connection.',
       driveCandidates: undefined,
     })
   })
@@ -136,7 +136,7 @@ describe('resolvePendingSession', () => {
         name: 'onedrive-main',
         provider: 'onedrive',
         status: 'error',
-        message: 'This OneDrive connection is incomplete. Reconnect it or remove it and connect again.',
+        message: 'Cloud Weave could not finish setting up this OneDrive connection.',
       },
     ]
     const session: AuthSessionRecord = {

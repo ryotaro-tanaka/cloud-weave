@@ -752,20 +752,6 @@ function App() {
     }
   }
 
-  const handleRetryPending = () => {
-    if (!pendingSession) {
-      return
-    }
-
-    setSelectedProvider((pendingSession.provider as StorageProvider) || 'onedrive')
-    setAddFlowStep('form')
-    setRemoteName(pendingSession.remoteName)
-    setClientId('')
-    setClientSecret('')
-    setAddError('')
-    setActiveModal('add-storage')
-  }
-
   const handlePendingRemoveAndReconnect = async () => {
     if (!pendingSession) {
       return
@@ -1435,21 +1421,8 @@ function App() {
                   <p className="pending-help">
                     {isReconnectPendingError
                       ? 'Cloud Weave could not restore this connection automatically.'
-                      : 'Cloud Weave finished browser authentication, but this OneDrive connection could not be finalized for browsing.'}
+                      : 'Cloud Weave could not finish setting up this OneDrive connection.'}
                   </p>
-                  {isReconnectPendingError ? (
-                    <details className="manual-help">
-                      <summary>More details</summary>
-                      <p>Technical checks you can use if this keeps happening.</p>
-                      <code>
-                        rclone config show --config "%APPDATA%\com.ryotaro.cloudweave\rclone.conf"
-                      </code>
-                      <code>
-                        rclone lsd {pendingSession.remoteName}: --config "%APPDATA%\com.ryotaro.cloudweave\rclone.conf" -vv
-                      </code>
-                      <p>Use interactive <code>rclone config</code> if the remote still lacks drive information.</p>
-                    </details>
-                  ) : null}
                 </>
               ) : null}
 
@@ -1459,22 +1432,13 @@ function App() {
             </div>
 
             <div className="modal-actions">
-              {pendingSession.status === 'error' ? isReconnectPendingError ? (
+              {pendingSession.status === 'error' ? (
                 <>
                   <button className="ghost-button" type="button" onClick={closePendingModal}>
                     Close
                   </button>
                   <button className="primary-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
                     Set up again
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button className="ghost-button" type="button" onClick={closePendingModal}>
-                    Close
-                  </button>
-                  <button className="primary-button" type="button" onClick={handleRetryPending}>
-                    Try again
                   </button>
                 </>
               ) : pendingSession.status === 'requires_drive_selection' ? (

@@ -75,7 +75,7 @@ export function resolvePendingSession(
         remote.message ??
         (remote.status === 'reconnect_required'
           ? 'Authentication expired for this storage. Reconnect it and try again.'
-          : 'This storage connection is incomplete. Try again.'),
+          : 'Cloud Weave could not finish setting up this OneDrive connection.'),
       driveCandidates: undefined,
     }
   }

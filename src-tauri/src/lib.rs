@@ -1229,6 +1229,14 @@ fn finalize_onedrive_remote_impl(
         .find(|entry| entry.id == drive_id)
         .ok_or_else(|| "The selected OneDrive drive is no longer available.".to_string())?;
 
+    log::info!(
+        "finalize_onedrive_remote picked candidate remote={} drive_id={} label={} drive_type={}",
+        name,
+        candidate.id,
+        candidate.label,
+        candidate.drive_type
+    );
+
     apply_onedrive_drive_selection(&app, &name, &candidate, &config_path)
 }
 
@@ -1674,6 +1682,14 @@ fn spawn_auth_watcher(
                             if let Ok(result) =
                                 build_success_result(&app, &remote_name, &provider, &mode, &stdout)
                             {
+                                log::info!(
+                                    "auth flow watcher completed remote={} provider={} mode={} status={} next_step={}",
+                                    remote_name,
+                                    provider,
+                                    mode,
+                                    result.status,
+                                    result.next_step
+                                );
                                 let record = AuthSessionRecord {
                                     remote_name: result.remote_name,
                                     provider: result.provider,
@@ -1694,6 +1710,14 @@ fn spawn_auth_watcher(
                                 &mode,
                                 &error,
                             ) {
+                                log::info!(
+                                    "auth flow watcher completed remote={} provider={} mode={} status={} next_step={}",
+                                    remote_name,
+                                    provider,
+                                    mode,
+                                    result.status,
+                                    result.next_step
+                                );
                                 let record = AuthSessionRecord {
                                     remote_name: result.remote_name,
                                     provider: result.provider,
@@ -1905,6 +1929,15 @@ fn build_onedrive_post_auth_result(
 ) -> Result<CreateRemoteResult, String> {
     let validation = validate_remote_after_setup(app, remote_name, provider)?;
 
+    log::info!(
+        "onedrive post-auth initial validation remote={} can_list={} has_drive_id={} has_drive_type={} failure_reason={}",
+        remote_name,
+        validation.can_list,
+        validation.has_drive_id,
+        validation.has_drive_type,
+        validation.failure_reason.as_deref().unwrap_or("none")
+    );
+
     if validation.remote_exists
         && validation.can_list
         && validation.has_drive_id
@@ -1922,6 +1955,22 @@ fn build_onedrive_post_auth_result(
 
     let config_path = ensure_rclone_config(app)?;
     let candidates = load_onedrive_drive_candidates(app, remote_name)?;
+    let reachable_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate.is_reachable)
+        .count();
+    let suggested_reachable_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate.is_reachable && candidate.is_suggested)
+        .count();
+
+    log::info!(
+        "onedrive drive candidates remote={} total={} reachable={} suggested_reachable={}",
+        remote_name,
+        candidates.len(),
+        reachable_candidates,
+        suggested_reachable_candidates
+    );
 
     if let Some(selected) = select_auto_onedrive_drive_candidate(&candidates) {
         log::info!(
@@ -1935,12 +1984,12 @@ fn build_onedrive_post_auth_result(
         return apply_onedrive_drive_selection(app, remote_name, &selected, &config_path);
     }
 
-    let reachable_candidates = candidates
-        .iter()
-        .filter(|candidate| candidate.is_reachable)
-        .count();
-
     if reachable_candidates > 0 {
+        log::info!(
+            "manual onedrive drive selection required remote={} reachable_candidates={}",
+            remote_name,
+            reachable_candidates
+        );
         return Ok(CreateRemoteResult {
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
@@ -1952,15 +2001,17 @@ fn build_onedrive_post_auth_result(
         });
     }
 
+    log::warn!(
+        "onedrive drive finalization failed before selection remote={} no reachable candidates available",
+        remote_name
+    );
+
     Ok(CreateRemoteResult {
         remote_name: remote_name.to_string(),
         provider: provider.to_string(),
         status: "error".to_string(),
         next_step: "retry".to_string(),
-        message: validation.failure_reason.unwrap_or_else(|| {
-            "Cloud Weave finished browser authentication, but could not finalize this OneDrive library."
-                .to_string()
-        }),
+        message: "Cloud Weave could not finish setting up this OneDrive connection.".to_string(),
         drive_candidates: Some(candidates),
     })
 }
@@ -1982,8 +2033,21 @@ fn load_onedrive_drive_candidates(
 
     let token_json = config_state
         .token
-        .ok_or_else(|| "Cloud Weave could not find the saved OneDrive access token.".to_string())?;
-    let access_token = parse_access_token(&token_json)?;
+        .ok_or_else(|| {
+            log::warn!(
+                "load_onedrive_drive_candidates missing token remote={}",
+                remote_name
+            );
+            "Cloud Weave could not find the saved OneDrive access token.".to_string()
+        })?;
+    let access_token = parse_access_token(&token_json).map_err(|error| {
+        log::warn!(
+            "load_onedrive_drive_candidates failed to parse token remote={} error={}",
+            remote_name,
+            summarize_output(&error)
+        );
+        error
+    })?;
     let client = Client::builder()
         .timeout(GRAPH_COMMAND_TIMEOUT)
         .build()
@@ -1993,11 +2057,25 @@ fn load_onedrive_drive_candidates(
         .get(format!("{GRAPH_BASE_URL}/me/drives"))
         .bearer_auth(&access_token)
         .send()
-        .map_err(|error| format!("failed to query Microsoft Graph drives: {error}"))?;
+        .map_err(|error| {
+            let message = format!("failed to query Microsoft Graph drives: {error}");
+            log::warn!(
+                "load_onedrive_drive_candidates graph query failed remote={} error={}",
+                remote_name,
+                summarize_output(&message)
+            );
+            message
+        })?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().unwrap_or_default();
+        log::warn!(
+            "load_onedrive_drive_candidates graph query returned failure remote={} status={} body={}",
+            remote_name,
+            status.as_u16(),
+            summarize_output(&body)
+        );
         return Err(format!(
             "failed to query Microsoft Graph drives: {}",
             summarize_graph_error(status.as_u16(), &body)
@@ -2013,6 +2091,20 @@ fn load_onedrive_drive_candidates(
         .into_iter()
         .map(|drive| validate_graph_drive_candidate(&client, &access_token, drive))
         .collect::<Vec<_>>();
+
+    for candidate in &raw_candidates {
+        log::info!(
+            "onedrive candidate remote={} drive_id={} label={} drive_type={} reachable={} suggested={} system_like={} message={}",
+            remote_name,
+            candidate.id,
+            candidate.label,
+            candidate.drive_type,
+            candidate.is_reachable,
+            candidate.is_suggested,
+            candidate.is_system_like,
+            candidate.message.as_deref().unwrap_or("none")
+        );
+    }
 
     Ok(normalize_onedrive_drive_candidates(raw_candidates))
 }
@@ -2113,9 +2205,59 @@ fn apply_onedrive_drive_selection(
         candidate.label
     );
 
-    run_rclone_owned(app, &owned_args, DEFAULT_COMMAND_TIMEOUT)?;
+    run_rclone_owned(app, &owned_args, DEFAULT_COMMAND_TIMEOUT).map_err(|error| {
+        log::warn!(
+            "failed to persist onedrive drive selection remote={} drive_id={} drive_type={} error={}",
+            remote_name,
+            candidate.id,
+            candidate.drive_type,
+            summarize_output(&error)
+        );
+        error
+    })?;
+
+    let remote_config_by_name = load_remote_config_states(app, config_path)?;
+    let persisted = remote_config_by_name
+        .get(remote_name)
+        .cloned()
+        .unwrap_or_else(default_remote_config_state);
+
+    log::info!(
+        "persisted onedrive drive selection remote={} persisted_drive_id={} persisted_drive_type={}",
+        remote_name,
+        persisted.drive_id.as_deref().unwrap_or("none"),
+        persisted.drive_type.as_deref().unwrap_or("none")
+    );
+
+    if persisted.drive_id.as_deref() != Some(candidate.id.as_str())
+        || persisted.drive_type.as_deref() != Some(candidate.drive_type.as_str())
+    {
+        log::warn!(
+            "onedrive drive selection was not persisted correctly remote={} expected_drive_id={} expected_drive_type={}",
+            remote_name,
+            candidate.id,
+            candidate.drive_type
+        );
+        return Ok(CreateRemoteResult {
+            remote_name: remote_name.to_string(),
+            provider: "onedrive".to_string(),
+            status: "error".to_string(),
+            next_step: "retry".to_string(),
+            message: "Cloud Weave could not finish setting up this OneDrive connection.".to_string(),
+            drive_candidates: None,
+        });
+    }
 
     let validation = validate_remote_after_setup(app, remote_name, "onedrive")?;
+
+    log::info!(
+        "post-selection validation remote={} can_list={} has_drive_id={} has_drive_type={} failure_reason={}",
+        remote_name,
+        validation.can_list,
+        validation.has_drive_id,
+        validation.has_drive_type,
+        validation.failure_reason.as_deref().unwrap_or("none")
+    );
 
     if validation.remote_exists
         && validation.can_list
@@ -2137,9 +2279,7 @@ fn apply_onedrive_drive_selection(
         provider: "onedrive".to_string(),
         status: "error".to_string(),
         next_step: "retry".to_string(),
-        message: validation.failure_reason.unwrap_or_else(|| {
-            "Cloud Weave saved the selected drive, but it still could not browse it.".to_string()
-        }),
+        message: "Cloud Weave could not finish setting up this OneDrive connection.".to_string(),
         drive_candidates: None,
     })
 }
@@ -3483,8 +3623,7 @@ fn remote_status_message(
 
     if remote_status(config_state, None) == "error" {
         Some(
-            "This OneDrive connection is incomplete. Reconnect it or remove it and connect again."
-                .to_string(),
+            "Cloud Weave could not finish setting up this OneDrive connection.".to_string(),
         )
     } else {
         None
