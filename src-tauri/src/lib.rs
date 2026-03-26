@@ -3459,6 +3459,8 @@ fn remote_status(
         "error"
     } else if reconnect_request.is_some() {
         "reconnect_required"
+    } else if config_state.provider == "onedrive" && config_state.token.is_none() {
+        "reconnect_required"
     } else {
         "connected"
     }
@@ -3470,6 +3472,13 @@ fn remote_status_message(
 ) -> Option<String> {
     if let Some(reconnect_request) = reconnect_request {
         return Some(reconnect_request.message.clone());
+    }
+
+    if config_state.provider == "onedrive" && config_state.token.is_none() {
+        return Some(
+            "Authentication expired for this storage. Reconnect it to keep browsing and uploading."
+                .to_string(),
+        );
     }
 
     if remote_status(config_state, None) == "error" {
@@ -3697,6 +3706,25 @@ mod tests {
         assert_eq!(
             remote_status_message(&config_state, Some(&reconnect_request)),
             Some("Reconnect required.".to_string())
+        );
+    }
+
+    #[test]
+    fn remote_status_treats_missing_token_as_reconnect_required() {
+        let config_state = RemoteConfigState {
+            provider: "onedrive".to_string(),
+            drive_id: Some("drive-1".to_string()),
+            drive_type: Some("personal".to_string()),
+            token: None,
+        };
+
+        assert_eq!(remote_status(&config_state, None), "reconnect_required");
+        assert_eq!(
+            remote_status_message(&config_state, None),
+            Some(
+                "Authentication expired for this storage. Reconnect it to keep browsing and uploading."
+                    .to_string()
+            )
         );
     }
 
