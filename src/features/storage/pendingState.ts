@@ -66,6 +66,18 @@ export function resolvePendingSession(
     }
   }
 
+  if (session?.status === 'error') {
+    return {
+      remoteName: session.remoteName,
+      provider: session.provider,
+      mode: session.mode,
+      status: session.status,
+      nextStep: session.nextStep,
+      message: session.message,
+      driveCandidates: session.driveCandidates ?? undefined,
+    }
+  }
+
   if (remote?.status === 'error') {
     return {
       ...currentPending,

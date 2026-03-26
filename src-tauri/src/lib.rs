@@ -73,6 +73,19 @@ struct CreateRemoteResult {
     drive_candidates: Option<Vec<OneDriveDriveCandidate>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthProcessState {
+    Running,
+    Completed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthFlowCompletionAction {
+    KeepPending,
+    TryFinalize,
+    ReturnError,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthSessionRecord {
@@ -1575,7 +1588,14 @@ fn start_auth_flow(
     match child.try_wait() {
         Ok(Some(_)) => match collect_child_output(child) {
             Ok(stdout) => build_success_result(app, remote_name, provider, mode, &stdout),
-            Err(error) => build_auth_error_result(app, remote_name, provider, mode, &error),
+            Err(error) => build_auth_error_result(
+                app,
+                remote_name,
+                provider,
+                mode,
+                &error,
+                AuthProcessState::Completed,
+            ),
         },
         Ok(None) => {
             let pending = pending_auth_session(
@@ -1648,6 +1668,7 @@ fn spawn_auth_watcher(
                                 &provider,
                                 &mode,
                                 &error,
+                                AuthProcessState::Completed,
                             ) {
                                 let record = AuthSessionRecord {
                                     remote_name: result.remote_name,
@@ -1702,16 +1723,63 @@ fn build_auth_error_result(
     provider: &str,
     mode: &str,
     error: &str,
+    process_state: AuthProcessState,
 ) -> Result<CreateRemoteResult, String> {
     log::warn!(
-        "auth flow failed remote={} provider={} mode={} error={}",
+        "auth flow failed remote={} provider={} mode={} process_state={:?} error={}",
         remote_name,
         provider,
         mode,
+        process_state,
         summarize_output(error)
     );
 
-    let result = match classify_rclone_error(error) {
+    let error_kind = classify_rclone_error(error);
+
+    if matches!(error_kind, RcloneErrorKind::AuthFlow) {
+        match auth_flow_completion_action(app, remote_name, provider, process_state)? {
+            AuthFlowCompletionAction::KeepPending => {
+                let result = CreateRemoteResult {
+                    remote_name: remote_name.to_string(),
+                    provider: provider.to_string(),
+                    status: "pending".to_string(),
+                    next_step: "open_browser".to_string(),
+                    message: "Authentication is still in progress in your browser.".to_string(),
+                    drive_candidates: None,
+                };
+                let session = AuthSessionRecord {
+                    remote_name: result.remote_name.clone(),
+                    provider: result.provider.clone(),
+                    mode: mode.to_string(),
+                    status: result.status.clone(),
+                    next_step: result.next_step.clone(),
+                    message: result.message.clone(),
+                    drive_candidates: result.drive_candidates.clone(),
+                };
+                set_auth_session_record(app, session);
+                return Ok(result);
+            }
+            AuthFlowCompletionAction::TryFinalize => {
+                log::info!(
+                    "auth flow completed with saved config remote={} provider={} mode={} recovering_via_post_auth=true",
+                    remote_name,
+                    provider,
+                    mode
+                );
+                return build_success_result(app, remote_name, provider, mode, error);
+            }
+            AuthFlowCompletionAction::ReturnError => {
+                log::warn!(
+                    "auth flow completed without recoverable saved config remote={} provider={} mode={}",
+                    remote_name,
+                    provider,
+                    mode
+                );
+            }
+        }
+    }
+
+    let result = match error_kind {
         RcloneErrorKind::DuplicateRemote => CreateRemoteResult {
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
@@ -1733,9 +1801,11 @@ fn build_auth_error_result(
         RcloneErrorKind::AuthFlow => CreateRemoteResult {
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
-            status: "pending".to_string(),
-            next_step: "open_browser".to_string(),
-            message: "Authentication is still in progress in your browser.".to_string(),
+            status: "error".to_string(),
+            next_step: "retry".to_string(),
+            message:
+                "Authentication finished, but Cloud Weave could not confirm the saved connection. Try again."
+                    .to_string(),
             drive_candidates: None,
         },
         RcloneErrorKind::RcloneUnavailable => {
@@ -1770,6 +1840,56 @@ fn build_auth_error_result(
     set_auth_session_record(app, session);
 
     Ok(result)
+}
+
+fn auth_flow_completion_action(
+    app: &AppHandle,
+    remote_name: &str,
+    provider: &str,
+    process_state: AuthProcessState,
+) -> Result<AuthFlowCompletionAction, String> {
+    if process_state == AuthProcessState::Running {
+        return Ok(AuthFlowCompletionAction::KeepPending);
+    }
+
+    let config_path = ensure_rclone_config(app)?;
+    let remote_config_by_name = load_remote_config_states(app, &config_path)?;
+    let saved_state = remote_config_by_name.get(remote_name);
+    let remote_exists = saved_state.is_some();
+    let has_token = saved_state.and_then(|state| state.token.as_ref()).is_some();
+
+    log::info!(
+        "auth flow completion check remote={} provider={} process_state={:?} remote_exists={} has_token={}",
+        remote_name,
+        provider,
+        process_state,
+        remote_exists,
+        has_token
+    );
+
+    Ok(decide_auth_flow_completion_action(
+        provider,
+        process_state,
+        remote_exists,
+        has_token,
+    ))
+}
+
+fn decide_auth_flow_completion_action(
+    provider: &str,
+    process_state: AuthProcessState,
+    remote_exists: bool,
+    has_token: bool,
+) -> AuthFlowCompletionAction {
+    if process_state == AuthProcessState::Running {
+        return AuthFlowCompletionAction::KeepPending;
+    }
+
+    if provider == "onedrive" && remote_exists && has_token {
+        AuthFlowCompletionAction::TryFinalize
+    } else {
+        AuthFlowCompletionAction::ReturnError
+    }
 }
 
 fn build_success_result(
@@ -1856,6 +1976,15 @@ fn build_onedrive_post_auth_result(
 ) -> Result<CreateRemoteResult, String> {
     let validation = validate_remote_after_setup(app, remote_name, provider)?;
 
+    log::info!(
+        "onedrive post-auth initial validation remote={} can_list={} has_drive_id={} has_drive_type={} failure_reason={}",
+        remote_name,
+        validation.can_list,
+        validation.has_drive_id,
+        validation.has_drive_type,
+        validation.failure_reason.as_deref().unwrap_or("none")
+    );
+
     if validation.remote_exists
         && validation.can_list
         && validation.has_drive_id
@@ -1873,6 +2002,22 @@ fn build_onedrive_post_auth_result(
 
     let config_path = ensure_rclone_config(app)?;
     let candidates = load_onedrive_drive_candidates(app, remote_name)?;
+    let reachable_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate.is_reachable)
+        .count();
+    let suggested_reachable_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate.is_reachable && candidate.is_suggested)
+        .count();
+
+    log::info!(
+        "onedrive drive candidates remote={} total={} reachable={} suggested_reachable={}",
+        remote_name,
+        candidates.len(),
+        reachable_candidates,
+        suggested_reachable_candidates
+    );
 
     if let Some(selected) = select_auto_onedrive_drive_candidate(&candidates) {
         log::info!(
@@ -1886,12 +2031,12 @@ fn build_onedrive_post_auth_result(
         return apply_onedrive_drive_selection(app, remote_name, &selected, &config_path);
     }
 
-    let reachable_candidates = candidates
-        .iter()
-        .filter(|candidate| candidate.is_reachable)
-        .count();
-
     if reachable_candidates > 0 {
+        log::info!(
+            "manual onedrive drive selection required remote={} reachable_candidates={}",
+            remote_name,
+            reachable_candidates
+        );
         return Ok(CreateRemoteResult {
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
@@ -1902,6 +2047,11 @@ fn build_onedrive_post_auth_result(
             drive_candidates: Some(candidates),
         });
     }
+
+    log::warn!(
+        "onedrive drive finalization failed before selection remote={} no reachable candidates available",
+        remote_name
+    );
 
     Ok(CreateRemoteResult {
         remote_name: remote_name.to_string(),
@@ -1933,8 +2083,21 @@ fn load_onedrive_drive_candidates(
 
     let token_json = config_state
         .token
-        .ok_or_else(|| "Cloud Weave could not find the saved OneDrive access token.".to_string())?;
-    let access_token = parse_access_token(&token_json)?;
+        .ok_or_else(|| {
+            log::warn!(
+                "load_onedrive_drive_candidates missing token remote={}",
+                remote_name
+            );
+            "Cloud Weave could not find the saved OneDrive access token.".to_string()
+        })?;
+    let access_token = parse_access_token(&token_json).map_err(|error| {
+        log::warn!(
+            "load_onedrive_drive_candidates failed to parse token remote={} error={}",
+            remote_name,
+            summarize_output(&error)
+        );
+        error
+    })?;
     let client = Client::builder()
         .timeout(GRAPH_COMMAND_TIMEOUT)
         .build()
@@ -1944,11 +2107,25 @@ fn load_onedrive_drive_candidates(
         .get(format!("{GRAPH_BASE_URL}/me/drives"))
         .bearer_auth(&access_token)
         .send()
-        .map_err(|error| format!("failed to query Microsoft Graph drives: {error}"))?;
+        .map_err(|error| {
+            let message = format!("failed to query Microsoft Graph drives: {error}");
+            log::warn!(
+                "load_onedrive_drive_candidates graph query failed remote={} error={}",
+                remote_name,
+                summarize_output(&message)
+            );
+            message
+        })?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().unwrap_or_default();
+        log::warn!(
+            "load_onedrive_drive_candidates graph query returned failure remote={} status={} body={}",
+            remote_name,
+            status.as_u16(),
+            summarize_output(&body)
+        );
         return Err(format!(
             "failed to query Microsoft Graph drives: {}",
             summarize_graph_error(status.as_u16(), &body)
@@ -1964,6 +2141,20 @@ fn load_onedrive_drive_candidates(
         .into_iter()
         .map(|drive| validate_graph_drive_candidate(&client, &access_token, drive))
         .collect::<Vec<_>>();
+
+    for candidate in &raw_candidates {
+        log::info!(
+            "onedrive candidate remote={} drive_id={} label={} drive_type={} reachable={} suggested={} system_like={} message={}",
+            remote_name,
+            candidate.id,
+            candidate.label,
+            candidate.drive_type,
+            candidate.is_reachable,
+            candidate.is_suggested,
+            candidate.is_system_like,
+            candidate.message.as_deref().unwrap_or("none")
+        );
+    }
 
     Ok(normalize_onedrive_drive_candidates(raw_candidates))
 }
@@ -2064,9 +2255,59 @@ fn apply_onedrive_drive_selection(
         candidate.label
     );
 
-    run_rclone_owned(app, &owned_args, DEFAULT_COMMAND_TIMEOUT)?;
+    run_rclone_owned(app, &owned_args, DEFAULT_COMMAND_TIMEOUT).map_err(|error| {
+        log::warn!(
+            "failed to persist onedrive drive selection remote={} drive_id={} drive_type={} error={}",
+            remote_name,
+            candidate.id,
+            candidate.drive_type,
+            summarize_output(&error)
+        );
+        error
+    })?;
+
+    let remote_config_by_name = load_remote_config_states(app, config_path)?;
+    let persisted = remote_config_by_name
+        .get(remote_name)
+        .cloned()
+        .unwrap_or_else(default_remote_config_state);
+
+    log::info!(
+        "persisted onedrive drive selection remote={} persisted_drive_id={} persisted_drive_type={}",
+        remote_name,
+        persisted.drive_id.as_deref().unwrap_or("none"),
+        persisted.drive_type.as_deref().unwrap_or("none")
+    );
+
+    if persisted.drive_id.as_deref() != Some(candidate.id.as_str())
+        || persisted.drive_type.as_deref() != Some(candidate.drive_type.as_str())
+    {
+        log::warn!(
+            "onedrive drive selection was not persisted correctly remote={} expected_drive_id={} expected_drive_type={}",
+            remote_name,
+            candidate.id,
+            candidate.drive_type
+        );
+        return Ok(CreateRemoteResult {
+            remote_name: remote_name.to_string(),
+            provider: "onedrive".to_string(),
+            status: "error".to_string(),
+            next_step: "retry".to_string(),
+            message: "Cloud Weave could not finish setting up this OneDrive connection.".to_string(),
+            drive_candidates: None,
+        });
+    }
 
     let validation = validate_remote_after_setup(app, remote_name, "onedrive")?;
+
+    log::info!(
+        "post-selection validation remote={} can_list={} has_drive_id={} has_drive_type={} failure_reason={}",
+        remote_name,
+        validation.can_list,
+        validation.has_drive_id,
+        validation.has_drive_type,
+        validation.failure_reason.as_deref().unwrap_or("none")
+    );
 
     if validation.remote_exists
         && validation.can_list
@@ -3518,10 +3759,12 @@ fn remove_auth_session_record(app: &AppHandle, remote_name: &str) {
 mod tests {
     use super::{
         build_open_cache_key, category_base_path, completion_progress,
-        default_upload_routing_config, expand_upload_directory, join_remote_path,
-        providers_for_extension, rank_upload_remotes_by_capacity, resolve_unique_download_target,
+        decide_auth_flow_completion_action, default_upload_routing_config,
+        expand_upload_directory, join_remote_path, providers_for_extension,
+        rank_upload_remotes_by_capacity, resolve_unique_download_target,
         sanitize_file_name_component, select_download_file_name, select_open_mode,
-        user_facing_download_error, UploadRemoteCapacity,
+        AuthFlowCompletionAction, AuthProcessState, UploadRemoteCapacity,
+        user_facing_download_error,
     };
     use std::{
         collections::HashMap,
@@ -3726,6 +3969,45 @@ mod tests {
         assert_eq!(
             join_remote_path("cloud-weave/documents", "reports/file.pdf"),
             "cloud-weave/documents/reports/file.pdf"
+        );
+    }
+
+    #[test]
+    fn auth_flow_completion_action_keeps_running_auth_pending() {
+        assert_eq!(
+            decide_auth_flow_completion_action(
+                "onedrive",
+                AuthProcessState::Running,
+                false,
+                false
+            ),
+            AuthFlowCompletionAction::KeepPending
+        );
+    }
+
+    #[test]
+    fn auth_flow_completion_action_retries_when_completed_remote_is_not_saved() {
+        assert_eq!(
+            decide_auth_flow_completion_action(
+                "onedrive",
+                AuthProcessState::Completed,
+                false,
+                false
+            ),
+            AuthFlowCompletionAction::ReturnError
+        );
+    }
+
+    #[test]
+    fn auth_flow_completion_action_finalizes_completed_onedrive_with_saved_token() {
+        assert_eq!(
+            decide_auth_flow_completion_action(
+                "onedrive",
+                AuthProcessState::Completed,
+                true,
+                true
+            ),
+            AuthFlowCompletionAction::TryFinalize
         );
     }
 }

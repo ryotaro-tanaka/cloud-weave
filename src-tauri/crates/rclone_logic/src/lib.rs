@@ -886,6 +886,10 @@ mod tests {
             classify_rclone_error("waiting for browser oauth token"),
             RcloneErrorKind::AuthFlow
         ));
+        assert!(matches!(
+            classify_rclone_error("Redirect URL: http://127.0.0.1:53682/auth?state=abc"),
+            RcloneErrorKind::AuthFlow
+        ));
     }
 
     #[test]

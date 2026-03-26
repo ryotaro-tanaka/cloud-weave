@@ -159,6 +159,35 @@ describe('resolvePendingSession', () => {
     })
   })
 
+  it('prefers the latest session error over the remote error placeholder', () => {
+    const remotes: RemoteSummary[] = [
+      {
+        name: 'onedrive-main',
+        provider: 'onedrive',
+        status: 'error',
+        message: 'This OneDrive connection is incomplete. Reconnect it or remove it and connect again.',
+      },
+    ]
+    const session: AuthSessionRecord = {
+      remoteName: 'onedrive-main',
+      provider: 'onedrive',
+      mode: 'create',
+      status: 'error',
+      nextStep: 'retry',
+      message: 'failed to query Microsoft Graph drives: HTTP 403',
+    }
+
+    expect(resolvePendingSession(basePending, remotes, session)).toEqual({
+      remoteName: 'onedrive-main',
+      provider: 'onedrive',
+      mode: 'create',
+      status: 'error',
+      nextStep: 'retry',
+      message: 'failed to query Microsoft Graph drives: HTTP 403',
+      driveCandidates: undefined,
+    })
+  })
+
   it('keeps the current pending state when nothing new is available', () => {
     expect(resolvePendingSession(basePending, null, null)).toEqual(basePending)
   })
