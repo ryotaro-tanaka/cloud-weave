@@ -449,6 +449,9 @@ pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
         || normalized.contains("authentication")
         || normalized.contains("oauth")
         || normalized.contains("token")
+        || normalized.contains("redirect url")
+        || (normalized.contains("state=")
+            && (normalized.contains("127.0.0.1:") || normalized.contains("localhost:")))
     {
         return RcloneErrorKind::AuthFlow;
     }
@@ -910,6 +913,18 @@ mod tests {
         assert!(matches!(
             classify_rclone_error("Redirect URL: http://127.0.0.1:53682/auth?state=abc"),
             RcloneErrorKind::AuthFlow
+        ));
+        assert!(matches!(
+            classify_rclone_error("Visit localhost:53682/auth?state=abc to continue sign-in"),
+            RcloneErrorKind::AuthFlow
+        ));
+    }
+
+    #[test]
+    fn classify_rclone_error_does_not_treat_unrelated_urls_as_auth_flow() {
+        assert!(matches!(
+            classify_rclone_error("directory listing failed at http://example.com/path"),
+            RcloneErrorKind::Other
         ));
     }
 
