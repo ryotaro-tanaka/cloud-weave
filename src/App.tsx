@@ -503,7 +503,7 @@ function App() {
     }
 
     const intervalId = window.setInterval(() => {
-      void checkPendingSession(true)
+      void checkPendingSession()
     }, 1500)
 
     return () => window.clearInterval(intervalId)
@@ -645,7 +645,7 @@ function App() {
     await synchronizeConnectedRemote(session.remoteName, session.provider)
   }
 
-  const checkPendingSession = async (silent = false) => {
+  const checkPendingSession = async () => {
     if (!pendingSession) {
       return null
     }
