@@ -6,8 +6,11 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { open as openPath } from '@tauri-apps/plugin-shell'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
+  isCallbackStartupFailure,
+  overlayPendingRemote,
   resolvePendingSession,
   type AuthSessionRecord,
+  type AuthSessionStage,
   type OneDriveDriveCandidate,
   type PendingMode,
   type PendingSession,
@@ -85,8 +88,10 @@ type CreateRemoteResult = {
   remoteName: string
   provider: string
   status: 'connected' | 'pending' | 'requires_drive_selection' | 'error'
+  stage?: AuthSessionStage | null
   nextStep: 'done' | 'open_browser' | 'retry' | 'rename' | 'select_drive'
   message: string
+  errorCode?: string | null
   driveCandidates?: OneDriveDriveCandidate[] | null
 }
 
@@ -151,6 +156,9 @@ const STORAGE_PROVIDERS: ProviderDefinition[] = [
 const LOGICAL_VIEWS: LogicalView[] = ['recent', 'documents', 'photos', 'videos', 'audio', 'other']
 const EMPTY_PENDING_MESSAGE = 'Complete authentication in your browser.'
 const PREVIEW_ASSET_PROTOCOL = 'asset'
+const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
+const CONNECT_SYNC_ATTEMPTS = 8
+const CONNECT_SYNC_DELAY_MS = 500
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -171,7 +179,6 @@ function App() {
   const [isLoadingItems, setIsLoadingItems] = useState(true)
   const [isLibraryStreaming, setIsLibraryStreaming] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isCheckingPending, setIsCheckingPending] = useState(false)
   const [isFinalizingDrive, setIsFinalizingDrive] = useState(false)
   const [isRemoving, setIsRemoving] = useState(false)
   const [remoteName, setRemoteName] = useState('')
@@ -209,6 +216,10 @@ function App() {
     const viewItems = filterItemsByView(unifiedItems, activeView)
     return searchUnifiedItems(viewItems, searchQuery)
   }, [activeView, searchQuery, unifiedItems])
+
+  const displayedRemotes = useMemo(() => overlayPendingRemote(remotes, pendingSession), [pendingSession, remotes])
+  const pendingHasCallbackStartupFailure = pendingSession ? isCallbackStartupFailure(pendingSession.errorCode) : false
+  const pendingIsFinalizing = pendingSession?.stage === 'finalizing'
 
   const groupedRecentItems = useMemo(() => {
     if (activeView !== 'recent') {
@@ -492,7 +503,7 @@ function App() {
     }
 
     const intervalId = window.setInterval(() => {
-      void checkPendingSession(true)
+      void checkPendingSession()
     }, 1500)
 
     return () => window.clearInterval(intervalId)
@@ -572,13 +583,71 @@ function App() {
     return invoke<AuthSessionRecord | null>('get_auth_session_status', { name })
   }
 
-  const checkPendingSession = async (silent = false) => {
-    if (!pendingSession) {
-      return null
+  const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+  const upsertOptimisticConnectedRemote = (remoteName: string, provider: string) => {
+    setRemotes((current) => {
+      const nextRemote: RemoteSummary = {
+        name: remoteName,
+        provider,
+        status: 'connected',
+        message: undefined,
+      }
+
+      const existingIndex = current.findIndex((entry) => entry.name === remoteName)
+
+      if (existingIndex === -1) {
+        return [...current, nextRemote].sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase()))
+      }
+
+      const next = [...current]
+      next[existingIndex] = nextRemote
+      return next
+    })
+  }
+
+  const synchronizeConnectedRemote = async (remoteName: string, provider: string) => {
+    upsertOptimisticConnectedRemote(remoteName, provider)
+
+    for (let attempt = 1; attempt <= CONNECT_SYNC_ATTEMPTS; attempt += 1) {
+      const latestRemotes = await fetchRemotes({ silent: true })
+      const matchedRemote = latestRemotes?.find((entry) => entry.name === remoteName) ?? null
+
+      console.info('[connect-sync]', {
+        remoteName,
+        provider,
+        attempt,
+        matchedRemoteStatus: matchedRemote?.status ?? null,
+      })
+
+      if (matchedRemote?.status === 'connected') {
+        await fetchUnifiedItems(latestRemotes, { silent: true })
+        return
+      }
+
+      if (attempt < CONNECT_SYNC_ATTEMPTS) {
+        await sleep(CONNECT_SYNC_DELAY_MS)
+      }
     }
 
-    if (!silent) {
-      setIsCheckingPending(true)
+    await refreshLibrary({ silent: true })
+  }
+
+  const handlePendingConnected = async (session: PendingSession) => {
+    setPendingSession({
+      ...session,
+      status: 'connected',
+      nextStep: 'done',
+      message: session.message || CONNECT_SUCCESS_MESSAGE,
+      errorCode: undefined,
+      driveCandidates: undefined,
+    })
+    await synchronizeConnectedRemote(session.remoteName, session.provider)
+  }
+
+  const checkPendingSession = async () => {
+    if (!pendingSession) {
+      return null
     }
 
     try {
@@ -587,36 +656,70 @@ function App() {
         fetchAuthSession(pendingSession.remoteName),
       ])
 
-      const nextPending = resolvePendingSession(pendingSession, latestRemotes, session)
+      const nextPending = resolvePendingSession(pendingSession, latestRemotes, session, Date.now())
+
+      console.info('[pending-auth]', {
+        remoteName: pendingSession.remoteName,
+        previousStatus: pendingSession.status,
+        previousStage: pendingSession.stage,
+        remoteStatus: latestRemotes?.find((entry) => entry.name === pendingSession.remoteName)?.status ?? null,
+        resolvedStatus: nextPending.status,
+        resolvedStage: nextPending.stage,
+        operationAgeMs: Date.now() - pendingSession.operationStartedAtMs,
+        ...(session
+          ? {
+              sessionStatus: session.status,
+              sessionStage: session.stage ?? null,
+              sessionErrorCode: session.errorCode ?? null,
+            }
+          : {}),
+      })
 
       setPendingSession(nextPending)
+
+      if (nextPending.status === 'connected') {
+        await handlePendingConnected(nextPending)
+      }
+
       return nextPending
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const failedPending = {
         ...pendingSession,
         status: 'error' as const,
+        stage: 'failed' as AuthSessionStage,
         nextStep: 'retry',
         message,
+        errorCode: undefined,
+        lastUpdatedAtMs: Date.now(),
       }
       setPendingSession(failedPending)
       return failedPending
-    } finally {
-      if (!silent) {
-        setIsCheckingPending(false)
-      }
     }
   }
 
   const moveToPendingModal = (result: CreateRemoteResult, mode: PendingMode) => {
     setShowManualSetupHelp(false)
+    const nowMs = Date.now()
     setPendingSession({
       remoteName: result.remoteName,
       provider: result.provider,
       mode,
       status: result.status,
+      stage:
+        result.stage ??
+        (result.status === 'connected'
+          ? 'connected'
+          : result.status === 'requires_drive_selection'
+            ? 'requires_drive_selection'
+            : result.status === 'error'
+              ? 'failed'
+              : 'pending_auth'),
       nextStep: result.nextStep,
       message: result.message || EMPTY_PENDING_MESSAGE,
+      errorCode: result.errorCode ?? undefined,
+      operationStartedAtMs: nowMs,
+      lastUpdatedAtMs: nowMs,
       driveCandidates: result.driveCandidates ?? undefined,
     })
     setActiveModal('oauth-pending')
@@ -647,6 +750,25 @@ function App() {
         return
       }
 
+      if (result.status === 'connected') {
+        await handlePendingConnected({
+          remoteName: result.remoteName,
+          provider: result.provider,
+          mode: 'create',
+          status: result.status,
+          stage: 'connected',
+          nextStep: result.nextStep,
+          message: result.message || CONNECT_SUCCESS_MESSAGE,
+          errorCode: result.errorCode ?? undefined,
+          operationStartedAtMs: Date.now(),
+          lastUpdatedAtMs: Date.now(),
+          driveCandidates: result.driveCandidates ?? undefined,
+        })
+        setActiveModal('none')
+        resetAddFlow()
+        return
+      }
+
       moveToPendingModal(result, 'create')
       await fetchRemotes({ silent: true })
     } catch (error) {
@@ -659,6 +781,24 @@ function App() {
   const handleReconnect = async (remote: RemoteSummary) => {
     try {
       const result = await invoke<CreateRemoteResult>('reconnect_remote', { name: remote.name })
+
+      if (result.status === 'connected') {
+        await handlePendingConnected({
+          remoteName: result.remoteName,
+          provider: result.provider,
+          mode: 'reconnect',
+          status: result.status,
+          stage: 'connected',
+          nextStep: result.nextStep,
+          message: result.message || CONNECT_SUCCESS_MESSAGE,
+          errorCode: result.errorCode ?? undefined,
+          operationStartedAtMs: Date.now(),
+          lastUpdatedAtMs: Date.now(),
+          driveCandidates: result.driveCandidates ?? undefined,
+        })
+        return
+      }
+
       moveToPendingModal(result, 'reconnect')
       await fetchRemotes({ silent: true })
     } catch (error) {
@@ -667,8 +807,12 @@ function App() {
         provider: remote.provider,
         mode: 'reconnect',
         status: 'error',
+        stage: 'failed',
         nextStep: 'retry',
         message: error instanceof Error ? error.message : String(error),
+        errorCode: undefined,
+        operationStartedAtMs: Date.now(),
+        lastUpdatedAtMs: Date.now(),
       })
       setActiveModal('oauth-pending')
     }
@@ -701,14 +845,9 @@ function App() {
   }
 
   const handlePendingDone = async () => {
-    const latest = await checkPendingSession()
-
-    if (latest?.status === 'connected') {
-      await refreshLibrary({ silent: true })
-      setActiveModal('none')
-      setPendingSession(null)
-      resetAddFlow()
-    }
+    setActiveModal('none')
+    setPendingSession(null)
+    resetAddFlow()
   }
 
   const handleFinalizeDriveSelection = async () => {
@@ -729,8 +868,20 @@ function App() {
         provider: result.provider,
         mode: pendingSession.mode,
         status: result.status,
+        stage:
+          result.stage ??
+          (result.status === 'connected'
+            ? 'connected'
+            : result.status === 'requires_drive_selection'
+              ? 'requires_drive_selection'
+              : result.status === 'error'
+                ? 'failed'
+                : 'finalizing'),
         nextStep: result.nextStep,
         message: result.message,
+        errorCode: result.errorCode ?? undefined,
+        operationStartedAtMs: pendingSession.operationStartedAtMs,
+        lastUpdatedAtMs: Date.now(),
         driveCandidates: result.driveCandidates ?? undefined,
       })
 
@@ -741,8 +892,11 @@ function App() {
       setPendingSession({
         ...pendingSession,
         status: 'error',
+        stage: 'failed',
         nextStep: 'retry',
         message: error instanceof Error ? error.message : String(error),
+        errorCode: undefined,
+        lastUpdatedAtMs: Date.now(),
       })
     } finally {
       setIsFinalizingDrive(false)
@@ -1024,7 +1178,7 @@ function App() {
     setSelectedDriveId('')
   }
 
-  const hasConnectedStorage = remotes.length > 0
+  const hasConnectedStorage = displayedRemotes.length > 0
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
     hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
@@ -1062,9 +1216,9 @@ function App() {
               {!isLoadingRemotes && listError ? <p className="error-text">{listError}</p> : null}
               {shouldShowNoStorageState ? <p className="empty-state">No storage connected yet.</p> : null}
 
-              {!isLoadingRemotes && !listError && remotes.length > 0 ? (
+              {!isLoadingRemotes && !listError && displayedRemotes.length > 0 ? (
                 <ul className="remote-list">
-                  {remotes.map((remote) => {
+                  {displayedRemotes.map((remote) => {
                     const isHovered = hoveredRemote === remote.name
 
                     return (
@@ -1342,8 +1496,12 @@ function App() {
                     : pendingSession.status === 'requires_drive_selection'
                       ? 'Choose your OneDrive'
                     : pendingSession.status === 'error'
-                      ? 'Authentication was not completed'
-                      : 'Complete authentication in your browser'}
+                      ? pendingHasCallbackStartupFailure
+                        ? 'Sign-in could not start'
+                        : 'Authentication was not completed'
+                      : pendingIsFinalizing
+                        ? 'Finishing your OneDrive connection'
+                        : 'Complete authentication in your browser'}
                 </h2>
               </div>
 
@@ -1359,8 +1517,16 @@ function App() {
               {pendingSession.status === 'pending' ? (
                 <div className="pending-indicator">
                   <span className="spinner" aria-hidden="true" />
-                  <p>Checking for completion...</p>
+                  <p>{pendingIsFinalizing ? 'Finishing setup...' : 'Checking for completion...'}</p>
                 </div>
+              ) : null}
+
+              {pendingSession.status === 'pending' ? (
+                <p className="pending-help">
+                  {pendingIsFinalizing
+                    ? 'Cloud Weave already has your sign-in token and is finishing the OneDrive setup. You do not need to return to the browser.'
+                    : 'Finish the Microsoft sign-in flow in your browser, then return here.'}
+                </p>
               ) : null}
 
               {pendingSession.status === 'requires_drive_selection' ? (
@@ -1416,9 +1582,11 @@ function App() {
               {pendingSession.status === 'error' ? (
                 <>
                   <p className="pending-help">
-                    Cloud Weave finished browser authentication, but this OneDrive connection could not be finalized for browsing.
+                    {pendingHasCallbackStartupFailure
+                      ? 'Cloud Weave could not open its local sign-in callback. Another stalled sign-in may still be running. Close this message and try again.'
+                      : 'Cloud Weave finished browser authentication, but this OneDrive connection could not be finalized for browsing.'}
                   </p>
-                  {showManualSetupHelp ? (
+                  {!pendingHasCallbackStartupFailure && showManualSetupHelp ? (
                     <div className="manual-help">
                       <p>Manual debug steps</p>
                       <code>
@@ -1444,12 +1612,16 @@ function App() {
                   <button className="ghost-button" type="button" onClick={closePendingModal}>
                     Close
                   </button>
-                  <button className="ghost-button" type="button" onClick={() => setShowManualSetupHelp((current) => !current)}>
-                    {showManualSetupHelp ? 'Hide manual setup instructions' : 'Open manual setup instructions'}
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
-                    Remove and connect again
-                  </button>
+                  {!pendingHasCallbackStartupFailure ? (
+                    <button className="ghost-button" type="button" onClick={() => setShowManualSetupHelp((current) => !current)}>
+                      {showManualSetupHelp ? 'Hide manual setup instructions' : 'Open manual setup instructions'}
+                    </button>
+                  ) : null}
+                  {!pendingHasCallbackStartupFailure ? (
+                    <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                      Remove and connect again
+                    </button>
+                  ) : null}
                   <button className="primary-button" type="button" onClick={handleRetryPending}>
                     Try again
                   </button>
@@ -1476,14 +1648,9 @@ function App() {
                   Done
                 </button>
               ) : (
-                <>
-                  <button className="ghost-button" type="button" onClick={closePendingModal}>
-                    Close
-                  </button>
-                  <button className="primary-button" type="button" onClick={() => void handlePendingDone()} disabled={isCheckingPending}>
-                    {isCheckingPending ? 'Checking...' : 'Done'}
-                  </button>
-                </>
+                <button className="ghost-button" type="button" onClick={closePendingModal}>
+                  Close
+                </button>
               )}
             </div>
           </div>

@@ -82,6 +82,7 @@ pub enum RcloneErrorKind {
     InsufficientSpace,
     UnsupportedAbout,
     AuthError,
+    AuthCallbackUnavailable,
     AuthFlow,
     AuthCancelled,
     RcloneUnavailable,
@@ -422,6 +423,16 @@ pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
         return RcloneErrorKind::AuthError;
     }
 
+    if (normalized.contains("failed to start auth webserver")
+        || normalized.contains("failed to start oauth webserver"))
+        && normalized.contains("listen tcp")
+        && (normalized.contains("bind:")
+            || normalized.contains("address already in use")
+            || normalized.contains("only one usage of each socket address"))
+    {
+        return RcloneErrorKind::AuthCallbackUnavailable;
+    }
+
     if normalized.contains("timed out")
         || normalized.contains("context canceled")
         || normalized.contains("access_denied")
@@ -438,6 +449,9 @@ pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
         || normalized.contains("authentication")
         || normalized.contains("oauth")
         || normalized.contains("token")
+        || normalized.contains("redirect url")
+        || (normalized.contains("state=")
+            && (normalized.contains("127.0.0.1:") || normalized.contains("localhost:")))
     {
         return RcloneErrorKind::AuthFlow;
     }
@@ -873,6 +887,16 @@ mod tests {
     }
 
     #[test]
+    fn classify_rclone_error_detects_auth_callback_unavailable() {
+        assert!(matches!(
+            classify_rclone_error(
+                "config failed to refresh token: failed to start auth webserver: listen tcp 127.0.0.1:53682: bind: address already in use"
+            ),
+            RcloneErrorKind::AuthCallbackUnavailable
+        ));
+    }
+
+    #[test]
     fn classify_rclone_error_detects_auth_cancelled() {
         assert!(matches!(
             classify_rclone_error("user canceled authentication in the browser"),
@@ -885,6 +909,22 @@ mod tests {
         assert!(matches!(
             classify_rclone_error("waiting for browser oauth token"),
             RcloneErrorKind::AuthFlow
+        ));
+        assert!(matches!(
+            classify_rclone_error("Redirect URL: http://127.0.0.1:53682/auth?state=abc"),
+            RcloneErrorKind::AuthFlow
+        ));
+        assert!(matches!(
+            classify_rclone_error("Visit localhost:53682/auth?state=abc to continue sign-in"),
+            RcloneErrorKind::AuthFlow
+        ));
+    }
+
+    #[test]
+    fn classify_rclone_error_does_not_treat_unrelated_urls_as_auth_flow() {
+        assert!(matches!(
+            classify_rclone_error("directory listing failed at http://example.com/path"),
+            RcloneErrorKind::Other
         ));
     }
 
