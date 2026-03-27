@@ -96,17 +96,6 @@ export function resolvePendingPhase(
 ): PendingResolutionPhase {
   const remote = latestRemotes?.find((entry) => entry.name === currentPending.remoteName) ?? null
 
-  if (remote?.status === 'connected') {
-    return {
-      status: 'connected',
-      stage: 'connected',
-      nextStep: 'done',
-      message: CONNECT_SUCCESS_MESSAGE,
-      errorCode: undefined,
-      driveCandidates: undefined,
-    }
-  }
-
   if (session?.status === 'connected') {
     return {
       ...sessionPhase(session),
@@ -114,6 +103,24 @@ export function resolvePendingPhase(
       stage: 'connected',
       nextStep: 'done',
       message: session.message || CONNECT_SUCCESS_MESSAGE,
+      errorCode: undefined,
+      driveCandidates: undefined,
+    }
+  }
+
+  if (session?.status === 'pending' && (session.stage ?? inferStageFromStatus(session.status)) === 'finalizing') {
+    return sessionPhase(session)
+  }
+
+  if (remote?.status === 'connected') {
+    return {
+      status: currentPending.stage === 'finalizing' ? 'pending' : 'connected',
+      stage: currentPending.stage === 'finalizing' ? 'finalizing' : 'connected',
+      nextStep: currentPending.stage === 'finalizing' ? currentPending.nextStep : 'done',
+      message:
+        currentPending.stage === 'finalizing'
+          ? currentPending.message || FINALIZING_MESSAGE
+          : CONNECT_SUCCESS_MESSAGE,
       errorCode: undefined,
       driveCandidates: undefined,
     }

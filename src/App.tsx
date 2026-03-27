@@ -845,13 +845,9 @@ function App() {
   }
 
   const handlePendingDone = async () => {
-    const latest = await checkPendingSession()
-
-    if (latest?.status === 'connected') {
-      setActiveModal('none')
-      setPendingSession(null)
-      resetAddFlow()
-    }
+    setActiveModal('none')
+    setPendingSession(null)
+    resetAddFlow()
   }
 
   const handleFinalizeDriveSelection = async () => {

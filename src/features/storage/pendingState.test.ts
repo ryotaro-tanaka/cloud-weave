@@ -26,24 +26,24 @@ const basePending: PendingSession = {
 }
 
 describe('resolvePendingPhase', () => {
-  it('prefers a connected remote over a stale pending session', () => {
+  it('keeps finalizing state when only the remote row looks connected', () => {
     const remotes: RemoteSummary[] = [{ name: 'onedrive-main', provider: 'onedrive', status: 'connected' }]
     const session: AuthSessionRecord = {
       remoteName: 'onedrive-main',
       provider: 'onedrive',
       mode: 'create',
       status: 'pending',
-      stage: 'pending_auth',
-      nextStep: 'open_browser',
-      message: 'Authentication is still in progress in your browser.',
+      stage: 'finalizing',
+      nextStep: 'done',
+      message: 'Cloud Weave is finalizing this OneDrive connection.',
       updatedAtMs: 1_100,
     }
 
     expect(resolvePendingPhase(basePending, remotes, session)).toEqual({
-      status: 'connected',
-      stage: 'connected',
+      status: 'pending',
+      stage: 'finalizing',
       nextStep: 'done',
-      message: 'Your storage is connected and ready to use.',
+      message: 'Cloud Weave is finalizing this OneDrive connection.',
       driveCandidates: undefined,
     })
   })

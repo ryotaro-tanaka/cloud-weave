@@ -2360,6 +2360,37 @@ fn summarize_graph_error(status: u16, body: &str) -> String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OneDriveFinalizationCommandState {
+    Running,
+    ExitedSuccess,
+    ExitedError(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OneDriveFinalizationDecision {
+    Continue,
+    Succeed,
+    Fail(String),
+}
+
+fn decide_onedrive_finalization_step(
+    command_state: &OneDriveFinalizationCommandState,
+    config_persisted: bool,
+    validation_ready: bool,
+) -> OneDriveFinalizationDecision {
+    if config_persisted && validation_ready {
+        return OneDriveFinalizationDecision::Succeed;
+    }
+
+    match command_state {
+        OneDriveFinalizationCommandState::ExitedError(error) if !config_persisted => {
+            OneDriveFinalizationDecision::Fail(error.clone())
+        }
+        _ => OneDriveFinalizationDecision::Continue,
+    }
+}
+
 fn apply_onedrive_drive_selection(
     app: &AppHandle,
     remote_name: &str,
@@ -2384,92 +2415,175 @@ fn apply_onedrive_drive_selection(
         candidate.label
     );
 
-    run_rclone_owned(app, &owned_args, DEFAULT_COMMAND_TIMEOUT).map_err(|error| {
-        log::warn!(
-            "failed to persist onedrive drive selection remote={} drive_id={} drive_type={} error={}",
-            remote_name,
-            candidate.id,
-            candidate.drive_type,
-            summarize_output(&error)
-        );
-        error
-    })?;
+    let mut child = Some(spawn_rclone_owned(app, &owned_args)?);
+    let start = Instant::now();
+    let mut command_state = OneDriveFinalizationCommandState::Running;
+    let mut logged_persisted = false;
+    let mut logged_validation_ready = false;
+    let mut last_validation_failure = None;
 
-    let remote_config_by_name = load_remote_config_states(app, config_path)?;
-    let persisted = remote_config_by_name
-        .get(remote_name)
-        .cloned()
-        .unwrap_or_else(default_remote_config_state);
+    loop {
+        if command_state == OneDriveFinalizationCommandState::Running {
+            match child
+                .as_mut()
+                .expect("running finalization should retain child")
+                .try_wait()
+            {
+                Ok(Some(_)) => match collect_child_output(
+                    child
+                        .take()
+                        .expect("completed finalization should retain child"),
+                ) {
+                    Ok(_) => {
+                        command_state = OneDriveFinalizationCommandState::ExitedSuccess;
+                        log::info!(
+                            "onedrive drive selection command exited successfully remote={} drive_id={} drive_type={}",
+                            remote_name,
+                            candidate.id,
+                            candidate.drive_type
+                        );
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "failed to persist onedrive drive selection remote={} drive_id={} drive_type={} error={}",
+                            remote_name,
+                            candidate.id,
+                            candidate.drive_type,
+                            summarize_output(&error)
+                        );
+                        command_state = OneDriveFinalizationCommandState::ExitedError(error);
+                    }
+                },
+                Ok(None) => {}
+                Err(error) => {
+                    let message = format!("failed while waiting for rclone: {error}");
+                    log::warn!(
+                        "failed while waiting for onedrive drive selection remote={} drive_id={} drive_type={} error={}",
+                        remote_name,
+                        candidate.id,
+                        candidate.drive_type,
+                        summarize_output(&message)
+                    );
+                    if let Some(mut child) = child.take() {
+                        kill_child(&mut child);
+                    }
+                    command_state = OneDriveFinalizationCommandState::ExitedError(message);
+                }
+            }
+        }
 
-    log::info!(
-        "persisted onedrive drive selection remote={} persisted_drive_id={} persisted_drive_type={}",
-        remote_name,
-        persisted.drive_id.as_deref().unwrap_or("none"),
-        persisted.drive_type.as_deref().unwrap_or("none")
-    );
+        let remote_config_by_name = load_remote_config_states(app, config_path)?;
+        let persisted = remote_config_by_name
+            .get(remote_name)
+            .cloned()
+            .unwrap_or_else(default_remote_config_state);
+        let config_persisted = persisted.drive_id.as_deref() == Some(candidate.id.as_str())
+            && persisted.drive_type.as_deref() == Some(candidate.drive_type.as_str());
 
-    if persisted.drive_id.as_deref() != Some(candidate.id.as_str())
-        || persisted.drive_type.as_deref() != Some(candidate.drive_type.as_str())
-    {
-        log::warn!(
-            "onedrive drive selection was not persisted correctly remote={} expected_drive_id={} expected_drive_type={}",
-            remote_name,
-            candidate.id,
-            candidate.drive_type
-        );
-        return Ok(CreateRemoteResult {
-            remote_name: remote_name.to_string(),
-            provider: "onedrive".to_string(),
-            status: "error".to_string(),
-            stage: Some("failed".to_string()),
-            next_step: "retry".to_string(),
-            message: "Cloud Weave could not finish setting up this OneDrive connection."
-                .to_string(),
-            error_code: None,
-            drive_candidates: None,
-        });
+        if config_persisted && !logged_persisted {
+            log::info!(
+                "persisted onedrive drive selection remote={} persisted_drive_id={} persisted_drive_type={}",
+                remote_name,
+                persisted.drive_id.as_deref().unwrap_or("none"),
+                persisted.drive_type.as_deref().unwrap_or("none")
+            );
+            logged_persisted = true;
+        }
+
+        let mut validation_ready = false;
+        if config_persisted {
+            let validation = validate_remote_after_setup(app, remote_name, "onedrive")?;
+
+            log::info!(
+                "post-selection validation remote={} can_list={} has_drive_id={} has_drive_type={} failure_reason={}",
+                remote_name,
+                validation.can_list,
+                validation.has_drive_id,
+                validation.has_drive_type,
+                validation.failure_reason.as_deref().unwrap_or("none")
+            );
+
+            validation_ready = validation.remote_exists
+                && validation.can_list
+                && validation.has_drive_id
+                && validation.has_drive_type;
+            last_validation_failure = validation.failure_reason.clone();
+
+            if validation_ready && !logged_validation_ready {
+                log::info!(
+                    "onedrive drive finalization validation passed remote={} drive_id={} drive_type={}",
+                    remote_name,
+                    candidate.id,
+                    candidate.drive_type
+                );
+                logged_validation_ready = true;
+            }
+        }
+
+        match decide_onedrive_finalization_step(&command_state, config_persisted, validation_ready)
+        {
+            OneDriveFinalizationDecision::Succeed => {
+                if let Some(mut child) = child.take() {
+                    kill_child(&mut child);
+                }
+
+                return Ok(CreateRemoteResult {
+                    remote_name: remote_name.to_string(),
+                    provider: "onedrive".to_string(),
+                    status: "connected".to_string(),
+                    stage: Some("connected".to_string()),
+                    next_step: "done".to_string(),
+                    message: format!("Connected to {}.", candidate.label),
+                    error_code: None,
+                    drive_candidates: None,
+                });
+            }
+            OneDriveFinalizationDecision::Fail(error) => {
+                return Ok(CreateRemoteResult {
+                    remote_name: remote_name.to_string(),
+                    provider: "onedrive".to_string(),
+                    status: "error".to_string(),
+                    stage: Some("failed".to_string()),
+                    next_step: "retry".to_string(),
+                    message: error,
+                    error_code: None,
+                    drive_candidates: None,
+                });
+            }
+            OneDriveFinalizationDecision::Continue => {}
+        }
+
+        if start.elapsed() >= DEFAULT_COMMAND_TIMEOUT {
+            if let Some(mut child) = child.take() {
+                kill_child(&mut child);
+            }
+
+            log::warn!(
+                "onedrive drive finalization timed out remote={} drive_id={} drive_type={} persisted={} validation_ready={}",
+                remote_name,
+                candidate.id,
+                candidate.drive_type,
+                config_persisted,
+                validation_ready
+            );
+
+            return Ok(CreateRemoteResult {
+                remote_name: remote_name.to_string(),
+                provider: "onedrive".to_string(),
+                status: "error".to_string(),
+                stage: Some("failed".to_string()),
+                next_step: "retry".to_string(),
+                message: last_validation_failure.unwrap_or_else(|| {
+                    "Cloud Weave saved the selected drive, but it still could not browse it."
+                        .to_string()
+                }),
+                error_code: None,
+                drive_candidates: None,
+            });
+        }
+
+        thread::sleep(POLL_INTERVAL);
     }
-
-    let validation = validate_remote_after_setup(app, remote_name, "onedrive")?;
-
-    log::info!(
-        "post-selection validation remote={} can_list={} has_drive_id={} has_drive_type={} failure_reason={}",
-        remote_name,
-        validation.can_list,
-        validation.has_drive_id,
-        validation.has_drive_type,
-        validation.failure_reason.as_deref().unwrap_or("none")
-    );
-
-    if validation.remote_exists
-        && validation.can_list
-        && validation.has_drive_id
-        && validation.has_drive_type
-    {
-        return Ok(CreateRemoteResult {
-            remote_name: remote_name.to_string(),
-            provider: "onedrive".to_string(),
-            status: "connected".to_string(),
-            stage: Some("connected".to_string()),
-            next_step: "done".to_string(),
-            message: format!("Connected to {}.", candidate.label),
-            error_code: None,
-            drive_candidates: None,
-        });
-    }
-
-    Ok(CreateRemoteResult {
-        remote_name: remote_name.to_string(),
-        provider: "onedrive".to_string(),
-        status: "error".to_string(),
-        stage: Some("failed".to_string()),
-        next_step: "retry".to_string(),
-        message: validation.failure_reason.unwrap_or_else(|| {
-            "Cloud Weave saved the selected drive, but it still could not browse it.".to_string()
-        }),
-        error_code: None,
-        drive_candidates: None,
-    })
 }
 
 fn redact_args(args: &[String]) -> String {
@@ -3981,12 +4095,13 @@ fn remove_auth_session_record(app: &AppHandle, remote_name: &str) {
 mod tests {
     use super::{
         build_open_cache_key, callback_unavailable_result, category_base_path, completion_progress,
-        decide_auth_flow_completion_action, default_upload_routing_config, expand_upload_directory,
-        finalizing_auth_session, join_remote_path, providers_for_extension,
-        rank_upload_remotes_by_capacity, resolve_unique_download_target,
-        sanitize_file_name_component, select_download_file_name, select_open_mode,
-        user_facing_download_error, AuthFlowCompletionAction, AuthProcessState,
-        UploadRemoteCapacity, AUTH_CALLBACK_UNAVAILABLE_CODE,
+        decide_auth_flow_completion_action, decide_onedrive_finalization_step,
+        default_upload_routing_config, expand_upload_directory, finalizing_auth_session,
+        join_remote_path, providers_for_extension, rank_upload_remotes_by_capacity,
+        resolve_unique_download_target, sanitize_file_name_component, select_download_file_name,
+        select_open_mode, user_facing_download_error, AuthFlowCompletionAction, AuthProcessState,
+        OneDriveFinalizationCommandState, OneDriveFinalizationDecision, UploadRemoteCapacity,
+        AUTH_CALLBACK_UNAVAILABLE_CODE,
     };
     use std::{
         collections::HashMap,
@@ -4252,6 +4367,56 @@ mod tests {
         assert_eq!(
             decide_auth_flow_completion_action("onedrive", AuthProcessState::Completed, true, true),
             AuthFlowCompletionAction::TryFinalize
+        );
+    }
+
+    #[test]
+    fn onedrive_finalization_waits_while_update_is_still_running() {
+        assert_eq!(
+            decide_onedrive_finalization_step(
+                &OneDriveFinalizationCommandState::Running,
+                false,
+                false,
+            ),
+            OneDriveFinalizationDecision::Continue
+        );
+    }
+
+    #[test]
+    fn onedrive_finalization_succeeds_when_validation_passes_even_if_command_is_running() {
+        assert_eq!(
+            decide_onedrive_finalization_step(
+                &OneDriveFinalizationCommandState::Running,
+                true,
+                true,
+            ),
+            OneDriveFinalizationDecision::Succeed
+        );
+    }
+
+    #[test]
+    fn onedrive_finalization_waits_after_persistence_until_validation_passes() {
+        assert_eq!(
+            decide_onedrive_finalization_step(
+                &OneDriveFinalizationCommandState::ExitedSuccess,
+                true,
+                false,
+            ),
+            OneDriveFinalizationDecision::Continue
+        );
+    }
+
+    #[test]
+    fn onedrive_finalization_fails_when_update_exits_before_persistence() {
+        assert_eq!(
+            decide_onedrive_finalization_step(
+                &OneDriveFinalizationCommandState::ExitedError(
+                    "operation timed out after 20 seconds".to_string(),
+                ),
+                false,
+                false,
+            ),
+            OneDriveFinalizationDecision::Fail("operation timed out after 20 seconds".to_string(),)
         );
     }
 }
