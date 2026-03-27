@@ -174,7 +174,6 @@ function App() {
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
   const [selectedDriveId, setSelectedDriveId] = useState('')
-  const [showManualSetupHelp, setShowManualSetupHelp] = useState(false)
   const [isLoadingRemotes, setIsLoadingRemotes] = useState(true)
   const [isLoadingItems, setIsLoadingItems] = useState(true)
   const [isLibraryStreaming, setIsLibraryStreaming] = useState(false)
@@ -220,6 +219,11 @@ function App() {
   const displayedRemotes = useMemo(() => overlayPendingRemote(remotes, pendingSession), [pendingSession, remotes])
   const pendingHasCallbackStartupFailure = pendingSession ? isCallbackStartupFailure(pendingSession.errorCode) : false
   const pendingIsFinalizing = pendingSession?.stage === 'finalizing'
+  const reconnectRequiredRemotes = useMemo(
+    () => remotes.filter((remote) => remote.status === 'reconnect_required'),
+    [remotes],
+  )
+  const activeReconnectTarget = reconnectRequiredRemotes[0] ?? null
 
   const groupedRecentItems = useMemo(() => {
     if (activeView !== 'recent') {
@@ -338,6 +342,10 @@ function App() {
       }
 
       setUploadStates((current) => applyUploadProgressEvent(current, event.payload))
+
+      if (event.payload.status === 'failed' && event.payload.remoteName) {
+        void fetchRemotes({ silent: true })
+      }
     })
 
     return () => {
@@ -378,6 +386,7 @@ function App() {
         setLibraryNotices((current) =>
           mergeNotices(current, payload.message ? [payload.message, ...(payload.notices ?? [])] : (payload.notices ?? [])),
         )
+        void fetchRemotes({ silent: true })
         setIsLoadingItems(false)
         return
       }
@@ -548,7 +557,6 @@ function App() {
     setClientId('')
     setClientSecret('')
     setAddError('')
-    setShowManualSetupHelp(false)
     setSelectedDriveId('')
   }
 
@@ -699,7 +707,6 @@ function App() {
   }
 
   const moveToPendingModal = (result: CreateRemoteResult, mode: PendingMode) => {
-    setShowManualSetupHelp(false)
     const nowMs = Date.now()
     setPendingSession({
       remoteName: result.remoteName,
@@ -903,21 +910,6 @@ function App() {
     }
   }
 
-  const handleRetryPending = () => {
-    if (!pendingSession) {
-      return
-    }
-
-    setSelectedProvider((pendingSession.provider as StorageProvider) || 'onedrive')
-    setAddFlowStep('form')
-    setRemoteName(pendingSession.remoteName)
-    setClientId('')
-    setClientSecret('')
-    setAddError('')
-    setShowManualSetupHelp(false)
-    setActiveModal('add-storage')
-  }
-
   const handlePendingRemoveAndReconnect = async () => {
     if (!pendingSession) {
       return
@@ -935,7 +927,6 @@ function App() {
     setClientId('')
     setClientSecret('')
     setAddError('')
-    setShowManualSetupHelp(false)
     setActiveModal('add-storage')
     await refreshLibrary({ silent: true })
   }
@@ -1220,6 +1211,7 @@ function App() {
                 <ul className="remote-list">
                   {displayedRemotes.map((remote) => {
                     const isHovered = hoveredRemote === remote.name
+                    const shouldShowReconnectAction = remote.status !== 'reconnect_required'
 
                     return (
                       <li
@@ -1237,10 +1229,14 @@ function App() {
                         </div>
 
                         <div className={`remote-actions ${isHovered ? 'visible' : ''}`}>
-                          <span className="status-badge">{remote.status}</span>
-                          <button className="row-action" type="button" onClick={() => void handleReconnect(remote)}>
-                            Reconnect
-                          </button>
+                          <span className={`status-badge ${remote.status === 'reconnect_required' ? 'status-badge-warning' : ''}`}>
+                            {remote.status}
+                          </span>
+                          {shouldShowReconnectAction ? (
+                            <button className="row-action" type="button" onClick={() => void handleReconnect(remote)}>
+                              Reconnect
+                            </button>
+                          ) : null}
                           <button className="row-action danger" type="button" onClick={() => openRemoveModal(remote)}>
                             Remove
                           </button>
@@ -1298,6 +1294,25 @@ function App() {
                 <p>{notice}</p>
               </div>
             ))}
+
+            {activeReconnectTarget ? (
+              <div className="reconnect-banner" role="alert" aria-live="polite">
+                <div className="reconnect-banner-copy">
+                  <p className="eyebrow">Reconnect required</p>
+                  <h2>{activeReconnectTarget.name} needs to be reconnected.</h2>
+                  <p>
+                    Cloud Weave cannot use this storage until reconnect is completed. To keep using your files, press
+                    Reconnect.
+                  </p>
+                </div>
+
+                <div className="reconnect-banner-actions">
+                  <button className="primary-button" type="button" onClick={() => void handleReconnect(activeReconnectTarget)}>
+                    Reconnect
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             {shouldShowStreamingBanner ? (
               <div className="info-banner" role="status" aria-live="polite">
@@ -1498,7 +1513,7 @@ function App() {
                     : pendingSession.status === 'error'
                       ? pendingHasCallbackStartupFailure
                         ? 'Sign-in could not start'
-                        : 'Authentication was not completed'
+                        : 'Reconnect failed'
                       : pendingIsFinalizing
                         ? 'Finishing your OneDrive connection'
                         : 'Complete authentication in your browser'}
@@ -1584,20 +1599,8 @@ function App() {
                   <p className="pending-help">
                     {pendingHasCallbackStartupFailure
                       ? 'Cloud Weave could not open its local sign-in callback. Another stalled sign-in may still be running. Close this message and try again.'
-                      : 'Cloud Weave finished browser authentication, but this OneDrive connection could not be finalized for browsing.'}
+                      : 'This storage could not be reconnected. Remove it and connect again to keep using it.'}
                   </p>
-                  {!pendingHasCallbackStartupFailure && showManualSetupHelp ? (
-                    <div className="manual-help">
-                      <p>Manual debug steps</p>
-                      <code>
-                        rclone config show --config "%APPDATA%\com.ryotaro.cloudweave\rclone.conf"
-                      </code>
-                      <code>
-                        rclone lsd {pendingSession.remoteName}: --config "%APPDATA%\com.ryotaro.cloudweave\rclone.conf" -vv
-                      </code>
-                      <p>Use interactive <code>rclone config</code> if the remote still lacks drive information.</p>
-                    </div>
-                  ) : null}
                 </>
               ) : null}
 
@@ -1613,18 +1616,10 @@ function App() {
                     Close
                   </button>
                   {!pendingHasCallbackStartupFailure ? (
-                    <button className="ghost-button" type="button" onClick={() => setShowManualSetupHelp((current) => !current)}>
-                      {showManualSetupHelp ? 'Hide manual setup instructions' : 'Open manual setup instructions'}
-                    </button>
-                  ) : null}
-                  {!pendingHasCallbackStartupFailure ? (
-                    <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                    <button className="primary-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
                       Remove and connect again
                     </button>
                   ) : null}
-                  <button className="primary-button" type="button" onClick={handleRetryPending}>
-                    Try again
-                  </button>
                 </>
               ) : pendingSession.status === 'requires_drive_selection' ? (
                 <>

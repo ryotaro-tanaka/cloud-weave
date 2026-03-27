@@ -1,11 +1,10 @@
 use crate::rclone_runtime::{load_remote_config_states, run_rclone_owned, DEFAULT_COMMAND_TIMEOUT};
-use rclone_logic::RemoteConfigState;
+use rclone_logic::{classify_rclone_error, RcloneErrorKind, RemoteConfigState};
 use std::{fs, path::PathBuf};
 use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Debug)]
 pub(crate) struct RemoteValidationResult {
-    pub(crate) provider: String,
     pub(crate) remote_exists: bool,
     pub(crate) has_drive_id: bool,
     pub(crate) has_drive_type: bool,
@@ -78,10 +77,16 @@ pub(crate) fn success_message(stdout: &str) -> String {
 }
 
 pub(crate) fn user_facing_command_error(detail: &str) -> String {
-    if detail.is_empty() {
-        "rclone could not complete the request. Try again.".to_string()
-    } else {
-        format!("rclone could not complete the request: {detail}")
+    match classify_rclone_error(detail) {
+        RcloneErrorKind::AuthError => {
+            "This storage needs to be reconnected before Cloud Weave can use it.".to_string()
+        }
+        RcloneErrorKind::AuthCallbackUnavailable => {
+            "Cloud Weave could not start the local sign-in callback. Close stalled sign-in windows and try again."
+                .to_string()
+        }
+        _ if detail.is_empty() => "rclone could not complete the request. Try again.".to_string(),
+        _ => format!("rclone could not complete the request: {detail}"),
     }
 }
 
@@ -123,7 +128,6 @@ pub(crate) fn validate_remote_after_setup(
     }
 
     let result = RemoteValidationResult {
-        provider: config_state.provider.clone(),
         remote_exists,
         has_drive_id,
         has_drive_type,

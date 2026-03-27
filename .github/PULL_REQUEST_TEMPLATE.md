@@ -26,6 +26,7 @@ Write them as normal sentences:
 - include a short hint of what Cloud Weave is when possible
 - keep it to 2-4 short sentences total
 - reduce jargon
+- keep the combined English + Japanese post within 500 characters total
 
 Good shape:
 - progress
@@ -59,6 +60,7 @@ Prefer 2-4 short sentences total with this shape:
 - what changed
 - why it helps
 - one design insight / learning / product direction
+- keep the combined English + Japanese draft within 280 characters total
 
 Always try to make these clear:
 - what Cloud Weave is

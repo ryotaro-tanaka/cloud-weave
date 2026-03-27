@@ -13,7 +13,7 @@ export type OneDriveDriveCandidate = {
 export type RemoteSummary = {
   name: string
   provider: string
-  status: 'connected' | 'error'
+  status: 'connected' | 'error' | 'reconnect_required'
   message?: string | null
 }
 
@@ -138,7 +138,7 @@ export function resolvePendingPhase(
     return sessionPhase(session)
   }
 
-  if (remote?.status === 'error') {
+  if (remote?.status === 'error' || remote?.status === 'reconnect_required') {
     if (nowMs - currentPending.operationStartedAtMs < FAILURE_BARRIER_MS) {
       return {
         status: 'pending',

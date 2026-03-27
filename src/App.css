@@ -228,6 +228,13 @@
   text-transform: capitalize;
 }
 
+.status-badge-warning {
+  color: #7a3b00;
+  background: linear-gradient(135deg, rgba(255, 210, 122, 0.9), rgba(255, 236, 186, 0.98));
+  border: 1px solid rgba(186, 111, 25, 0.28);
+  box-shadow: 0 10px 20px -16px rgba(186, 111, 25, 0.55);
+}
+
 .row-action,
 .ghost-button,
 .primary-button {
@@ -419,6 +426,41 @@ button:disabled {
   color: var(--muted);
   font-size: 14px;
   background: rgba(255, 255, 255, 0.62);
+}
+
+.reconnect-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  border: 1px solid rgba(178, 131, 56, 0.2);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top left, rgba(222, 185, 120, 0.18), transparent 42%),
+    linear-gradient(135deg, rgba(250, 246, 236, 0.96), rgba(255, 255, 255, 0.94));
+  box-shadow: 0 22px 40px -30px rgba(94, 71, 34, 0.18);
+}
+
+.reconnect-banner-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--text-h);
+}
+
+.reconnect-banner-copy h2,
+.reconnect-banner-copy p {
+  margin: 0;
+}
+
+.reconnect-banner-copy .eyebrow {
+  color: #8f6528;
+}
+
+.reconnect-banner-actions {
+  display: flex;
+  align-items: center;
 }
 
 .main-empty-state {
@@ -1225,6 +1267,26 @@ button:disabled {
 
   .upload-browse-chooser-copy {
     color: #b7c4d8;
+  }
+
+  .reconnect-banner {
+    border-color: rgba(182, 140, 72, 0.28);
+    background:
+      radial-gradient(circle at top left, rgba(197, 149, 76, 0.16), transparent 42%),
+      linear-gradient(135deg, rgba(30, 26, 21, 0.94), rgba(19, 20, 28, 0.96));
+    box-shadow: 0 24px 44px -30px rgba(0, 0, 0, 0.48);
+  }
+
+  .reconnect-banner-copy {
+    color: #f7fbff;
+  }
+
+  .reconnect-banner-copy p {
+    color: #c2cad9;
+  }
+
+  .reconnect-banner-copy .eyebrow {
+    color: #d7ab67;
   }
 
   .workspace-main {

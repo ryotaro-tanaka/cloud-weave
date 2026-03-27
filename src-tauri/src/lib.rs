@@ -29,8 +29,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{
     auth_flow::start_auth_flow,
     auth_session::{
-        callback_unavailable_message, get_auth_session_record, remove_auth_session_record,
-        AuthSessionRecord, AuthSessionStore, CreateRemoteResult,
+        callback_unavailable_message, get_auth_session_record, get_reconnect_request_record,
+        reconnect_request_record, remove_auth_session_record, remove_reconnect_request_record,
+        set_reconnect_request_record, AuthSessionRecord, AuthSessionStore, CreateRemoteResult,
+        ReconnectRequestStore,
     },
     backend_common::{
         default_remote_config_state, ensure_rclone_config, summarize_output,
@@ -496,12 +498,14 @@ fn list_storage_remotes_impl(app: AppHandle) -> Result<Vec<RemoteSummary>, Strin
                 .get(&remote_name)
                 .cloned()
                 .unwrap_or_else(default_remote_config_state);
+            let status = remote_status(&app, &remote_name, &config_state).to_string();
+            let message = remote_status_message(&app, &remote_name, &config_state);
 
             RemoteSummary {
                 name: remote_name,
                 provider: config_state.provider.clone(),
-                status: remote_status(&config_state).to_string(),
-                message: remote_status_message(&config_state),
+                status,
+                message,
             }
         })
         .collect::<Vec<_>>();
@@ -734,6 +738,7 @@ fn start_unified_library_load_impl(
                 }
                 LibraryLoadMessage::RemoteFailed { remote, error } => {
                     loaded_remote_count += 1;
+                    mark_remote_reconnect_required(&app_for_thread, &remote.name, &error);
 
                     emit_library_progress(
                         &app_for_thread,
@@ -789,7 +794,13 @@ fn reconnect_remote_impl(app: AppHandle, name: String) -> Result<CreateRemoteRes
         config_path.to_string_lossy().into_owned(),
     ];
 
-    start_auth_flow(&app, &name, "onedrive", "reconnect", &owned_args)
+    let result = start_auth_flow(&app, &name, "onedrive", "reconnect", &owned_args)?;
+
+    if result.status == "connected" {
+        remove_reconnect_request_record(&app, &name);
+    }
+
+    Ok(result)
 }
 
 fn list_connected_remote_targets(
@@ -813,10 +824,12 @@ fn list_connected_remote_targets(
                 .cloned()
                 .unwrap_or_else(default_remote_config_state);
 
-            (remote_status(&config_state) == "connected").then_some(RemoteLoadTarget {
-                name: remote_name,
-                provider: config_state.provider,
-            })
+            (remote_status(app, &remote_name, &config_state) == "connected").then_some(
+                RemoteLoadTarget {
+                    name: remote_name,
+                    provider: config_state.provider,
+                },
+            )
         })
         .collect())
 }
@@ -1409,6 +1422,7 @@ fn spawn_download_progress_watcher(
 pub fn run() {
     tauri::Builder::default()
         .manage(AuthSessionStore::default())
+        .manage(ReconnectRequestStore::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -2068,6 +2082,7 @@ fn upload_prepared_item(
                         return Ok(result);
                     }
                     Err(error) => {
+                        mark_remote_reconnect_required(app, &candidate.remote_name, &error);
                         last_error = Some(upload_candidate_error_message(&error));
                     }
                 }
@@ -2501,6 +2516,17 @@ fn emit_library_progress(app: &AppHandle, event: UnifiedLibraryLoadEvent) {
     }
 }
 
+fn mark_remote_reconnect_required(app: &AppHandle, remote_name: &str, detail: &str) {
+    if classify_rclone_error(detail) != RcloneErrorKind::AuthError {
+        return;
+    }
+
+    set_reconnect_request_record(
+        app,
+        reconnect_request_record(remote_name, "This storage needs to be reconnected."),
+    );
+}
+
 fn completion_progress(bytes_transferred: Option<u64>, total_bytes: Option<u64>) -> Option<f64> {
     match (bytes_transferred, total_bytes) {
         (_, Some(0)) => Some(100.0),
@@ -2511,24 +2537,53 @@ fn completion_progress(bytes_transferred: Option<u64>, total_bytes: Option<u64>)
     }
 }
 
-fn remote_status(config_state: &RemoteConfigState) -> &'static str {
-    if config_state.provider == "onedrive"
-        && (config_state.drive_id.is_none() || config_state.drive_type.is_none())
-    {
-        "error"
+fn remote_status(
+    app: &AppHandle,
+    remote_name: &str,
+    config_state: &RemoteConfigState,
+) -> &'static str {
+    let needs_reconnect = get_reconnect_request_record(app, remote_name).is_some()
+        || (config_state.provider == "onedrive"
+            && (config_state.drive_id.is_none()
+                || config_state.drive_type.is_none()
+                || config_state
+                    .token
+                    .as_ref()
+                    .map(|token| token.trim().is_empty())
+                    .unwrap_or(true)));
+
+    if needs_reconnect {
+        "reconnect_required"
     } else {
+        remove_reconnect_request_record(app, remote_name);
         "connected"
     }
 }
 
-fn remote_status_message(config_state: &RemoteConfigState) -> Option<String> {
-    if remote_status(config_state) == "error" {
+fn remote_status_message(
+    app: &AppHandle,
+    remote_name: &str,
+    config_state: &RemoteConfigState,
+) -> Option<String> {
+    if remote_status(app, remote_name, config_state) != "reconnect_required" {
+        return None;
+    }
+
+    if config_state.provider == "onedrive"
+        && (config_state.drive_id.is_none()
+            || config_state.drive_type.is_none()
+            || config_state
+                .token
+                .as_ref()
+                .map(|token| token.trim().is_empty())
+                .unwrap_or(true))
+    {
         Some(
             "This OneDrive connection is incomplete. Reconnect it or remove it and connect again."
                 .to_string(),
         )
     } else {
-        None
+        get_reconnect_request_record(app, remote_name).map(|record| record.message)
     }
 }
 

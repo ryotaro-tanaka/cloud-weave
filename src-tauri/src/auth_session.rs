@@ -10,6 +10,17 @@ pub(crate) struct AuthSessionStore {
     pub(crate) sessions: Mutex<HashMap<String, AuthSessionRecord>>,
 }
 
+#[derive(Default)]
+pub(crate) struct ReconnectRequestStore {
+    pub(crate) remotes: Mutex<HashMap<String, ReconnectRequestRecord>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ReconnectRequestRecord {
+    pub(crate) remote_name: String,
+    pub(crate) message: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateRemoteResult {
@@ -36,6 +47,7 @@ pub(crate) enum AuthProcessState {
 pub(crate) enum AuthFlowCompletionAction {
     KeepPending,
     TryFinalize,
+    FailPending,
     ReturnError,
 }
 
@@ -201,6 +213,41 @@ pub(crate) fn remove_auth_session_record(app: &AppHandle, remote_name: &str) {
         return;
     };
     sessions.remove(remote_name);
+}
+
+pub(crate) fn set_reconnect_request_record(app: &AppHandle, record: ReconnectRequestRecord) {
+    let store = app.state::<ReconnectRequestStore>();
+    let Ok(mut remotes) = store.remotes.lock() else {
+        return;
+    };
+    remotes.insert(record.remote_name.clone(), record);
+}
+
+pub(crate) fn get_reconnect_request_record(
+    app: &AppHandle,
+    remote_name: &str,
+) -> Option<ReconnectRequestRecord> {
+    let store = app.state::<ReconnectRequestStore>();
+    store
+        .remotes
+        .lock()
+        .ok()
+        .and_then(|remotes| remotes.get(remote_name).cloned())
+}
+
+pub(crate) fn remove_reconnect_request_record(app: &AppHandle, remote_name: &str) {
+    let store = app.state::<ReconnectRequestStore>();
+    let Ok(mut remotes) = store.remotes.lock() else {
+        return;
+    };
+    remotes.remove(remote_name);
+}
+
+pub(crate) fn reconnect_request_record(remote_name: &str, message: &str) -> ReconnectRequestRecord {
+    ReconnectRequestRecord {
+        remote_name: remote_name.to_string(),
+        message: message.to_string(),
+    }
 }
 
 #[cfg(test)]
