@@ -21,6 +21,9 @@ use crate::rclone_runtime::{
 };
 
 const AUTH_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const MISSING_TOKEN_RECONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+const STALLED_RECONNECT_MESSAGE: &str =
+    "Cloud Weave could not complete reconnect for this storage. Finish the sign-in flow in your browser and try again, or remove and connect again.";
 
 pub(crate) fn start_auth_flow(
     app: &AppHandle,
@@ -160,7 +163,9 @@ pub(crate) fn spawn_auth_watcher(
                         &app,
                         &remote_name,
                         &provider,
+                        &mode,
                         AuthProcessState::Running,
+                        start.elapsed(),
                     ) {
                         Ok(AuthFlowCompletionAction::TryFinalize) => {
                             log::info!(
@@ -196,6 +201,17 @@ pub(crate) fn spawn_auth_watcher(
                             break;
                         }
                         Ok(AuthFlowCompletionAction::KeepPending) => {}
+                        Ok(AuthFlowCompletionAction::FailPending) => {
+                            kill_child(&mut child);
+                            let record = error_auth_session(
+                                &remote_name,
+                                &provider,
+                                &mode,
+                                STALLED_RECONNECT_MESSAGE,
+                            );
+                            set_auth_session_record(&app, record);
+                            break;
+                        }
                         Ok(AuthFlowCompletionAction::ReturnError) => {}
                         Err(error) => {
                             log::warn!(
@@ -266,7 +282,14 @@ pub(crate) fn build_auth_error_result(
     );
 
     if matches!(error_kind, RcloneErrorKind::AuthFlow) {
-        match auth_flow_completion_action(app, remote_name, provider, process_state)? {
+        match auth_flow_completion_action(
+            app,
+            remote_name,
+            provider,
+            mode,
+            process_state,
+            std::time::Duration::ZERO,
+        )? {
             AuthFlowCompletionAction::KeepPending => {
                 let result = CreateRemoteResult {
                     remote_name: remote_name.to_string(),
@@ -301,6 +324,21 @@ pub(crate) fn build_auth_error_result(
                     mode
                 );
                 return build_success_result(app, remote_name, provider, mode, error);
+            }
+            AuthFlowCompletionAction::FailPending => {
+                let result = CreateRemoteResult {
+                    remote_name: remote_name.to_string(),
+                    provider: provider.to_string(),
+                    status: "error".to_string(),
+                    stage: Some("failed".to_string()),
+                    next_step: "retry".to_string(),
+                    message: STALLED_RECONNECT_MESSAGE.to_string(),
+                    error_code: None,
+                    drive_candidates: None,
+                };
+                let session = auth_session_record_from_result(mode, &result);
+                set_auth_session_record(app, session);
+                return Ok(result);
             }
             AuthFlowCompletionAction::ReturnError => {
                 log::warn!(
@@ -381,7 +419,9 @@ pub(crate) fn auth_flow_completion_action(
     app: &AppHandle,
     remote_name: &str,
     provider: &str,
+    mode: &str,
     process_state: AuthProcessState,
+    elapsed: std::time::Duration,
 ) -> Result<AuthFlowCompletionAction, String> {
     let config_path = ensure_rclone_config(app)?;
     let remote_config_by_name = load_remote_config_states(app, &config_path)?;
@@ -400,20 +440,32 @@ pub(crate) fn auth_flow_completion_action(
 
     Ok(decide_auth_flow_completion_action(
         provider,
+        mode,
         process_state,
         remote_exists,
         has_token,
+        elapsed >= MISSING_TOKEN_RECONNECT_TIMEOUT,
     ))
 }
 
 pub(crate) fn decide_auth_flow_completion_action(
     provider: &str,
+    mode: &str,
     process_state: AuthProcessState,
     remote_exists: bool,
     has_token: bool,
+    missing_token_reconnect_timed_out: bool,
 ) -> AuthFlowCompletionAction {
     if providers::provider_allows_saved_token_finalize(provider, remote_exists, has_token) {
         AuthFlowCompletionAction::TryFinalize
+    } else if provider == "onedrive"
+        && mode == "reconnect"
+        && process_state == AuthProcessState::Running
+        && remote_exists
+        && !has_token
+        && missing_token_reconnect_timed_out
+    {
+        AuthFlowCompletionAction::FailPending
     } else if process_state == AuthProcessState::Running {
         AuthFlowCompletionAction::KeepPending
     } else {
@@ -485,7 +537,14 @@ mod tests {
     #[test]
     fn auth_flow_completion_action_keeps_running_auth_pending_without_saved_token() {
         assert_eq!(
-            decide_auth_flow_completion_action("onedrive", AuthProcessState::Running, false, false),
+            decide_auth_flow_completion_action(
+                "onedrive",
+                "create",
+                AuthProcessState::Running,
+                false,
+                false,
+                false,
+            ),
             AuthFlowCompletionAction::KeepPending
         );
     }
@@ -493,8 +552,30 @@ mod tests {
     #[test]
     fn auth_flow_completion_action_finalizes_running_onedrive_with_saved_token() {
         assert_eq!(
-            decide_auth_flow_completion_action("onedrive", AuthProcessState::Running, true, true),
+            decide_auth_flow_completion_action(
+                "onedrive",
+                "reconnect",
+                AuthProcessState::Running,
+                true,
+                true,
+                false,
+            ),
             AuthFlowCompletionAction::TryFinalize
+        );
+    }
+
+    #[test]
+    fn auth_flow_completion_action_fails_stalled_tokenless_onedrive_reconnect() {
+        assert_eq!(
+            decide_auth_flow_completion_action(
+                "onedrive",
+                "reconnect",
+                AuthProcessState::Running,
+                true,
+                false,
+                true,
+            ),
+            AuthFlowCompletionAction::FailPending
         );
     }
 
@@ -503,9 +584,11 @@ mod tests {
         assert_eq!(
             decide_auth_flow_completion_action(
                 "onedrive",
+                "reconnect",
                 AuthProcessState::Completed,
                 false,
-                false
+                false,
+                false,
             ),
             AuthFlowCompletionAction::ReturnError
         );
@@ -514,7 +597,14 @@ mod tests {
     #[test]
     fn auth_flow_completion_action_finalizes_completed_onedrive_with_saved_token() {
         assert_eq!(
-            decide_auth_flow_completion_action("onedrive", AuthProcessState::Completed, true, true),
+            decide_auth_flow_completion_action(
+                "onedrive",
+                "reconnect",
+                AuthProcessState::Completed,
+                true,
+                true,
+                false,
+            ),
             AuthFlowCompletionAction::TryFinalize
         );
     }

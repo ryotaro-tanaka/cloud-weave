@@ -47,6 +47,7 @@ pub(crate) enum AuthProcessState {
 pub(crate) enum AuthFlowCompletionAction {
     KeepPending,
     TryFinalize,
+    FailPending,
     ReturnError,
 }
 
@@ -242,10 +243,7 @@ pub(crate) fn remove_reconnect_request_record(app: &AppHandle, remote_name: &str
     remotes.remove(remote_name);
 }
 
-pub(crate) fn reconnect_request_record(
-    remote_name: &str,
-    message: &str,
-) -> ReconnectRequestRecord {
+pub(crate) fn reconnect_request_record(remote_name: &str, message: &str) -> ReconnectRequestRecord {
     ReconnectRequestRecord {
         remote_name: remote_name.to_string(),
         message: message.to_string(),

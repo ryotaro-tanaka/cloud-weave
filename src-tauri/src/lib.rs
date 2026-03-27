@@ -738,11 +738,7 @@ fn start_unified_library_load_impl(
                 }
                 LibraryLoadMessage::RemoteFailed { remote, error } => {
                     loaded_remote_count += 1;
-                    mark_remote_reconnect_required(
-                        &app_for_thread,
-                        &remote.name,
-                        &error,
-                    );
+                    mark_remote_reconnect_required(&app_for_thread, &remote.name, &error);
 
                     emit_library_progress(
                         &app_for_thread,
@@ -2086,11 +2082,7 @@ fn upload_prepared_item(
                         return Ok(result);
                     }
                     Err(error) => {
-                        mark_remote_reconnect_required(
-                            app,
-                            &candidate.remote_name,
-                            &error,
-                        );
+                        mark_remote_reconnect_required(app, &candidate.remote_name, &error);
                         last_error = Some(upload_candidate_error_message(&error));
                     }
                 }
@@ -2524,21 +2516,14 @@ fn emit_library_progress(app: &AppHandle, event: UnifiedLibraryLoadEvent) {
     }
 }
 
-fn mark_remote_reconnect_required(
-    app: &AppHandle,
-    remote_name: &str,
-    detail: &str,
-) {
+fn mark_remote_reconnect_required(app: &AppHandle, remote_name: &str, detail: &str) {
     if classify_rclone_error(detail) != RcloneErrorKind::AuthError {
         return;
     }
 
     set_reconnect_request_record(
         app,
-        reconnect_request_record(
-            remote_name,
-            "This storage needs to be reconnected.",
-        ),
+        reconnect_request_record(remote_name, "This storage needs to be reconnected."),
     );
 }
 
