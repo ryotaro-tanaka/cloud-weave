@@ -70,6 +70,8 @@ struct CreateRemoteResult {
     remote_name: String,
     provider: String,
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<String>,
     next_step: String,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1584,6 +1586,7 @@ fn start_auth_flow(
                 remote_name: remote_name.to_string(),
                 provider: provider.to_string(),
                 status: "pending".to_string(),
+                stage: Some("pending_auth".to_string()),
                 next_step: "open_browser".to_string(),
                 message: "Authentication is already in progress for this storage.".to_string(),
                 error_code: None,
@@ -1640,6 +1643,7 @@ fn start_auth_flow(
                 remote_name: remote_name.to_string(),
                 provider: provider.to_string(),
                 status: "pending".to_string(),
+                stage: Some("pending_auth".to_string()),
                 next_step: "open_browser".to_string(),
                 message:
                     "Authentication started in your browser. Return here after you finish signing in."
@@ -1695,6 +1699,55 @@ fn spawn_auth_watcher(
                     break;
                 }
                 Ok(None) => {
+                    match auth_flow_completion_action(
+                        &app,
+                        &remote_name,
+                        &provider,
+                        AuthProcessState::Running,
+                    ) {
+                        Ok(AuthFlowCompletionAction::TryFinalize) => {
+                            log::info!(
+                                "auth flow running with saved config remote={} provider={} mode={} recovering_via_post_auth=true",
+                                remote_name,
+                                provider,
+                                mode
+                            );
+                            set_auth_session_record(
+                                &app,
+                                finalizing_auth_session(
+                                    &remote_name,
+                                    &provider,
+                                    &mode,
+                                    "Cloud Weave is finalizing this OneDrive connection.",
+                                ),
+                            );
+                            kill_child(&mut child);
+                            match build_success_result(&app, &remote_name, &provider, &mode, "") {
+                                Ok(result) => {
+                                    let record = auth_session_record_from_result(&mode, &result);
+                                    set_auth_session_record(&app, record);
+                                }
+                                Err(error) => {
+                                    let record =
+                                        error_auth_session(&remote_name, &provider, &mode, &error);
+                                    set_auth_session_record(&app, record);
+                                }
+                            }
+                            break;
+                        }
+                        Ok(AuthFlowCompletionAction::KeepPending) => {}
+                        Ok(AuthFlowCompletionAction::ReturnError) => {}
+                        Err(error) => {
+                            log::warn!(
+                                "auth flow completion check failed remote={} provider={} mode={} error={}",
+                                remote_name,
+                                provider,
+                                mode,
+                                error
+                            );
+                        }
+                    }
+
                     if start.elapsed() >= AUTH_COMMAND_TIMEOUT {
                         kill_child(&mut child);
                         let record = error_auth_session(
@@ -1759,6 +1812,7 @@ fn build_auth_error_result(
                     remote_name: remote_name.to_string(),
                     provider: provider.to_string(),
                     status: "pending".to_string(),
+                    stage: Some("pending_auth".to_string()),
                     next_step: "open_browser".to_string(),
                     message: "Authentication is still in progress in your browser.".to_string(),
                     error_code: None,
@@ -1804,6 +1858,7 @@ fn build_auth_error_result(
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
             status: "error".to_string(),
+            stage: Some("failed".to_string()),
             next_step: "rename".to_string(),
             message: "A storage connection with that name already exists. Choose a different remote name."
                 .to_string(),
@@ -1814,6 +1869,7 @@ fn build_auth_error_result(
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
             status: "error".to_string(),
+            stage: Some("failed".to_string()),
             next_step: "retry".to_string(),
             message: "Authentication was not completed. You can try again when you are ready."
                 .to_string(),
@@ -1825,6 +1881,7 @@ fn build_auth_error_result(
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
             status: "error".to_string(),
+            stage: Some("failed".to_string()),
             next_step: "retry".to_string(),
             message:
                 "Authentication finished, but Cloud Weave could not confirm the saved connection. Try again."
@@ -1846,6 +1903,7 @@ fn build_auth_error_result(
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
             status: "error".to_string(),
+            stage: Some("failed".to_string()),
             next_step: "retry".to_string(),
             message: user_facing_command_error(error),
             error_code: None,
@@ -1858,7 +1916,10 @@ fn build_auth_error_result(
         provider: result.provider.clone(),
         mode: mode.to_string(),
         status: result.status.clone(),
-        stage: auth_session_stage_from_result_status(&result.status),
+        stage: result
+            .stage
+            .clone()
+            .unwrap_or_else(|| auth_session_stage_from_result_status(&result.status)),
         next_step: result.next_step.clone(),
         message: result.message.clone(),
         updated_at_ms: now_timestamp_ms(),
@@ -1876,7 +1937,10 @@ fn auth_session_record_from_result(mode: &str, result: &CreateRemoteResult) -> A
         provider: result.provider.clone(),
         mode: mode.to_string(),
         status: result.status.clone(),
-        stage: auth_session_stage_from_result_status(&result.status),
+        stage: result
+            .stage
+            .clone()
+            .unwrap_or_else(|| auth_session_stage_from_result_status(&result.status)),
         next_step: result.next_step.clone(),
         message: result.message.clone(),
         updated_at_ms: now_timestamp_ms(),
@@ -1891,10 +1955,6 @@ fn auth_flow_completion_action(
     provider: &str,
     process_state: AuthProcessState,
 ) -> Result<AuthFlowCompletionAction, String> {
-    if process_state == AuthProcessState::Running {
-        return Ok(AuthFlowCompletionAction::KeepPending);
-    }
-
     let config_path = ensure_rclone_config(app)?;
     let remote_config_by_name = load_remote_config_states(app, &config_path)?;
     let saved_state = remote_config_by_name.get(remote_name);
@@ -1924,12 +1984,10 @@ fn decide_auth_flow_completion_action(
     remote_exists: bool,
     has_token: bool,
 ) -> AuthFlowCompletionAction {
-    if process_state == AuthProcessState::Running {
-        return AuthFlowCompletionAction::KeepPending;
-    }
-
     if provider == "onedrive" && remote_exists && has_token {
         AuthFlowCompletionAction::TryFinalize
+    } else if process_state == AuthProcessState::Running {
+        AuthFlowCompletionAction::KeepPending
     } else {
         AuthFlowCompletionAction::ReturnError
     }
@@ -1953,18 +2011,12 @@ fn build_success_result(
     if provider == "onedrive" {
         set_auth_session_record(
             app,
-            AuthSessionRecord {
-                remote_name: remote_name.to_string(),
-                provider: provider.to_string(),
-                mode: mode.to_string(),
-                status: "pending".to_string(),
-                stage: "finalizing".to_string(),
-                next_step: "open_browser".to_string(),
-                message: "Cloud Weave is finalizing this OneDrive connection.".to_string(),
-                updated_at_ms: now_timestamp_ms(),
-                error_code: None,
-                drive_candidates: None,
-            },
+            finalizing_auth_session(
+                remote_name,
+                provider,
+                mode,
+                "Cloud Weave is finalizing this OneDrive connection.",
+            ),
         );
     }
 
@@ -1982,6 +2034,7 @@ fn build_success_result(
                     remote_name: remote_name.to_string(),
                     provider: provider.to_string(),
                     status: "error".to_string(),
+                    stage: Some("failed".to_string()),
                     next_step: "retry".to_string(),
                     message: error,
                     error_code: None,
@@ -1997,6 +2050,7 @@ fn build_success_result(
                 remote_name: remote_name.to_string(),
                 provider: provider.to_string(),
                 status: "connected".to_string(),
+                stage: Some("connected".to_string()),
                 next_step: "done".to_string(),
                 message: success_message(stdout),
                 error_code: None,
@@ -2007,6 +2061,7 @@ fn build_success_result(
                 remote_name: remote_name.to_string(),
                 provider: provider.to_string(),
                 status: "error".to_string(),
+                stage: Some("failed".to_string()),
                 next_step: "retry".to_string(),
                 message: validation.failure_reason.unwrap_or_else(|| {
                     "This storage connection is incomplete. Try again.".to_string()
@@ -2022,7 +2077,10 @@ fn build_success_result(
         provider: result.provider.clone(),
         mode: mode.to_string(),
         status: result.status.clone(),
-        stage: auth_session_stage_from_result_status(&result.status),
+        stage: result
+            .stage
+            .clone()
+            .unwrap_or_else(|| auth_session_stage_from_result_status(&result.status)),
         next_step: result.next_step.clone(),
         message: result.message.clone(),
         updated_at_ms: now_timestamp_ms(),
@@ -2061,6 +2119,7 @@ fn build_onedrive_post_auth_result(
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
             status: "connected".to_string(),
+            stage: Some("connected".to_string()),
             next_step: "done".to_string(),
             message: success_message(stdout),
             error_code: None,
@@ -2109,6 +2168,7 @@ fn build_onedrive_post_auth_result(
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
             status: "requires_drive_selection".to_string(),
+            stage: Some("requires_drive_selection".to_string()),
             next_step: "select_drive".to_string(),
             message: "Choose which OneDrive library Cloud Weave should browse for this account."
                 .to_string(),
@@ -2126,6 +2186,7 @@ fn build_onedrive_post_auth_result(
         remote_name: remote_name.to_string(),
         provider: provider.to_string(),
         status: "error".to_string(),
+        stage: Some("failed".to_string()),
         next_step: "retry".to_string(),
         message: validation.failure_reason.unwrap_or_else(|| {
             "Cloud Weave finished browser authentication, but could not finalize this OneDrive library."
@@ -2360,6 +2421,7 @@ fn apply_onedrive_drive_selection(
             remote_name: remote_name.to_string(),
             provider: "onedrive".to_string(),
             status: "error".to_string(),
+            stage: Some("failed".to_string()),
             next_step: "retry".to_string(),
             message: "Cloud Weave could not finish setting up this OneDrive connection."
                 .to_string(),
@@ -2388,6 +2450,7 @@ fn apply_onedrive_drive_selection(
             remote_name: remote_name.to_string(),
             provider: "onedrive".to_string(),
             status: "connected".to_string(),
+            stage: Some("connected".to_string()),
             next_step: "done".to_string(),
             message: format!("Connected to {}.", candidate.label),
             error_code: None,
@@ -2399,6 +2462,7 @@ fn apply_onedrive_drive_selection(
         remote_name: remote_name.to_string(),
         provider: "onedrive".to_string(),
         status: "error".to_string(),
+        stage: Some("failed".to_string()),
         next_step: "retry".to_string(),
         message: validation.failure_reason.unwrap_or_else(|| {
             "Cloud Weave saved the selected drive, but it still could not browse it.".to_string()
@@ -3780,6 +3844,7 @@ fn callback_unavailable_result(remote_name: &str, provider: &str) -> CreateRemot
         remote_name: remote_name.to_string(),
         provider: provider.to_string(),
         status: "error".to_string(),
+        stage: Some("failed".to_string()),
         next_step: "retry".to_string(),
         message: callback_unavailable_message(),
         error_code: Some(AUTH_CALLBACK_UNAVAILABLE_CODE.to_string()),
@@ -3820,6 +3885,26 @@ fn pending_auth_session(
         status: "pending".to_string(),
         stage: "pending_auth".to_string(),
         next_step: "open_browser".to_string(),
+        message: message.to_string(),
+        updated_at_ms: now_timestamp_ms(),
+        error_code: None,
+        drive_candidates: None,
+    }
+}
+
+fn finalizing_auth_session(
+    remote_name: &str,
+    provider: &str,
+    mode: &str,
+    message: &str,
+) -> AuthSessionRecord {
+    AuthSessionRecord {
+        remote_name: remote_name.to_string(),
+        provider: provider.to_string(),
+        mode: mode.to_string(),
+        status: "pending".to_string(),
+        stage: "finalizing".to_string(),
+        next_step: "done".to_string(),
         message: message.to_string(),
         updated_at_ms: now_timestamp_ms(),
         error_code: None,
@@ -3897,9 +3982,10 @@ mod tests {
     use super::{
         build_open_cache_key, callback_unavailable_result, category_base_path, completion_progress,
         decide_auth_flow_completion_action, default_upload_routing_config, expand_upload_directory,
-        join_remote_path, providers_for_extension, rank_upload_remotes_by_capacity,
-        resolve_unique_download_target, sanitize_file_name_component, select_download_file_name,
-        select_open_mode, user_facing_download_error, AuthFlowCompletionAction, AuthProcessState,
+        finalizing_auth_session, join_remote_path, providers_for_extension,
+        rank_upload_remotes_by_capacity, resolve_unique_download_target,
+        sanitize_file_name_component, select_download_file_name, select_open_mode,
+        user_facing_download_error, AuthFlowCompletionAction, AuthProcessState,
         UploadRemoteCapacity, AUTH_CALLBACK_UNAVAILABLE_CODE,
     };
     use std::{
@@ -3964,6 +4050,19 @@ mod tests {
             result.error_code.as_deref(),
             Some(AUTH_CALLBACK_UNAVAILABLE_CODE)
         );
+    }
+
+    #[test]
+    fn finalizing_auth_session_marks_browser_work_as_done() {
+        let session = finalizing_auth_session(
+            "taro",
+            "onedrive",
+            "create",
+            "Cloud Weave is finalizing this OneDrive connection.",
+        );
+        assert_eq!(session.status, "pending");
+        assert_eq!(session.stage, "finalizing");
+        assert_eq!(session.next_step, "done");
     }
 
     #[test]
@@ -4120,10 +4219,18 @@ mod tests {
     }
 
     #[test]
-    fn auth_flow_completion_action_keeps_running_auth_pending() {
+    fn auth_flow_completion_action_keeps_running_auth_pending_without_saved_token() {
         assert_eq!(
             decide_auth_flow_completion_action("onedrive", AuthProcessState::Running, false, false),
             AuthFlowCompletionAction::KeepPending
+        );
+    }
+
+    #[test]
+    fn auth_flow_completion_action_finalizes_running_onedrive_with_saved_token() {
+        assert_eq!(
+            decide_auth_flow_completion_action("onedrive", AuthProcessState::Running, true, true),
+            AuthFlowCompletionAction::TryFinalize
         );
     }
 

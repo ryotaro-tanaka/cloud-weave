@@ -175,6 +175,27 @@ describe('resolvePendingPhase', () => {
     })
   })
 
+  it('preserves a finalizing pending session while waiting for completion', () => {
+    const session: AuthSessionRecord = {
+      remoteName: 'onedrive-main',
+      provider: 'onedrive',
+      mode: 'create',
+      status: 'pending',
+      stage: 'finalizing',
+      nextStep: 'done',
+      message: 'Cloud Weave is finalizing this OneDrive connection.',
+      updatedAtMs: 1_100,
+    }
+
+    expect(resolvePendingPhase(basePending, [], session)).toEqual({
+      status: 'pending',
+      stage: 'finalizing',
+      nextStep: 'done',
+      message: 'Cloud Weave is finalizing this OneDrive connection.',
+      driveCandidates: undefined,
+    })
+  })
+
   it('fails after the barrier window when only remote error remains', () => {
     const remotes: RemoteSummary[] = [
       {

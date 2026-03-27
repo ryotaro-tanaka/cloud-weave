@@ -88,6 +88,7 @@ type CreateRemoteResult = {
   remoteName: string
   provider: string
   status: 'connected' | 'pending' | 'requires_drive_selection' | 'error'
+  stage?: AuthSessionStage | null
   nextStep: 'done' | 'open_browser' | 'retry' | 'rename' | 'select_drive'
   message: string
   errorCode?: string | null
@@ -178,7 +179,6 @@ function App() {
   const [isLoadingItems, setIsLoadingItems] = useState(true)
   const [isLibraryStreaming, setIsLibraryStreaming] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isCheckingPending, setIsCheckingPending] = useState(false)
   const [isFinalizingDrive, setIsFinalizingDrive] = useState(false)
   const [isRemoving, setIsRemoving] = useState(false)
   const [remoteName, setRemoteName] = useState('')
@@ -219,6 +219,7 @@ function App() {
 
   const displayedRemotes = useMemo(() => overlayPendingRemote(remotes, pendingSession), [pendingSession, remotes])
   const pendingHasCallbackStartupFailure = pendingSession ? isCallbackStartupFailure(pendingSession.errorCode) : false
+  const pendingIsFinalizing = pendingSession?.stage === 'finalizing'
 
   const groupedRecentItems = useMemo(() => {
     if (activeView !== 'recent') {
@@ -649,10 +650,6 @@ function App() {
       return null
     }
 
-    if (!silent) {
-      setIsCheckingPending(true)
-    }
-
     try {
       const [latestRemotes, session] = await Promise.all([
         fetchRemotes({ silent: true }),
@@ -698,10 +695,6 @@ function App() {
       }
       setPendingSession(failedPending)
       return failedPending
-    } finally {
-      if (!silent) {
-        setIsCheckingPending(false)
-      }
     }
   }
 
@@ -714,13 +707,14 @@ function App() {
       mode,
       status: result.status,
       stage:
-        result.status === 'connected'
+        result.stage ??
+        (result.status === 'connected'
           ? 'connected'
           : result.status === 'requires_drive_selection'
             ? 'requires_drive_selection'
             : result.status === 'error'
               ? 'failed'
-              : 'pending_auth',
+              : 'pending_auth'),
       nextStep: result.nextStep,
       message: result.message || EMPTY_PENDING_MESSAGE,
       errorCode: result.errorCode ?? undefined,
@@ -879,13 +873,14 @@ function App() {
         mode: pendingSession.mode,
         status: result.status,
         stage:
-          result.status === 'connected'
+          result.stage ??
+          (result.status === 'connected'
             ? 'connected'
             : result.status === 'requires_drive_selection'
               ? 'requires_drive_selection'
               : result.status === 'error'
                 ? 'failed'
-                : 'finalizing',
+                : 'finalizing'),
         nextStep: result.nextStep,
         message: result.message,
         errorCode: result.errorCode ?? undefined,
@@ -1508,7 +1503,9 @@ function App() {
                       ? pendingHasCallbackStartupFailure
                         ? 'Sign-in could not start'
                         : 'Authentication was not completed'
-                      : 'Complete authentication in your browser'}
+                      : pendingIsFinalizing
+                        ? 'Finishing your OneDrive connection'
+                        : 'Complete authentication in your browser'}
                 </h2>
               </div>
 
@@ -1524,8 +1521,16 @@ function App() {
               {pendingSession.status === 'pending' ? (
                 <div className="pending-indicator">
                   <span className="spinner" aria-hidden="true" />
-                  <p>Checking for completion...</p>
+                  <p>{pendingIsFinalizing ? 'Finishing setup...' : 'Checking for completion...'}</p>
                 </div>
+              ) : null}
+
+              {pendingSession.status === 'pending' ? (
+                <p className="pending-help">
+                  {pendingIsFinalizing
+                    ? 'Cloud Weave already has your sign-in token and is finishing the OneDrive setup. You do not need to return to the browser.'
+                    : 'Finish the Microsoft sign-in flow in your browser, then return here.'}
+                </p>
               ) : null}
 
               {pendingSession.status === 'requires_drive_selection' ? (
@@ -1647,14 +1652,9 @@ function App() {
                   Done
                 </button>
               ) : (
-                <>
-                  <button className="ghost-button" type="button" onClick={closePendingModal}>
-                    Close
-                  </button>
-                  <button className="primary-button" type="button" onClick={() => void handlePendingDone()} disabled={isCheckingPending}>
-                    {isCheckingPending ? 'Checking...' : 'Done'}
-                  </button>
-                </>
+                <button className="ghost-button" type="button" onClick={closePendingModal}>
+                  Close
+                </button>
               )}
             </div>
           </div>
