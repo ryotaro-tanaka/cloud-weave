@@ -2,8 +2,9 @@ use crate::{
     auth_session::{
         auth_session_record_from_result, auth_session_stage_from_result_status,
         callback_unavailable_result, error_auth_session, finalizing_auth_session,
-        pending_auth_session, remove_auth_session_record, set_auth_session_record,
-        AuthFlowCompletionAction, AuthProcessState, AuthSessionRecord, CreateRemoteResult,
+        pending_auth_session, remove_auth_session_record, remove_reconnect_request_record,
+        set_auth_session_record, AuthFlowCompletionAction, AuthProcessState, AuthSessionRecord,
+        CreateRemoteResult,
     },
     backend_common::{
         ensure_rclone_config, redact_args, summarize_output, user_facing_command_error,
@@ -468,6 +469,10 @@ pub(crate) fn build_success_result(
 
     let session = auth_session_record_from_result(mode, &result);
     set_auth_session_record(app, session);
+
+    if result.status == "connected" {
+        remove_reconnect_request_record(app, remote_name);
+    }
 
     Ok(result)
 }

@@ -419,6 +419,7 @@ pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
         || normalized.contains("login required")
         || normalized.contains("token has expired")
         || normalized.contains("invalid_grant")
+        || normalized.contains("invalidauthenticationtoken")
     {
         return RcloneErrorKind::AuthError;
     }
@@ -882,6 +883,10 @@ mod tests {
     fn classify_rclone_error_detects_auth_error() {
         assert!(matches!(
             classify_rclone_error("authentication failed: token has expired"),
+            RcloneErrorKind::AuthError
+        ));
+        assert!(matches!(
+            classify_rclone_error("Microsoft Graph returned HTTP 401: InvalidAuthenticationToken"),
             RcloneErrorKind::AuthError
         ));
     }

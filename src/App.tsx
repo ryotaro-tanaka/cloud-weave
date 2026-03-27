@@ -338,6 +338,10 @@ function App() {
       }
 
       setUploadStates((current) => applyUploadProgressEvent(current, event.payload))
+
+      if (event.payload.status === 'failed' && event.payload.remoteName) {
+        void fetchRemotes({ silent: true })
+      }
     })
 
     return () => {
@@ -378,6 +382,7 @@ function App() {
         setLibraryNotices((current) =>
           mergeNotices(current, payload.message ? [payload.message, ...(payload.notices ?? [])] : (payload.notices ?? [])),
         )
+        void fetchRemotes({ silent: true })
         setIsLoadingItems(false)
         return
       }
