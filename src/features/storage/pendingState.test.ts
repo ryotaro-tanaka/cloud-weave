@@ -151,6 +151,7 @@ describe('resolvePendingPhase', () => {
       stage: 'failed',
       nextStep: 'retry',
       message: 'failed to query Microsoft Graph drives: HTTP 403',
+      errorCode: 'graph_query_failed',
       driveCandidates: undefined,
     })
   })
