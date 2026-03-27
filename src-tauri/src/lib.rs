@@ -11,6 +11,7 @@ use std::{
     collections::{HashMap, VecDeque},
     fs,
     hash::{Hash, Hasher},
+    net::TcpListener,
     path::Component,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -38,6 +39,8 @@ const LIBRARY_PROGRESS_EVENT: &str = "library://progress";
 const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(400);
 const OPEN_TEMP_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 const UPLOAD_ROUTING_CONFIG_FILE: &str = "upload-routing.json";
+const AUTH_CALLBACK_BIND_ADDR: &str = "127.0.0.1:53682";
+const AUTH_CALLBACK_UNAVAILABLE_CODE: &str = "auth_callback_unavailable";
 
 #[derive(Default)]
 struct AuthSessionStore {
@@ -70,6 +73,8 @@ struct CreateRemoteResult {
     next_step: String,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     drive_candidates: Option<Vec<OneDriveDriveCandidate>>,
 }
 
@@ -97,6 +102,8 @@ struct AuthSessionRecord {
     next_step: String,
     message: String,
     updated_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     drive_candidates: Option<Vec<OneDriveDriveCandidate>>,
 }
@@ -1579,9 +1586,23 @@ fn start_auth_flow(
                 status: "pending".to_string(),
                 next_step: "open_browser".to_string(),
                 message: "Authentication is already in progress for this storage.".to_string(),
+                error_code: None,
                 drive_candidates: None,
             });
         }
+    }
+
+    if let Err(error) = ensure_auth_callback_available() {
+        log::warn!(
+            "auth callback preflight remote={} provider={} mode={} port={} available=false error={}",
+            remote_name,
+            provider,
+            mode,
+            AUTH_CALLBACK_BIND_ADDR,
+            error
+        );
+        remove_auth_session_record(app, remote_name);
+        return Ok(callback_unavailable_result(remote_name, provider));
     }
 
     let mut child = spawn_rclone_owned(app, args)?;
@@ -1623,6 +1644,7 @@ fn start_auth_flow(
                 message:
                     "Authentication started in your browser. Return here after you finish signing in."
                         .to_string(),
+                error_code: None,
                 drive_candidates: None,
             })
         }
@@ -1739,6 +1761,7 @@ fn build_auth_error_result(
                     status: "pending".to_string(),
                     next_step: "open_browser".to_string(),
                     message: "Authentication is still in progress in your browser.".to_string(),
+                    error_code: None,
                     drive_candidates: None,
                 };
                 let session = AuthSessionRecord {
@@ -1750,6 +1773,7 @@ fn build_auth_error_result(
                     next_step: result.next_step.clone(),
                     message: result.message.clone(),
                     updated_at_ms: now_timestamp_ms(),
+                    error_code: result.error_code.clone(),
                     drive_candidates: result.drive_candidates.clone(),
                 };
                 set_auth_session_record(app, session);
@@ -1783,6 +1807,7 @@ fn build_auth_error_result(
             next_step: "rename".to_string(),
             message: "A storage connection with that name already exists. Choose a different remote name."
                 .to_string(),
+            error_code: None,
             drive_candidates: None,
         },
         RcloneErrorKind::AuthCancelled => CreateRemoteResult {
@@ -1792,18 +1817,10 @@ fn build_auth_error_result(
             next_step: "retry".to_string(),
             message: "Authentication was not completed. You can try again when you are ready."
                 .to_string(),
+            error_code: None,
             drive_candidates: None,
         },
-        RcloneErrorKind::AuthCallbackUnavailable => CreateRemoteResult {
-            remote_name: remote_name.to_string(),
-            provider: provider.to_string(),
-            status: "error".to_string(),
-            next_step: "retry".to_string(),
-            message:
-                "Cloud Weave could not start the local sign-in callback on port 53682. Close other stalled sign-in windows or retry."
-                    .to_string(),
-            drive_candidates: None,
-        },
+        RcloneErrorKind::AuthCallbackUnavailable => callback_unavailable_result(remote_name, provider),
         RcloneErrorKind::AuthFlow => CreateRemoteResult {
             remote_name: remote_name.to_string(),
             provider: provider.to_string(),
@@ -1812,6 +1829,7 @@ fn build_auth_error_result(
             message:
                 "Authentication finished, but Cloud Weave could not confirm the saved connection. Try again."
                     .to_string(),
+            error_code: None,
             drive_candidates: None,
         },
         RcloneErrorKind::RcloneUnavailable => {
@@ -1830,6 +1848,7 @@ fn build_auth_error_result(
             status: "error".to_string(),
             next_step: "retry".to_string(),
             message: user_facing_command_error(error),
+            error_code: None,
             drive_candidates: None,
         },
     };
@@ -1843,6 +1862,7 @@ fn build_auth_error_result(
         next_step: result.next_step.clone(),
         message: result.message.clone(),
         updated_at_ms: now_timestamp_ms(),
+        error_code: result.error_code.clone(),
         drive_candidates: result.drive_candidates.clone(),
     };
     set_auth_session_record(app, session);
@@ -1860,6 +1880,7 @@ fn auth_session_record_from_result(mode: &str, result: &CreateRemoteResult) -> A
         next_step: result.next_step.clone(),
         message: result.message.clone(),
         updated_at_ms: now_timestamp_ms(),
+        error_code: result.error_code.clone(),
         drive_candidates: result.drive_candidates.clone(),
     }
 }
@@ -1941,6 +1962,7 @@ fn build_success_result(
                 next_step: "open_browser".to_string(),
                 message: "Cloud Weave is finalizing this OneDrive connection.".to_string(),
                 updated_at_ms: now_timestamp_ms(),
+                error_code: None,
                 drive_candidates: None,
             },
         );
@@ -1962,6 +1984,7 @@ fn build_success_result(
                     status: "error".to_string(),
                     next_step: "retry".to_string(),
                     message: error,
+                    error_code: None,
                     drive_candidates: None,
                 }
             }
@@ -1976,6 +1999,7 @@ fn build_success_result(
                 status: "connected".to_string(),
                 next_step: "done".to_string(),
                 message: success_message(stdout),
+                error_code: None,
                 drive_candidates: None,
             }
         } else {
@@ -1987,6 +2011,7 @@ fn build_success_result(
                 message: validation.failure_reason.unwrap_or_else(|| {
                     "This storage connection is incomplete. Try again.".to_string()
                 }),
+                error_code: None,
                 drive_candidates: None,
             }
         }
@@ -2001,6 +2026,7 @@ fn build_success_result(
         next_step: result.next_step.clone(),
         message: result.message.clone(),
         updated_at_ms: now_timestamp_ms(),
+        error_code: result.error_code.clone(),
         drive_candidates: result.drive_candidates.clone(),
     };
     set_auth_session_record(app, session);
@@ -2037,6 +2063,7 @@ fn build_onedrive_post_auth_result(
             status: "connected".to_string(),
             next_step: "done".to_string(),
             message: success_message(stdout),
+            error_code: None,
             drive_candidates: None,
         });
     }
@@ -2085,6 +2112,7 @@ fn build_onedrive_post_auth_result(
             next_step: "select_drive".to_string(),
             message: "Choose which OneDrive library Cloud Weave should browse for this account."
                 .to_string(),
+            error_code: None,
             drive_candidates: Some(candidates),
         });
     }
@@ -2103,6 +2131,7 @@ fn build_onedrive_post_auth_result(
             "Cloud Weave finished browser authentication, but could not finalize this OneDrive library."
                 .to_string()
         }),
+        error_code: None,
         drive_candidates: Some(candidates),
     })
 }
@@ -2334,6 +2363,7 @@ fn apply_onedrive_drive_selection(
             next_step: "retry".to_string(),
             message: "Cloud Weave could not finish setting up this OneDrive connection."
                 .to_string(),
+            error_code: None,
             drive_candidates: None,
         });
     }
@@ -2360,6 +2390,7 @@ fn apply_onedrive_drive_selection(
             status: "connected".to_string(),
             next_step: "done".to_string(),
             message: format!("Connected to {}.", candidate.label),
+            error_code: None,
             drive_candidates: None,
         });
     }
@@ -2372,6 +2403,7 @@ fn apply_onedrive_drive_selection(
         message: validation.failure_reason.unwrap_or_else(|| {
             "Cloud Weave saved the selected drive, but it still could not browse it.".to_string()
         }),
+        error_code: None,
         drive_candidates: None,
     })
 }
@@ -3720,10 +3752,7 @@ fn user_facing_download_error(detail: &str) -> String {
             "The bundled rclone binary could not be found. Run the rclone setup step and restart the app."
                 .to_string()
         }
-        RcloneErrorKind::AuthCallbackUnavailable => {
-            "Cloud Weave could not start the local sign-in callback on port 53682. Close other stalled sign-in windows or retry."
-                .to_string()
-        }
+        RcloneErrorKind::AuthCallbackUnavailable => callback_unavailable_message(),
         _ if detail.is_empty() => "The file could not be downloaded. Try again.".to_string(),
         _ => format!("The file could not be downloaded: {detail}"),
     }
@@ -3735,12 +3764,46 @@ fn user_facing_open_error(detail: &str) -> String {
             "The bundled rclone binary could not be found. Run the rclone setup step and restart the app."
                 .to_string()
         }
-        RcloneErrorKind::AuthCallbackUnavailable => {
-            "Cloud Weave could not start the local sign-in callback on port 53682. Close other stalled sign-in windows or retry."
-                .to_string()
-        }
+        RcloneErrorKind::AuthCallbackUnavailable => callback_unavailable_message(),
         _ if detail.is_empty() => "The file could not be prepared for preview. Try again.".to_string(),
         _ => format!("The file could not be prepared for preview: {detail}"),
+    }
+}
+
+fn callback_unavailable_message() -> String {
+    "Cloud Weave could not start the local sign-in callback on port 53682. Close other stalled sign-in windows or retry."
+        .to_string()
+}
+
+fn callback_unavailable_result(remote_name: &str, provider: &str) -> CreateRemoteResult {
+    CreateRemoteResult {
+        remote_name: remote_name.to_string(),
+        provider: provider.to_string(),
+        status: "error".to_string(),
+        next_step: "retry".to_string(),
+        message: callback_unavailable_message(),
+        error_code: Some(AUTH_CALLBACK_UNAVAILABLE_CODE.to_string()),
+        drive_candidates: None,
+    }
+}
+
+fn ensure_auth_callback_available() -> Result<(), String> {
+    match TcpListener::bind(AUTH_CALLBACK_BIND_ADDR) {
+        Ok(listener) => {
+            drop(listener);
+            log::info!(
+                "auth callback preflight port={} available=true",
+                AUTH_CALLBACK_BIND_ADDR
+            );
+            Ok(())
+        }
+        Err(error) => {
+            log::info!(
+                "auth callback preflight port={} available=false",
+                AUTH_CALLBACK_BIND_ADDR
+            );
+            Err(error.to_string())
+        }
     }
 }
 
@@ -3759,6 +3822,7 @@ fn pending_auth_session(
         next_step: "open_browser".to_string(),
         message: message.to_string(),
         updated_at_ms: now_timestamp_ms(),
+        error_code: None,
         drive_candidates: None,
     }
 }
@@ -3778,6 +3842,7 @@ fn error_auth_session(
         next_step: "retry".to_string(),
         message: message.to_string(),
         updated_at_ms: now_timestamp_ms(),
+        error_code: None,
         drive_candidates: None,
     }
 }
@@ -3830,12 +3895,12 @@ fn remove_auth_session_record(app: &AppHandle, remote_name: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_open_cache_key, category_base_path, completion_progress,
+        build_open_cache_key, callback_unavailable_result, category_base_path, completion_progress,
         decide_auth_flow_completion_action, default_upload_routing_config, expand_upload_directory,
         join_remote_path, providers_for_extension, rank_upload_remotes_by_capacity,
         resolve_unique_download_target, sanitize_file_name_component, select_download_file_name,
         select_open_mode, user_facing_download_error, AuthFlowCompletionAction, AuthProcessState,
-        UploadRemoteCapacity,
+        UploadRemoteCapacity, AUTH_CALLBACK_UNAVAILABLE_CODE,
     };
     use std::{
         collections::HashMap,
@@ -3888,6 +3953,17 @@ mod tests {
     fn user_facing_download_error_falls_back_to_detail() {
         let message = user_facing_download_error("access denied");
         assert!(message.contains("access denied"));
+    }
+
+    #[test]
+    fn callback_unavailable_result_sets_dedicated_error_code() {
+        let result = callback_unavailable_result("taro", "onedrive");
+        assert_eq!(result.status, "error");
+        assert_eq!(result.next_step, "retry");
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some(AUTH_CALLBACK_UNAVAILABLE_CODE)
+        );
     }
 
     #[test]

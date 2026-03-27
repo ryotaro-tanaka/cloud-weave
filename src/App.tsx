@@ -6,6 +6,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { open as openPath } from '@tauri-apps/plugin-shell'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
+  isCallbackStartupFailure,
   overlayPendingRemote,
   resolvePendingSession,
   type AuthSessionRecord,
@@ -89,6 +90,7 @@ type CreateRemoteResult = {
   status: 'connected' | 'pending' | 'requires_drive_selection' | 'error'
   nextStep: 'done' | 'open_browser' | 'retry' | 'rename' | 'select_drive'
   message: string
+  errorCode?: string | null
   driveCandidates?: OneDriveDriveCandidate[] | null
 }
 
@@ -216,6 +218,7 @@ function App() {
   }, [activeView, searchQuery, unifiedItems])
 
   const displayedRemotes = useMemo(() => overlayPendingRemote(remotes, pendingSession), [pendingSession, remotes])
+  const pendingHasCallbackStartupFailure = pendingSession ? isCallbackStartupFailure(pendingSession.errorCode) : false
 
   const groupedRecentItems = useMemo(() => {
     if (activeView !== 'recent') {
@@ -635,6 +638,7 @@ function App() {
       status: 'connected',
       nextStep: 'done',
       message: session.message || CONNECT_SUCCESS_MESSAGE,
+      errorCode: undefined,
       driveCandidates: undefined,
     })
     await synchronizeConnectedRemote(session.remoteName, session.provider)
@@ -662,11 +666,16 @@ function App() {
         previousStatus: pendingSession.status,
         previousStage: pendingSession.stage,
         remoteStatus: latestRemotes?.find((entry) => entry.name === pendingSession.remoteName)?.status ?? null,
-        sessionStatus: session?.status ?? null,
-        sessionStage: session?.stage ?? null,
         resolvedStatus: nextPending.status,
         resolvedStage: nextPending.stage,
         operationAgeMs: Date.now() - pendingSession.operationStartedAtMs,
+        ...(session
+          ? {
+              sessionStatus: session.status,
+              sessionStage: session.stage ?? null,
+              sessionErrorCode: session.errorCode ?? null,
+            }
+          : {}),
       })
 
       setPendingSession(nextPending)
@@ -684,6 +693,7 @@ function App() {
         stage: 'failed' as AuthSessionStage,
         nextStep: 'retry',
         message,
+        errorCode: undefined,
         lastUpdatedAtMs: Date.now(),
       }
       setPendingSession(failedPending)
@@ -713,6 +723,7 @@ function App() {
               : 'pending_auth',
       nextStep: result.nextStep,
       message: result.message || EMPTY_PENDING_MESSAGE,
+      errorCode: result.errorCode ?? undefined,
       operationStartedAtMs: nowMs,
       lastUpdatedAtMs: nowMs,
       driveCandidates: result.driveCandidates ?? undefined,
@@ -754,6 +765,7 @@ function App() {
           stage: 'connected',
           nextStep: result.nextStep,
           message: result.message || CONNECT_SUCCESS_MESSAGE,
+          errorCode: result.errorCode ?? undefined,
           operationStartedAtMs: Date.now(),
           lastUpdatedAtMs: Date.now(),
           driveCandidates: result.driveCandidates ?? undefined,
@@ -785,6 +797,7 @@ function App() {
           stage: 'connected',
           nextStep: result.nextStep,
           message: result.message || CONNECT_SUCCESS_MESSAGE,
+          errorCode: result.errorCode ?? undefined,
           operationStartedAtMs: Date.now(),
           lastUpdatedAtMs: Date.now(),
           driveCandidates: result.driveCandidates ?? undefined,
@@ -803,6 +816,7 @@ function App() {
         stage: 'failed',
         nextStep: 'retry',
         message: error instanceof Error ? error.message : String(error),
+        errorCode: undefined,
         operationStartedAtMs: Date.now(),
         lastUpdatedAtMs: Date.now(),
       })
@@ -874,6 +888,7 @@ function App() {
                 : 'finalizing',
         nextStep: result.nextStep,
         message: result.message,
+        errorCode: result.errorCode ?? undefined,
         operationStartedAtMs: pendingSession.operationStartedAtMs,
         lastUpdatedAtMs: Date.now(),
         driveCandidates: result.driveCandidates ?? undefined,
@@ -889,6 +904,7 @@ function App() {
         stage: 'failed',
         nextStep: 'retry',
         message: error instanceof Error ? error.message : String(error),
+        errorCode: undefined,
         lastUpdatedAtMs: Date.now(),
       })
     } finally {
@@ -1489,7 +1505,9 @@ function App() {
                     : pendingSession.status === 'requires_drive_selection'
                       ? 'Choose your OneDrive'
                     : pendingSession.status === 'error'
-                      ? 'Authentication was not completed'
+                      ? pendingHasCallbackStartupFailure
+                        ? 'Sign-in could not start'
+                        : 'Authentication was not completed'
                       : 'Complete authentication in your browser'}
                 </h2>
               </div>
@@ -1563,9 +1581,11 @@ function App() {
               {pendingSession.status === 'error' ? (
                 <>
                   <p className="pending-help">
-                    Cloud Weave finished browser authentication, but this OneDrive connection could not be finalized for browsing.
+                    {pendingHasCallbackStartupFailure
+                      ? 'Cloud Weave could not open its local sign-in callback. Another stalled sign-in may still be running. Close this message and try again.'
+                      : 'Cloud Weave finished browser authentication, but this OneDrive connection could not be finalized for browsing.'}
                   </p>
-                  {showManualSetupHelp ? (
+                  {!pendingHasCallbackStartupFailure && showManualSetupHelp ? (
                     <div className="manual-help">
                       <p>Manual debug steps</p>
                       <code>
@@ -1591,12 +1611,16 @@ function App() {
                   <button className="ghost-button" type="button" onClick={closePendingModal}>
                     Close
                   </button>
-                  <button className="ghost-button" type="button" onClick={() => setShowManualSetupHelp((current) => !current)}>
-                    {showManualSetupHelp ? 'Hide manual setup instructions' : 'Open manual setup instructions'}
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
-                    Remove and connect again
-                  </button>
+                  {!pendingHasCallbackStartupFailure ? (
+                    <button className="ghost-button" type="button" onClick={() => setShowManualSetupHelp((current) => !current)}>
+                      {showManualSetupHelp ? 'Hide manual setup instructions' : 'Open manual setup instructions'}
+                    </button>
+                  ) : null}
+                  {!pendingHasCallbackStartupFailure ? (
+                    <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                      Remove and connect again
+                    </button>
+                  ) : null}
                   <button className="primary-button" type="button" onClick={handleRetryPending}>
                     Try again
                   </button>

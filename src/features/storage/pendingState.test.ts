@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AUTH_CALLBACK_UNAVAILABLE_CODE,
   inferStageFromStatus,
+  isCallbackStartupFailure,
   materializePendingSession,
   overlayPendingRemote,
   resolvePendingPhase,
@@ -140,6 +142,7 @@ describe('resolvePendingPhase', () => {
       stage: 'failed',
       nextStep: 'retry',
       message: 'failed to query Microsoft Graph drives: HTTP 403',
+      errorCode: 'graph_query_failed',
       updatedAtMs: 1_100,
     }
 
@@ -255,6 +258,7 @@ describe('resolvePendingSession', () => {
       stage: 'failed',
       nextStep: 'retry',
       message: 'Authentication was not completed.',
+      errorCode: AUTH_CALLBACK_UNAVAILABLE_CODE,
       updatedAtMs: 1_100,
     }
 
@@ -266,6 +270,7 @@ describe('resolvePendingSession', () => {
       stage: 'failed',
       nextStep: 'retry',
       message: 'Authentication was not completed.',
+      errorCode: AUTH_CALLBACK_UNAVAILABLE_CODE,
       operationStartedAtMs: 1_000,
       lastUpdatedAtMs: 1_100,
       driveCandidates: undefined,
@@ -319,5 +324,13 @@ describe('inferStageFromStatus', () => {
     expect(inferStageFromStatus('connected')).toBe('connected')
     expect(inferStageFromStatus('requires_drive_selection')).toBe('requires_drive_selection')
     expect(inferStageFromStatus('error')).toBe('failed')
+  })
+})
+
+describe('isCallbackStartupFailure', () => {
+  it('detects the dedicated callback bind failure code', () => {
+    expect(isCallbackStartupFailure(AUTH_CALLBACK_UNAVAILABLE_CODE)).toBe(true)
+    expect(isCallbackStartupFailure('graph_query_failed')).toBe(false)
+    expect(isCallbackStartupFailure(undefined)).toBe(false)
   })
 })

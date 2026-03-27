@@ -27,6 +27,7 @@ export type AuthSessionRecord = {
   stage?: AuthSessionStage | null
   nextStep: 'done' | 'open_browser' | 'retry' | 'rename' | 'select_drive'
   message: string
+  errorCode?: string | null
   updatedAtMs?: number | null
   driveCandidates?: OneDriveDriveCandidate[] | null
 }
@@ -39,6 +40,7 @@ export type PendingSession = {
   stage: AuthSessionStage
   nextStep: string
   message: string
+  errorCode?: string | null
   operationStartedAtMs: number
   lastUpdatedAtMs: number
   driveCandidates?: OneDriveDriveCandidate[] | null
@@ -49,12 +51,18 @@ export type PendingResolutionPhase = {
   stage: AuthSessionStage
   nextStep: PendingSession['nextStep']
   message: string
+  errorCode?: string | null
   driveCandidates?: OneDriveDriveCandidate[] | null
 }
 
 const FAILURE_BARRIER_MS = 2000
 const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
 const FINALIZING_MESSAGE = 'Cloud Weave is still finishing this storage connection.'
+export const AUTH_CALLBACK_UNAVAILABLE_CODE = 'auth_callback_unavailable'
+
+export function isCallbackStartupFailure(errorCode?: string | null): boolean {
+  return errorCode === AUTH_CALLBACK_UNAVAILABLE_CODE
+}
 
 export function inferStageFromStatus(status: AuthSessionRecord['status']): AuthSessionStage {
   switch (status) {
@@ -75,6 +83,7 @@ function sessionPhase(session: AuthSessionRecord): PendingResolutionPhase {
     stage: session.stage ?? inferStageFromStatus(session.status),
     nextStep: session.nextStep,
     message: session.message,
+    ...(session.errorCode ? { errorCode: session.errorCode } : {}),
     driveCandidates: session.driveCandidates ?? undefined,
   }
 }
@@ -93,6 +102,7 @@ export function resolvePendingPhase(
       stage: 'connected',
       nextStep: 'done',
       message: CONNECT_SUCCESS_MESSAGE,
+      errorCode: undefined,
       driveCandidates: undefined,
     }
   }
@@ -104,6 +114,7 @@ export function resolvePendingPhase(
       stage: 'connected',
       nextStep: 'done',
       message: session.message || CONNECT_SUCCESS_MESSAGE,
+      errorCode: undefined,
       driveCandidates: undefined,
     }
   }
@@ -127,6 +138,7 @@ export function resolvePendingPhase(
         stage: currentPending.stage === 'connected' ? 'finalizing' : currentPending.stage,
         nextStep: currentPending.nextStep,
         message: currentPending.message || FINALIZING_MESSAGE,
+        ...(currentPending.errorCode ? { errorCode: currentPending.errorCode } : {}),
         driveCandidates: currentPending.driveCandidates,
       }
     }
@@ -136,6 +148,7 @@ export function resolvePendingPhase(
       stage: 'failed',
       nextStep: 'retry',
       message: remote.message ?? 'This storage connection is incomplete. Try again.',
+      errorCode: undefined,
       driveCandidates: undefined,
     }
   }
@@ -145,6 +158,7 @@ export function resolvePendingPhase(
     stage: currentPending.stage,
     nextStep: currentPending.nextStep,
     message: currentPending.message,
+    ...(currentPending.errorCode ? { errorCode: currentPending.errorCode } : {}),
     driveCandidates: currentPending.driveCandidates,
   }
 }
@@ -162,6 +176,7 @@ export function materializePendingSession(
     stage: phase.stage,
     nextStep: phase.nextStep,
     message: phase.message,
+    ...(phase.errorCode ? { errorCode: phase.errorCode } : {}),
     operationStartedAtMs: currentPending.operationStartedAtMs,
     lastUpdatedAtMs: session?.updatedAtMs ?? currentPending.lastUpdatedAtMs,
     driveCandidates: phase.driveCandidates ?? undefined,
