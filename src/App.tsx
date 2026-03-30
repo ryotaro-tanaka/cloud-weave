@@ -26,6 +26,7 @@ import {
   searchUnifiedItems,
   sortUnifiedItems,
   type LogicalView,
+  type UnifiedItemSortKey,
   type UnifiedItem,
 } from './features/storage/unifiedItems'
 import {
@@ -52,7 +53,6 @@ import {
   type PreviewPayload,
 } from './features/storage/openFiles'
 import {
-  mergeNotices,
   mergeUnifiedItems,
   type StartUnifiedLibraryLoadResult,
   type UnifiedLibraryLoadEvent,
@@ -113,6 +113,20 @@ type LibraryLoadProgress = {
   loadedRemoteCount: number
   totalRemoteCount: number
 }
+type IssueLevel = 'info' | 'warning' | 'error'
+type WorkspaceIssue = {
+  id: string
+  message: string
+  level: IssueLevel
+  timestamp: number
+  source: string
+  read: boolean
+}
+type ToastNotice = {
+  id: string
+  issueId: string
+  expiresAt: number
+}
 
 type ProviderDefinition = {
   id: StorageProvider
@@ -168,6 +182,68 @@ const PREVIEW_ASSET_PROTOCOL = 'asset'
 const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
 const CONNECT_SYNC_ATTEMPTS = 8
 const CONNECT_SYNC_DELAY_MS = 500
+const TRANSFER_SEARCH_FIELDS = ['displayName', 'relativePath', 'category', 'remoteName'] as const
+const TOAST_DURATION_MS = 4800
+
+function getDefaultSortKey(view: LogicalView): UnifiedItemSortKey {
+  return view === 'recent' ? 'updated-desc' : 'name-asc'
+}
+
+function getResultSummaryLabel(count: number, query: string): string {
+  return `${count} item${count === 1 ? '' : 's'}${query.trim() ? ` for "${query.trim()}"` : ''}`
+}
+
+function inferIssueLevel(message: string): IssueLevel {
+  const normalized = message.toLowerCase()
+
+  if (
+    normalized.includes('failed') ||
+    normalized.includes('error') ||
+    normalized.includes('could not') ||
+    normalized.includes('cannot')
+  ) {
+    return 'error'
+  }
+
+  if (normalized.includes('reconnect') || normalized.includes('skipped') || normalized.includes('unsupported')) {
+    return 'warning'
+  }
+
+  return 'info'
+}
+
+function toIssueId(message: string, source: string): string {
+  return `${source}:${message.trim().toLowerCase()}`
+}
+
+function formatIssueTimestamp(timestamp: number): string {
+  return new Date(timestamp).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+function describeIssueSource(source: string): string {
+  if (source.startsWith('storage:')) {
+    return source.replace('storage:', '')
+  }
+
+  if (source === 'library-stream') {
+    return 'Unified library'
+  }
+
+  return 'Workspace'
+}
+
+function describeIssueLocation(source: string): string {
+  if (source.startsWith('storage:')) {
+    return 'Relevant place: Storages'
+  }
+
+  return 'Relevant place: Issues'
+}
 
 function App() {
   const [activeModal, setActiveModal] = useState<ModalName>('none')
@@ -175,9 +251,13 @@ function App() {
   const [selectedProvider, setSelectedProvider] = useState<StorageProvider>('onedrive')
   const [activeView, setActiveView] = useState<LogicalView>('all-files')
   const [searchQuery, setSearchQuery] = useState('')
+  const [sortKey, setSortKey] = useState<UnifiedItemSortKey>(getDefaultSortKey('all-files'))
   const [remotes, setRemotes] = useState<RemoteSummary[]>([])
   const [unifiedItems, setUnifiedItems] = useState<UnifiedItem[]>([])
-  const [libraryNotices, setLibraryNotices] = useState<string[]>([])
+  const [workspaceIssues, setWorkspaceIssues] = useState<WorkspaceIssue[]>([])
+  const [toastNotices, setToastNotices] = useState<ToastNotice[]>([])
+  const [isIssuesModalOpen, setIsIssuesModalOpen] = useState(false)
+  const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null)
   const [hoveredRemote, setHoveredRemote] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
@@ -213,6 +293,7 @@ function App() {
   })
   const activeLibraryRequestIdRef = useRef<string | null>(null)
   const uploadBrowseFilesButtonRef = useRef<HTMLButtonElement | null>(null)
+  const toastTimeoutsRef = useRef<Record<string, number>>({})
 
   const selectedProviderConfig = useMemo(
     () => STORAGE_PROVIDERS.find((provider) => provider.id === selectedProvider) ?? STORAGE_PROVIDERS[0],
@@ -221,8 +302,9 @@ function App() {
 
   const displayedItems = useMemo(() => {
     const viewItems = filterItemsByView(unifiedItems, activeView)
-    return searchUnifiedItems(viewItems, searchQuery)
-  }, [activeView, searchQuery, unifiedItems])
+    const searchResults = searchUnifiedItems(viewItems, searchQuery)
+    return sortUnifiedItems(searchResults, sortKey)
+  }, [activeView, searchQuery, sortKey, unifiedItems])
 
   const displayedRemotes = useMemo(() => overlayPendingRemote(remotes, pendingSession), [pendingSession, remotes])
   const pendingHasCallbackStartupFailure = pendingSession ? isCallbackStartupFailure(pendingSession.errorCode) : false
@@ -231,17 +313,26 @@ function App() {
     () => remotes.filter((remote) => remote.status === 'reconnect_required'),
     [remotes],
   )
-  const activeReconnectTarget = reconnectRequiredRemotes[0] ?? null
+  const unreadIssueCount = useMemo(() => workspaceIssues.filter((issue) => !issue.read).length, [workspaceIssues])
+  const visibleToasts = useMemo(
+    () =>
+      toastNotices
+        .map((toast) => ({
+          toast,
+          issue: workspaceIssues.find((issue) => issue.id === toast.issueId) ?? null,
+        }))
+        .filter((entry): entry is { toast: ToastNotice; issue: WorkspaceIssue } => entry.issue !== null),
+    [toastNotices, workspaceIssues],
+  )
 
   const groupedRecentItems = useMemo(() => {
-    if (activeView !== 'recent') {
+    if (activeView !== 'recent' || sortKey !== 'updated-desc') {
       return []
     }
 
     return groupRecentItems(displayedItems)
-  }, [activeView, displayedItems])
+  }, [activeView, displayedItems, sortKey])
 
-  const isVisualGrid = activeView === 'photos' || activeView === 'videos'
   const uploadSummary = useMemo(
     () => getUploadBatchSummary(uploadBatch?.items ?? [], uploadStates),
     [uploadBatch, uploadStates],
@@ -256,6 +347,134 @@ function App() {
       state: uploadStates[item.itemId] ?? IDLE_UPLOAD_STATE,
     }))
   }, [uploadBatch, uploadStates])
+  const displayedTransferItems = useMemo(() => {
+    const normalizedQuery = searchQuery.trim().toLowerCase()
+
+    return transferItems.filter(({ item, state }) => {
+      if (!normalizedQuery) {
+        return true
+      }
+
+      return TRANSFER_SEARCH_FIELDS.some((field) => {
+        const value = field === 'remoteName' ? state.remoteName : item[field]
+        return typeof value === 'string' && value.toLowerCase().includes(normalizedQuery)
+      })
+    })
+  }, [searchQuery, transferItems])
+
+  const isTransfersView = activeView === 'transfers'
+  const isVisualGrid = activeView === 'photos'
+  const currentResultCount = isTransfersView ? displayedTransferItems.length : displayedItems.length
+  const resultSummaryLabel = getResultSummaryLabel(currentResultCount, searchQuery)
+  const currentViewLabel = getCategoryLabel(activeView)
+  const streamingStatusLabel =
+    isLibraryStreaming && libraryLoadProgress.totalRemoteCount > 0
+      ? `${libraryLoadProgress.loadedRemoteCount} / ${libraryLoadProgress.totalRemoteCount} storages loaded`
+      : null
+
+  const dismissToast = (toastId: string) => {
+    const timeoutId = toastTimeoutsRef.current[toastId]
+    if (timeoutId) {
+      window.clearTimeout(timeoutId)
+      delete toastTimeoutsRef.current[toastId]
+    }
+
+    setToastNotices((current) => current.filter((toast) => toast.id !== toastId))
+  }
+
+  const markIssuesRead = (issueIds?: string[]) => {
+    setWorkspaceIssues((current) =>
+      current.map((issue) =>
+        !issueIds || issueIds.includes(issue.id)
+          ? {
+              ...issue,
+              read: true,
+            }
+          : issue,
+      ),
+    )
+  }
+
+  const openIssuesModal = (issueId?: string) => {
+    setFocusedIssueId(issueId ?? null)
+    setIsIssuesModalOpen(true)
+    markIssuesRead(issueId ? [issueId] : undefined)
+  }
+
+  const recordIssueMessages = (messages: string[], source: string) => {
+    const normalizedMessages = messages.map((message) => message.trim()).filter(Boolean)
+
+    if (normalizedMessages.length === 0) {
+      return
+    }
+
+    const createdIssues: WorkspaceIssue[] = []
+
+    setWorkspaceIssues((current) => {
+      const next = [...current]
+
+      for (const message of normalizedMessages) {
+        const issueId = toIssueId(message, source)
+        if (next.some((issue) => issue.id === issueId)) {
+          continue
+        }
+
+        const issue: WorkspaceIssue = {
+          id: issueId,
+          message,
+          level: inferIssueLevel(message),
+          timestamp: Date.now(),
+          source,
+          read: false,
+        }
+
+        createdIssues.push(issue)
+        next.unshift(issue)
+      }
+
+      return next
+    })
+
+    if (createdIssues.length === 0) {
+      return
+    }
+
+    setToastNotices((current) => {
+      const nextToasts = createdIssues.map((issue) => {
+        const toastId = `toast:${issue.id}:${issue.timestamp}`
+
+        toastTimeoutsRef.current[toastId] = window.setTimeout(() => {
+          dismissToast(toastId)
+        }, TOAST_DURATION_MS)
+
+        return {
+          id: toastId,
+          issueId: issue.id,
+          expiresAt: Date.now() + TOAST_DURATION_MS,
+        }
+      })
+
+      return [...nextToasts, ...current]
+    })
+  }
+
+  useEffect(() => {
+    setSortKey(getDefaultSortKey(activeView))
+  }, [activeView])
+
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of Object.values(toastTimeoutsRef.current)) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    for (const remote of reconnectRequiredRemotes) {
+      recordIssueMessages([remote.message || `${remote.name} needs reconnect.`], `storage:${remote.name}`)
+    }
+  }, [reconnectRequiredRemotes])
 
   const fetchRemotes = async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false
@@ -291,7 +510,6 @@ function App() {
 
     if (!resolvedRemotes || resolvedRemotes.length === 0) {
       setUnifiedItems([])
-      setLibraryNotices([])
       setItemsError('')
       if (!silent) {
         setIsLoadingItems(false)
@@ -302,7 +520,7 @@ function App() {
     try {
       const result = await invoke<UnifiedLibraryResult>('list_unified_items')
       setUnifiedItems(sortUnifiedItems(result.items))
-      setLibraryNotices(result.notices)
+      recordIssueMessages(result.notices, 'library')
       setItemsError('')
       setIsLibraryStreaming(false)
       activeLibraryRequestIdRef.current = null
@@ -316,7 +534,6 @@ function App() {
       const message = error instanceof Error ? error.message : String(error)
       setItemsError(message)
       setUnifiedItems([])
-      setLibraryNotices([])
       return null
     } finally {
       if (!silent) {
@@ -395,14 +612,15 @@ function App() {
 
       if (payload.status === 'remote_loaded') {
         setUnifiedItems((current) => mergeUnifiedItems(current, payload.items ?? []))
-        setLibraryNotices((current) => mergeNotices(current, payload.notices ?? []))
+        recordIssueMessages(payload.notices ?? [], payload.remoteName ? `storage:${payload.remoteName}` : 'library')
         setIsLoadingItems(false)
         return
       }
 
       if (payload.status === 'remote_failed') {
-        setLibraryNotices((current) =>
-          mergeNotices(current, payload.message ? [payload.message, ...(payload.notices ?? [])] : (payload.notices ?? [])),
+        recordIssueMessages(
+          payload.message ? [payload.message, ...(payload.notices ?? [])] : (payload.notices ?? []),
+          payload.remoteName ? `storage:${payload.remoteName}` : 'library-stream',
         )
         void fetchRemotes({ silent: true })
         setIsLoadingItems(false)
@@ -484,7 +702,6 @@ function App() {
     setIsLoadingItems(true)
     setIsLibraryStreaming(false)
     setUnifiedItems([])
-    setLibraryNotices([])
     setItemsError('')
     setLibraryLoadProgress({
       requestId: null,
@@ -1190,15 +1407,16 @@ function App() {
   const hasConnectedStorage = displayedRemotes.length > 0
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
-    activeView !== 'transfers' &&
+    !isTransfersView &&
     hasConnectedStorage &&
     !isLoadingItems &&
     !isLibraryStreaming &&
     !itemsError &&
     displayedItems.length === 0
   const shouldShowTransfersEmptyState =
-    activeView === 'transfers' && !uploadBatch?.items.length && !isPreparingUpload && !isStartingUpload
-  const shouldShowStreamingBanner = isLibraryStreaming && unifiedItems.length > 0
+    isTransfersView && !uploadBatch?.items.length && !isPreparingUpload && !isStartingUpload
+  const shouldShowTransfersSearchEmptyState =
+    isTransfersView && !!uploadBatch?.items.length && displayedTransferItems.length === 0 && searchQuery.trim().length > 0
 
   return (
     <main className="workspace-shell">
@@ -1307,63 +1525,38 @@ function App() {
               </label>
 
               <div className="library-actions">
+                <span className="library-result-summary">{resultSummaryLabel}</span>
+                {streamingStatusLabel ? <span className="library-inline-status">{streamingStatusLabel}</span> : null}
+                {!isTransfersView ? (
+                  <label className="toolbar-select">
+                    <span>Sort</span>
+                    <select value={sortKey} onChange={(event) => setSortKey(event.target.value as UnifiedItemSortKey)}>
+                      <option value="updated-desc">Newest first</option>
+                      <option value="updated-asc">Oldest first</option>
+                      <option value="name-asc">Name A-Z</option>
+                      <option value="name-desc">Name Z-A</option>
+                      <option value="size-desc">Size large-small</option>
+                      <option value="size-asc">Size small-large</option>
+                    </select>
+                  </label>
+                ) : null}
+
+                <button className="issues-entry-button" type="button" onClick={() => openIssuesModal()} aria-label="Open issues">
+                  <span aria-hidden="true">!</span>
+                  <span>Issues</span>
+                  {workspaceIssues.length > 0 ? (
+                    <span className="issues-entry-badge">{unreadIssueCount > 0 ? unreadIssueCount : workspaceIssues.length}</span>
+                  ) : null}
+                </button>
                 <button className="primary-button" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
                   Upload
                 </button>
               </div>
             </div>
 
-            <nav className="view-tabs" aria-label="Logical views">
-              {PRIMARY_NAV_ITEMS.filter((item) => !['all-files', 'transfers'].includes(item.id)).map((item) => (
-                <button
-                  key={item.id}
-                  className={`view-tab ${activeView === item.id ? 'active' : ''}`}
-                  type="button"
-                  onClick={() => setActiveView(item.id)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </nav>
           </header>
 
           <div className="library-content">
-            {libraryNotices.map((notice) => (
-              <div key={notice} className="info-banner" role="note">
-                <p>{notice}</p>
-              </div>
-            ))}
-
-            {activeReconnectTarget ? (
-              <div className="reconnect-banner" role="alert" aria-live="polite">
-                <div className="reconnect-banner-copy">
-                  <p className="eyebrow">Reconnect required</p>
-                  <h2>{activeReconnectTarget.name} needs to be reconnected.</h2>
-                  <p>
-                    Cloud Weave cannot use this storage until reconnect is completed. To keep using your files, press
-                    Reconnect.
-                  </p>
-                </div>
-
-                <div className="reconnect-banner-actions">
-                  <button className="primary-button" type="button" onClick={() => void handleReconnect(activeReconnectTarget)}>
-                    Reconnect
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            {shouldShowStreamingBanner ? (
-              <div className="info-banner" role="status" aria-live="polite">
-                <p>
-                  Showing files while Cloud Weave loads the rest of your connected storage...
-                  {libraryLoadProgress.totalRemoteCount > 0
-                    ? ` ${libraryLoadProgress.loadedRemoteCount} / ${libraryLoadProgress.totalRemoteCount} storages fully loaded.`
-                    : ''}
-                </p>
-              </div>
-            ) : null}
-
             {isLoadingItems && hasConnectedStorage && unifiedItems.length === 0 ? (
               <p className="empty-state">Loading your unified library...</p>
             ) : null}
@@ -1388,27 +1581,41 @@ function App() {
               </div>
             ) : null}
 
+            {shouldShowTransfersSearchEmptyState ? (
+              <div className="main-empty-state compact">
+                <p className="eyebrow">Transfers</p>
+                <h2>No matching transfers.</h2>
+                <p>Try a different search or clear the current query.</p>
+              </div>
+            ) : null}
+
             {shouldShowCategoryEmptyState ? (
               <div className="main-empty-state compact">
-                <p className="eyebrow">{getCategoryLabel(activeView)}</p>
+                <p className="eyebrow">{currentViewLabel}</p>
                 <h2>No matching files.</h2>
                 <p>
                   {searchQuery
                     ? 'Try a different search or switch to another view.'
-                    : `There are no files in ${getCategoryLabel(activeView).toLowerCase()} right now.`}
+                    : `There are no files in ${currentViewLabel.toLowerCase()} right now.`}
                 </p>
               </div>
             ) : null}
 
-            {activeView === 'transfers' ? (
-              transferItems.length > 0 ? (
+            {isTransfersView ? (
+              displayedTransferItems.length > 0 ? (
                 <section className="transfers-section">
                   <div className="section-heading">
                     <h3>Transfers</h3>
-                    <span>{transferItems.length}</span>
+                    <span>{displayedTransferItems.length}</span>
+                  </div>
+                  <div className="transfer-list-header" aria-hidden="true">
+                    <span>Transfer</span>
+                    <span>Destination</span>
+                    <span>Status</span>
+                    <span>Source path</span>
                   </div>
                   <div className="transfer-list" role="list" aria-label="Transfers">
-                    {transferItems.map(({ item, state }) => (
+                    {displayedTransferItems.map(({ item, state }) => (
                       <TransferListItem key={item.itemId} item={item} state={state} />
                     ))}
                   </div>
@@ -1424,6 +1631,7 @@ function App() {
                         <span>{group.items.length}</span>
                       </div>
 
+                      <ListHeader />
                       <div className="item-list">
                         {group.items.map((item) => (
                           <UnifiedListItem
@@ -1453,28 +1661,58 @@ function App() {
                   ))}
                 </div>
               ) : (
-                <div className="item-list">
-                  {displayedItems.map((item) => (
-                    <UnifiedListItem
-                      key={item.id}
-                      item={item}
-                      downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
-                      openState={openStates[item.id] ?? IDLE_OPEN_STATE}
-                      onOpen={handleOpen}
-                      onDownload={handleDownload}
-                    />
-                  ))}
-                </div>
+                <>
+                  <ListHeader />
+                  <div className="item-list">
+                    {displayedItems.map((item) => (
+                      <UnifiedListItem
+                        key={item.id}
+                        item={item}
+                        downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                        openState={openStates[item.id] ?? IDLE_OPEN_STATE}
+                        onOpen={handleOpen}
+                        onDownload={handleDownload}
+                      />
+                    ))}
+                  </div>
+                </>
               )
             ) : null}
           </div>
         </div>
       </section>
 
+      {visibleToasts.length > 0 ? (
+        <div className="toast-stack" aria-live="polite" aria-label="Workspace issues">
+          {visibleToasts.map(({ toast, issue }) => (
+            <div key={toast.id} className={`toast-notice ${issue.level}`}>
+              <div className="toast-copy">
+                <p>{issue.message}</p>
+                <span>{formatIssueTimestamp(issue.timestamp)}</span>
+              </div>
+              <button className="ghost-button toast-action" type="button" onClick={() => openIssuesModal(issue.id)}>
+                View details
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       {previewPayload ? (
         <PreviewModal
           payload={previewPayload}
           onClose={() => setPreviewPayload(null)}
+        />
+      ) : null}
+
+      {isIssuesModalOpen ? (
+        <IssuesModal
+          issues={workspaceIssues}
+          focusedIssueId={focusedIssueId}
+          onClose={() => {
+            setIsIssuesModalOpen(false)
+            setFocusedIssueId(null)
+          }}
         />
       ) : null}
 
@@ -1902,43 +2140,60 @@ function UnifiedListItem({
 
   return (
     <article className="unified-item list-item">
-      <div className="item-leading">
-        <span className={`item-monogram ${item.category}`} aria-hidden="true">
-          {getCategoryMonogram(item.category)}
-        </span>
-      </div>
-
-      <div className="item-copy">
-        <div className="item-title-row">
-          <p className="item-name">{item.name}</p>
-          <span className="source-badge">{item.sourceRemote}</span>
+      <div className="item-primary">
+        <div className="item-leading">
+          <span className={`item-monogram ${item.category}`} aria-hidden="true">
+            {getCategoryMonogram(item.category)}
+          </span>
         </div>
 
-        <div className="item-meta">
-          <span>{getProviderLabel(item.sourceProvider)}</span>
-          <span>{item.sourcePath}</span>
+        <div className="item-copy">
+          <div className="item-title-row">
+            <p className="item-name">{item.name}</p>
+            <span className="source-badge">{item.sourceRemote}</span>
+          </div>
+
+          <div className="item-meta">
+            <span>{getProviderLabel(item.sourceProvider)}</span>
+            <span>{item.isDir ? 'Folder' : 'File'}</span>
+          </div>
         </div>
       </div>
 
-      <div className="item-trailing">
-        <span>{formatFileSize(item.size)}</span>
-        <span>{formatModifiedTime(item.modTime)}</span>
-        <div className="item-actions">
-          {canPreview ? (
-            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
-              {isPreparingOpen ? 'Previewing...' : 'Preview'}
-            </button>
-          ) : canOpen ? (
-            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
-              {isPreparingOpen ? 'Opening...' : 'Open'}
-            </button>
-          ) : null}
-          <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
-            {actionLabel}
-          </button>
+      <div className="item-path-cell">
+        <p className="item-path">{item.sourcePath}</p>
+      </div>
+
+      <p className="item-cell item-modified-cell">{formatModifiedTime(item.modTime)}</p>
+      <p className="item-cell item-size-cell">{formatFileSize(item.size)}</p>
+
+      <div className="item-status-cell">
+        {canPreview ? (
+          <p className="item-status-label">Preview available</p>
+        ) : canOpen ? (
+          <p className="item-status-label">Open available</p>
+        ) : (
+          <p className="item-status-label">{item.isDir ? 'Folder' : 'Ready'}</p>
+        )}
+        <div className="item-status-stack">
           <OpenStatusView state={openState} />
           <DownloadStatusView state={downloadState} />
         </div>
+      </div>
+
+      <div className="item-actions">
+        {canPreview ? (
+          <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
+            {isPreparingOpen ? 'Previewing...' : 'Preview'}
+          </button>
+        ) : canOpen ? (
+          <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
+            {isPreparingOpen ? 'Opening...' : 'Open'}
+          </button>
+        ) : null}
+        <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
+          {actionLabel}
+        </button>
       </div>
     </article>
   )
@@ -2071,6 +2326,19 @@ function UploadQueueItem({
   )
 }
 
+function ListHeader() {
+  return (
+    <div className="item-list-header" aria-hidden="true">
+      <span>Name</span>
+      <span>Path</span>
+      <span>Modified</span>
+      <span>Size</span>
+      <span>Status</span>
+      <span>Actions</span>
+    </div>
+  )
+}
+
 function TransferListItem({
   item,
   state,
@@ -2082,30 +2350,30 @@ function TransferListItem({
 
   return (
     <article className="transfer-item" role="listitem">
-      <div className="transfer-copy">
+      <div className="transfer-primary">
         <div className="item-title-row">
           <p className="item-name">{item.displayName}</p>
           <span className="source-badge">{item.category}</span>
         </div>
-        <div className="item-meta">
-          <span>{formatUploadItemMeta(item)}</span>
-          <span>{describeUploadTarget(item)}</span>
-        </div>
-        <p className="grid-path">{item.relativePath}</p>
+        <p className="transfer-meta">{formatUploadItemMeta(item)}</p>
       </div>
+
+      <p className="transfer-destination">{describeUploadTarget(item)}</p>
 
       <div className="transfer-status">
         <span className={`storage-status-badge ${state.status === 'failed' ? 'warning' : 'neutral'}`}>
           {toTransferBadgeLabel(state)}
         </span>
-        <p className="grid-path">{getUploadStateSummary(state)}</p>
-        {state.remoteName ? <p className="grid-date">{state.remoteName}</p> : null}
+        <p>{getUploadStateSummary(state)}</p>
+        {state.remoteName ? <p className="transfer-remote">{state.remoteName}</p> : null}
         {isRunning ? (
           <div className="download-progress" aria-hidden="true">
             <div className="download-progress-fill upload-progress-fill" />
           </div>
         ) : null}
       </div>
+
+      <p className="transfer-path">{item.relativePath}</p>
     </article>
   )
 }
@@ -2123,6 +2391,61 @@ function toTransferBadgeLabel(state: UploadState): string {
     case 'idle':
       return 'Queued'
   }
+}
+
+function IssuesModal({
+  issues,
+  focusedIssueId,
+  onClose,
+}: {
+  issues: WorkspaceIssue[]
+  focusedIssueId: string | null
+  onClose: () => void
+}) {
+  return (
+    <div className="modal-overlay" role="presentation">
+      <div className="issues-modal" role="dialog" aria-modal="true" aria-labelledby="issues-title">
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">Issues</p>
+            <h2 id="issues-title">Workspace issues</h2>
+          </div>
+
+          <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close issues modal">
+            ×
+          </button>
+        </div>
+
+        {issues.length === 0 ? (
+          <div className="main-empty-state compact issues-empty-state">
+            <p className="eyebrow">Issues</p>
+            <h2>No issues right now.</h2>
+            <p>Cloud Weave will show skipped folders, reconnect problems, and similar notices here.</p>
+          </div>
+        ) : (
+          <div className="issues-list" role="list" aria-label="Workspace issues">
+            {issues.map((issue) => (
+              <article
+                key={issue.id}
+                className={`issue-item ${issue.level} ${focusedIssueId === issue.id ? 'focused' : ''}`}
+                role="listitem"
+              >
+                <div className="issue-item-header">
+                  <span className={`storage-status-badge ${issue.level === 'error' ? 'warning' : 'neutral'}`}>{issue.level}</span>
+                  <span className="issue-item-time">{formatIssueTimestamp(issue.timestamp)}</span>
+                </div>
+                <p className="issue-item-message">{issue.message}</p>
+                <div className="issue-item-meta">
+                  <span>{describeIssueSource(issue.source)}</span>
+                  <span>{describeIssueLocation(issue.source)}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function PreviewModal({

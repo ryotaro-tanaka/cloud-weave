@@ -1,6 +1,7 @@
 export type UnifiedCategory = 'documents' | 'photos' | 'videos' | 'audio' | 'other'
 
 export type LogicalView = 'all-files' | 'recent' | UnifiedCategory | 'transfers'
+export type UnifiedItemSortKey = 'updated-desc' | 'updated-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc'
 
 export type UnifiedItem = {
   id: string
@@ -51,10 +52,8 @@ export function searchUnifiedItems(items: UnifiedItem[], query: string): Unified
   )
 }
 
-export function sortUnifiedItems(items: UnifiedItem[]): UnifiedItem[] {
-  return [...items].sort((left, right) =>
-    left.sourceRemote.localeCompare(right.sourceRemote) || left.sourcePath.localeCompare(right.sourcePath),
-  )
+export function sortUnifiedItems(items: UnifiedItem[], sortKey: UnifiedItemSortKey = 'name-asc'): UnifiedItem[] {
+  return [...items].sort((left, right) => compareItems(left, right, sortKey))
 }
 
 export function sortItemsByRecent(items: UnifiedItem[]): UnifiedItem[] {
@@ -179,6 +178,77 @@ function compareItemsByRecent(left: UnifiedItem, right: UnifiedItem): number {
   }
 
   return left.name.localeCompare(right.name)
+}
+
+function compareItems(left: UnifiedItem, right: UnifiedItem, sortKey: UnifiedItemSortKey): number {
+  switch (sortKey) {
+    case 'updated-desc':
+      return compareItemsByRecent(left, right)
+    case 'updated-asc':
+      return compareItemsByOldest(left, right)
+    case 'name-asc':
+      return compareItemsByName(left, right)
+    case 'name-desc':
+      return compareItemsByName(right, left)
+    case 'size-desc':
+      return compareItemsBySize(left, right, 'desc')
+    case 'size-asc':
+      return compareItemsBySize(left, right, 'asc')
+  }
+}
+
+function compareItemsByOldest(left: UnifiedItem, right: UnifiedItem): number {
+  const leftTimestamp = toTimestamp(left.modTime)
+  const rightTimestamp = toTimestamp(right.modTime)
+
+  if (leftTimestamp === null && rightTimestamp === null) {
+    return compareItemsByName(left, right)
+  }
+
+  if (leftTimestamp === null) {
+    return 1
+  }
+
+  if (rightTimestamp === null) {
+    return -1
+  }
+
+  if (leftTimestamp !== rightTimestamp) {
+    return leftTimestamp - rightTimestamp
+  }
+
+  return compareItemsByName(left, right)
+}
+
+function compareItemsByName(left: UnifiedItem, right: UnifiedItem): number {
+  return (
+    left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }) ||
+    left.sourceRemote.localeCompare(right.sourceRemote, undefined, { sensitivity: 'base' }) ||
+    left.sourcePath.localeCompare(right.sourcePath, undefined, { sensitivity: 'base' })
+  )
+}
+
+function compareItemsBySize(left: UnifiedItem, right: UnifiedItem, direction: 'asc' | 'desc'): number {
+  const leftSize = left.isDir ? null : left.size
+  const rightSize = right.isDir ? null : right.size
+
+  if (leftSize === null && rightSize === null) {
+    return compareItemsByName(left, right)
+  }
+
+  if (leftSize === null) {
+    return 1
+  }
+
+  if (rightSize === null) {
+    return -1
+  }
+
+  if (leftSize !== rightSize) {
+    return direction === 'desc' ? rightSize - leftSize : leftSize - rightSize
+  }
+
+  return compareItemsByName(left, right)
 }
 
 function resolveRecentGroup(modTime: string | null, now: Date): RecentGroup['label'] {
