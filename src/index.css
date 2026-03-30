@@ -1,49 +1,41 @@
 :root {
-  --text-primary: #0d1728;
-  --text-secondary: #72809a;
-  --text-inverse: #fcfdff;
+  --text-primary: #0f172a;
+  --text-secondary: #5f6b7d;
+  --text-inverse: #f8fbff;
 
-  --surface-base: rgba(255, 255, 255, 0.82);
-  --surface-elevated: rgba(255, 255, 255, 0.82);
-  --surface-muted: rgba(239, 244, 250, 0.76);
-  --surface-overlay: rgba(14, 21, 34, 0.06);
-  --surface-accent-soft: rgba(35, 100, 255, 0.12);
+  --surface-base: #ffffff;
+  --surface-elevated: #fcfdff;
+  --surface-muted: #f4f7fb;
+  --surface-overlay: rgba(15, 23, 42, 0.04);
+  --surface-accent-soft: rgba(37, 99, 235, 0.08);
 
-  --border-subtle: #d8dfeb;
-  --border-accent: rgba(35, 100, 255, 0.38);
-  --border-warning: rgba(186, 111, 25, 0.28);
+  --border-subtle: #dbe3ef;
+  --border-accent: rgba(37, 99, 235, 0.28);
+  --border-warning: rgba(176, 120, 36, 0.28);
 
-  --accent-primary: #2364ff;
-  --accent-gradient: linear-gradient(135deg, #2364ff, #0f8d7a);
-  --focus-ring: #2364ff;
+  --accent-primary: #2563eb;
+  --accent-gradient: linear-gradient(135deg, #2563eb, #1f8fa3);
+  --focus-ring: #2563eb;
 
-  --state-warning-bg: linear-gradient(135deg, rgba(255, 210, 122, 0.9), rgba(255, 236, 186, 0.98));
-  --state-warning-text: #7a3b00;
-  --state-danger-bg: linear-gradient(135deg, #bd2f4a, #dc5b52);
-  --state-danger-text: #bd2f4a;
+  --state-warning-bg: #fff7eb;
+  --state-warning-text: #8b5a16;
+  --state-danger-bg: #fff1f3;
+  --state-danger-text: #c0394f;
 
-  --overlay-backdrop: rgba(9, 18, 30, 0.48);
+  --overlay-backdrop: rgba(15, 23, 42, 0.46);
 
   --shadow-soft:
-    rgba(36, 53, 88, 0.14) 0 24px 48px -28px, rgba(27, 43, 74, 0.08) 0 12px 24px -18px;
-  --shadow-strong: 0 40px 80px -50px rgba(9, 18, 30, 0.75);
+    rgba(15, 23, 42, 0.10) 0 16px 32px -20px,
+    rgba(15, 23, 42, 0.06) 0 8px 16px -12px;
+  --shadow-strong: 0 28px 56px -36px rgba(15, 23, 42, 0.22);
 
-  --bg-app: #f8fafc;
-  --bg-panel:
-    radial-gradient(circle at top left, rgba(32, 109, 255, 0.16), transparent 36%),
-    linear-gradient(180deg, rgba(247, 244, 236, 0.98), rgba(255, 255, 255, 0.98));
-  --bg-workspace:
-    radial-gradient(circle at 20% 20%, rgba(15, 141, 122, 0.14), transparent 28%),
-    radial-gradient(circle at 80% 10%, rgba(35, 100, 255, 0.14), transparent 24%),
-    linear-gradient(180deg, rgba(255, 252, 245, 0.96), rgba(246, 250, 252, 0.98));
-  --bg-warning:
-    radial-gradient(circle at top left, rgba(222, 185, 120, 0.18), transparent 42%),
-    linear-gradient(135deg, rgba(250, 246, 236, 0.96), rgba(255, 255, 255, 0.94));
-  --bg-accent-active:
-    linear-gradient(140deg, rgba(35, 100, 255, 0.1), rgba(15, 141, 122, 0.14)),
-    var(--surface-muted);
+  --bg-app: #f5f7fb;
+  --bg-panel: linear-gradient(180deg, #f7f9fc, #f4f7fb);
+  --bg-workspace: #fbfcfe;
+  --bg-warning: #fff8ee;
+  --bg-accent-active: #ecf3ff;
 
-  --code-bg: #eef3f8;
+  --code-bg: #eff4fb;
 
   --sans: 'Segoe UI Variable', 'Segoe UI', sans-serif;
   --heading: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
@@ -66,51 +58,43 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --text-primary: #f7fbff;
-    --text-secondary: #8f9ab0;
-    --text-inverse: #f7fbff;
+    --text-primary: #f6f8fc;
+    --text-secondary: #98a4b7;
+    --text-inverse: #0f172a;
 
-    --surface-base: rgba(20, 24, 33, 0.82);
-    --surface-elevated: rgba(20, 24, 33, 0.82);
-    --surface-muted: rgba(17, 24, 36, 0.82);
-    --surface-overlay: rgba(14, 21, 34, 0.06);
-    --surface-accent-soft: rgba(114, 163, 255, 0.16);
+    --surface-base: #121722;
+    --surface-elevated: #171d29;
+    --surface-muted: #0f1520;
+    --surface-overlay: rgba(255, 255, 255, 0.04);
+    --surface-accent-soft: rgba(123, 162, 255, 0.12);
 
-    --border-subtle: #263142;
-    --border-accent: rgba(114, 163, 255, 0.38);
-    --border-warning: rgba(182, 140, 72, 0.28);
+    --border-subtle: #273041;
+    --border-accent: rgba(123, 162, 255, 0.32);
+    --border-warning: rgba(186, 145, 77, 0.26);
 
-    --accent-primary: #72a3ff;
-    --accent-gradient: linear-gradient(135deg, #2364ff, #0f8d7a);
-    --focus-ring: #72a3ff;
+    --accent-primary: #7ba2ff;
+    --accent-gradient: linear-gradient(135deg, #5f8fff, #2a9bb0);
+    --focus-ring: #7ba2ff;
 
-    --state-warning-bg:
-      radial-gradient(circle at top left, rgba(197, 149, 76, 0.16), transparent 42%),
-      linear-gradient(135deg, rgba(30, 26, 21, 0.94), rgba(19, 20, 28, 0.96));
-    --state-warning-text: #d7ab67;
-    --state-danger-text: #ff7f96;
+    --state-warning-bg: #2b2318;
+    --state-warning-text: #ddb16f;
+    --state-danger-bg: #2f1720;
+    --state-danger-text: #ff8ea1;
 
-    --overlay-backdrop: rgba(9, 18, 30, 0.48);
+    --overlay-backdrop: rgba(8, 12, 18, 0.58);
 
     --shadow-soft:
-      rgba(0, 0, 0, 0.42) 0 28px 52px -28px, rgba(0, 0, 0, 0.22) 0 14px 26px -18px;
-    --shadow-strong: 0 40px 80px -50px rgba(9, 18, 30, 0.75);
+      rgba(0, 0, 0, 0.34) 0 18px 36px -22px,
+      rgba(0, 0, 0, 0.18) 0 10px 18px -14px;
+    --shadow-strong: 0 28px 56px -36px rgba(0, 0, 0, 0.54);
 
-    --bg-app: #0d1118;
-    --bg-panel:
-      radial-gradient(circle at top left, rgba(43, 113, 255, 0.16), transparent 38%),
-      linear-gradient(180deg, rgba(19, 21, 28, 0.98), rgba(13, 15, 22, 0.98));
-    --bg-workspace:
-      radial-gradient(circle at 20% 20%, rgba(15, 141, 122, 0.15), transparent 30%),
-      radial-gradient(circle at 80% 10%, rgba(35, 100, 255, 0.15), transparent 24%),
-      linear-gradient(180deg, rgba(11, 14, 20, 0.98), rgba(16, 20, 28, 0.98));
-    --bg-warning:
-      radial-gradient(circle at top left, rgba(197, 149, 76, 0.16), transparent 42%),
-      linear-gradient(135deg, rgba(30, 26, 21, 0.94), rgba(19, 20, 28, 0.96));
-    --bg-accent-active:
-      linear-gradient(180deg, rgba(19, 31, 54, 0.96), rgba(15, 25, 43, 0.94));
+    --bg-app: #0c1118;
+    --bg-panel: linear-gradient(180deg, #111824, #0f1520);
+    --bg-workspace: #0e141d;
+    --bg-warning: #18130f;
+    --bg-accent-active: #16233a;
 
-    --code-bg: #131c28;
+    --code-bg: #131b28;
   }
 }
 
