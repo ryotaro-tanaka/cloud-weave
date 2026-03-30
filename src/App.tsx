@@ -153,7 +153,16 @@ const STORAGE_PROVIDERS: ProviderDefinition[] = [
   },
 ]
 
-const LOGICAL_VIEWS: LogicalView[] = ['recent', 'documents', 'photos', 'videos', 'audio', 'other']
+const PRIMARY_NAV_ITEMS: Array<{ id: LogicalView; label: string }> = [
+  { id: 'all-files', label: 'All Files' },
+  { id: 'recent', label: 'Recent' },
+  { id: 'documents', label: 'Documents' },
+  { id: 'photos', label: 'Photos' },
+  { id: 'videos', label: 'Videos' },
+  { id: 'audio', label: 'Audio' },
+  { id: 'other', label: 'Other' },
+  { id: 'transfers', label: 'Transfers' },
+]
 const EMPTY_PENDING_MESSAGE = 'Complete authentication in your browser.'
 const PREVIEW_ASSET_PROTOCOL = 'asset'
 const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
@@ -161,11 +170,10 @@ const CONNECT_SYNC_ATTEMPTS = 8
 const CONNECT_SYNC_DELAY_MS = 500
 
 function App() {
-  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [activeModal, setActiveModal] = useState<ModalName>('none')
   const [addFlowStep, setAddFlowStep] = useState<AddFlowStep>('providers')
   const [selectedProvider, setSelectedProvider] = useState<StorageProvider>('onedrive')
-  const [activeView, setActiveView] = useState<LogicalView>('recent')
+  const [activeView, setActiveView] = useState<LogicalView>('all-files')
   const [searchQuery, setSearchQuery] = useState('')
   const [remotes, setRemotes] = useState<RemoteSummary[]>([])
   const [unifiedItems, setUnifiedItems] = useState<UnifiedItem[]>([])
@@ -238,6 +246,16 @@ function App() {
     () => getUploadBatchSummary(uploadBatch?.items ?? [], uploadStates),
     [uploadBatch, uploadStates],
   )
+  const transferItems = useMemo(() => {
+    if (!uploadBatch) {
+      return []
+    }
+
+    return uploadBatch.items.map((item) => ({
+      item,
+      state: uploadStates[item.itemId] ?? IDLE_UPLOAD_STATE,
+    }))
+  }, [uploadBatch, uploadStates])
 
   const fetchRemotes = async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false
@@ -1172,72 +1190,93 @@ function App() {
   const hasConnectedStorage = displayedRemotes.length > 0
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
-    hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
+    activeView !== 'transfers' &&
+    hasConnectedStorage &&
+    !isLoadingItems &&
+    !isLibraryStreaming &&
+    !itemsError &&
+    displayedItems.length === 0
+  const shouldShowTransfersEmptyState =
+    activeView === 'transfers' && !uploadBatch?.items.length && !isPreparingUpload && !isStartingUpload
   const shouldShowStreamingBanner = isLibraryStreaming && unifiedItems.length > 0
 
   return (
-    <main className={`workspace-shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
-      <aside className={`storage-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
-        <div className="sidebar-rail">
-          <button
-            className="icon-button sidebar-toggle"
-            onClick={() => setSidebarOpen((open) => !open)}
-            type="button"
-            aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-          >
-            <svg className="hamburger-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M5 7.25h14" />
-              <path d="M5 12h14" />
-              <path d="M5 16.75h14" />
-            </svg>
-          </button>
-        </div>
-
-        {sidebarOpen ? (
-          <div className="sidebar-panel">
-            <div className="sidebar-topbar">
-              <h2>Storage</h2>
-              <button className="add-storage-button" type="button" onClick={openAddModal} aria-label="Add storage">
-                +
-              </button>
+    <main className="workspace-shell">
+      <aside className="storage-sidebar">
+        <div className="sidebar-panel">
+          <div className="sidebar-header">
+            <div>
+              <p className="sidebar-kicker">Workspace</p>
+              <h2>Cloud Weave</h2>
             </div>
+          </div>
 
-            <div className="sidebar-list">
+          <div className="sidebar-list">
+            <section className="sidebar-section">
+              <p className="sidebar-section-label">Browse</p>
+              <nav className="sidebar-nav" aria-label="Workspace views">
+                {PRIMARY_NAV_ITEMS.map((item) => (
+                  <button
+                    key={item.id}
+                    className={`sidebar-nav-item ${activeView === item.id ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => setActiveView(item.id)}
+                  >
+                    <span className="sidebar-nav-label">{item.label}</span>
+                    {item.id === 'all-files' ? (
+                      <span className="sidebar-nav-meta">{unifiedItems.length}</span>
+                    ) : null}
+                    {item.id === 'transfers' && uploadSummary.total > 0 ? (
+                      <span className="sidebar-nav-meta">{uploadSummary.active > 0 ? uploadSummary.active : uploadSummary.total}</span>
+                    ) : null}
+                  </button>
+                ))}
+              </nav>
+            </section>
+
+            <section className="sidebar-section sidebar-section-storage">
+              <div className="sidebar-section-heading">
+                <p className="sidebar-section-label">Storages</p>
+                <button className="sidebar-add-button" type="button" onClick={openAddModal}>
+                  + Add storage
+                </button>
+              </div>
+
               {isLoadingRemotes ? <p className="empty-state">Loading storage...</p> : null}
               {!isLoadingRemotes && listError ? <p className="error-text">{listError}</p> : null}
               {shouldShowNoStorageState ? <p className="empty-state">No storage connected yet.</p> : null}
 
               {!isLoadingRemotes && !listError && displayedRemotes.length > 0 ? (
-                <ul className="remote-list">
+                <ul className="storage-nav-list">
                   {displayedRemotes.map((remote) => {
                     const isHovered = hoveredRemote === remote.name
-                    const shouldShowReconnectAction = remote.status !== 'reconnect_required'
+                    const needsReconnect = remote.status === 'reconnect_required'
 
                     return (
                       <li
                         key={remote.name}
-                        className={`remote-item ${isHovered ? 'hovered' : ''}`}
+                        className={`storage-nav-item ${isHovered ? 'hovered' : ''}`}
                         onMouseEnter={() => setHoveredRemote(remote.name)}
                         onMouseLeave={() => setHoveredRemote((current) => (current === remote.name ? null : current))}
                       >
-                        <div className="remote-summary">
-                          <div>
+                        <div className="storage-nav-copy">
+                          <div className="storage-nav-title-row">
                             <p className="remote-name">{remote.name}</p>
-                            <p className="remote-provider">{getProviderLabel(remote.provider)}</p>
-                            {remote.message ? <p className="remote-message">{remote.message}</p> : null}
+                            <span className={`storage-status-badge ${needsReconnect ? 'warning' : 'neutral'}`}>
+                              {needsReconnect ? 'Reconnect' : 'Connected'}
+                            </span>
                           </div>
+                          <p className="remote-provider">{getProviderLabel(remote.provider)}</p>
+                          {needsReconnect && remote.message ? <p className="storage-nav-hint">{remote.message}</p> : null}
                         </div>
 
-                        <div className={`remote-actions ${isHovered ? 'visible' : ''}`}>
-                          <span className={`status-badge ${remote.status === 'reconnect_required' ? 'status-badge-warning' : ''}`}>
-                            {remote.status}
-                          </span>
-                          {shouldShowReconnectAction ? (
-                            <button className="row-action" type="button" onClick={() => void handleReconnect(remote)}>
+                        <div className="storage-nav-actions">
+                          {needsReconnect ? (
+                            <button className="storage-action-button warning" type="button" onClick={() => void handleReconnect(remote)}>
                               Reconnect
                             </button>
                           ) : null}
-                          <button className="row-action danger" type="button" onClick={() => openRemoveModal(remote)}>
+                          <button className="storage-action-button" type="button" onClick={() => openRemoveModal(remote)}>
                             Remove
                           </button>
                         </div>
@@ -1246,9 +1285,9 @@ function App() {
                   })}
                 </ul>
               ) : null}
-            </div>
+            </section>
           </div>
-        ) : null}
+        </div>
       </aside>
 
       <section className="workspace-main">
@@ -1275,14 +1314,14 @@ function App() {
             </div>
 
             <nav className="view-tabs" aria-label="Logical views">
-              {LOGICAL_VIEWS.map((view) => (
+              {PRIMARY_NAV_ITEMS.filter((item) => !['all-files', 'transfers'].includes(item.id)).map((item) => (
                 <button
-                  key={view}
-                  className={`view-tab ${activeView === view ? 'active' : ''}`}
+                  key={item.id}
+                  className={`view-tab ${activeView === item.id ? 'active' : ''}`}
                   type="button"
-                  onClick={() => setActiveView(view)}
+                  onClick={() => setActiveView(item.id)}
                 >
-                  {getCategoryLabel(view)}
+                  {item.label}
                 </button>
               ))}
             </nav>
@@ -1341,6 +1380,14 @@ function App() {
               </div>
             ) : null}
 
+            {shouldShowTransfersEmptyState ? (
+              <div className="main-empty-state compact">
+                <p className="eyebrow">Transfers</p>
+                <h2>No transfers yet.</h2>
+                <p>Uploads will appear here once you start sending files to Cloud Weave.</p>
+              </div>
+            ) : null}
+
             {shouldShowCategoryEmptyState ? (
               <div className="main-empty-state compact">
                 <p className="eyebrow">{getCategoryLabel(activeView)}</p>
@@ -1353,7 +1400,21 @@ function App() {
               </div>
             ) : null}
 
-            {(!isLoadingItems || unifiedItems.length > 0) && !itemsError && displayedItems.length > 0 ? (
+            {activeView === 'transfers' ? (
+              transferItems.length > 0 ? (
+                <section className="transfers-section">
+                  <div className="section-heading">
+                    <h3>Transfers</h3>
+                    <span>{transferItems.length}</span>
+                  </div>
+                  <div className="transfer-list" role="list" aria-label="Transfers">
+                    {transferItems.map(({ item, state }) => (
+                      <TransferListItem key={item.itemId} item={item} state={state} />
+                    ))}
+                  </div>
+                </section>
+              ) : null
+            ) : ((!isLoadingItems || unifiedItems.length > 0) && !itemsError && displayedItems.length > 0) ? (
               activeView === 'recent' ? (
                 <div className="recent-groups">
                   {groupedRecentItems.map((group) => (
@@ -2008,6 +2069,60 @@ function UploadQueueItem({
       </div>
     </article>
   )
+}
+
+function TransferListItem({
+  item,
+  state,
+}: {
+  item: PreparedUploadItem
+  state: UploadState
+}) {
+  const isRunning = state.status === 'queued' || state.status === 'running' || state.status === 'retrying'
+
+  return (
+    <article className="transfer-item" role="listitem">
+      <div className="transfer-copy">
+        <div className="item-title-row">
+          <p className="item-name">{item.displayName}</p>
+          <span className="source-badge">{item.category}</span>
+        </div>
+        <div className="item-meta">
+          <span>{formatUploadItemMeta(item)}</span>
+          <span>{describeUploadTarget(item)}</span>
+        </div>
+        <p className="grid-path">{item.relativePath}</p>
+      </div>
+
+      <div className="transfer-status">
+        <span className={`storage-status-badge ${state.status === 'failed' ? 'warning' : 'neutral'}`}>
+          {toTransferBadgeLabel(state)}
+        </span>
+        <p className="grid-path">{getUploadStateSummary(state)}</p>
+        {state.remoteName ? <p className="grid-date">{state.remoteName}</p> : null}
+        {isRunning ? (
+          <div className="download-progress" aria-hidden="true">
+            <div className="download-progress-fill upload-progress-fill" />
+          </div>
+        ) : null}
+      </div>
+    </article>
+  )
+}
+
+function toTransferBadgeLabel(state: UploadState): string {
+  switch (state.status) {
+    case 'queued':
+    case 'running':
+    case 'retrying':
+      return 'In progress'
+    case 'succeeded':
+      return 'Completed'
+    case 'failed':
+      return 'Failed'
+    case 'idle':
+      return 'Queued'
+  }
 }
 
 function PreviewModal({

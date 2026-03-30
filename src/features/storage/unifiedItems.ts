@@ -1,6 +1,6 @@
 export type UnifiedCategory = 'documents' | 'photos' | 'videos' | 'audio' | 'other'
 
-export type LogicalView = 'recent' | UnifiedCategory
+export type LogicalView = 'all-files' | 'recent' | UnifiedCategory | 'transfers'
 
 export type UnifiedItem = {
   id: string
@@ -22,8 +22,16 @@ export type RecentGroup = {
 }
 
 export function filterItemsByView(items: UnifiedItem[], view: LogicalView): UnifiedItem[] {
+  if (view === 'all-files') {
+    return items
+  }
+
   if (view === 'recent') {
     return sortItemsByRecent(items)
+  }
+
+  if (view === 'transfers') {
+    return []
   }
 
   return items.filter((item) => item.category === view)
@@ -116,6 +124,8 @@ export function formatModifiedTime(modTime: string | null): string {
 
 export function getCategoryLabel(view: LogicalView): string {
   switch (view) {
+    case 'all-files':
+      return 'All Files'
     case 'recent':
       return 'Recent'
     case 'documents':
@@ -128,6 +138,8 @@ export function getCategoryLabel(view: LogicalView): string {
       return 'Audio'
     case 'other':
       return 'Other'
+    case 'transfers':
+      return 'Transfers'
   }
 }
 
