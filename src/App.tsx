@@ -67,6 +67,7 @@ import {
   type UploadState,
 } from './features/storage/uploads'
 import { Button } from './components/ui/Button'
+import splashIcon from '../src-tauri/icons/icon.png'
 import './App.css'
 
 type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
@@ -189,6 +190,8 @@ const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
 const CONNECT_SYNC_ATTEMPTS = 8
 const CONNECT_SYNC_DELAY_MS = 500
 const TOAST_DURATION_MS = 5000
+const STARTUP_SPLASH_VISIBLE_MS = 1200
+const STARTUP_SPLASH_FADE_MS = 260
 const SORT_OPTIONS: Array<{ value: UnifiedItemSortKey; label: string }> = [
   { value: 'updated-desc', label: 'Newest' },
   { value: 'updated-asc', label: 'Oldest' },
@@ -320,6 +323,8 @@ function App() {
   const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null)
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false)
   const [openRowMenuItemId, setOpenRowMenuItemId] = useState<string | null>(null)
+  const [isStartupSplashVisible, setIsStartupSplashVisible] = useState(true)
+  const [isStartupSplashExiting, setIsStartupSplashExiting] = useState(false)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
   const [selectedDriveId, setSelectedDriveId] = useState('')
@@ -554,6 +559,21 @@ function App() {
       window.removeEventListener('keydown', handleKeyDown)
     }
   }, [isSortMenuOpen])
+
+  useEffect(() => {
+    const exitTimer = window.setTimeout(() => {
+      setIsStartupSplashExiting(true)
+    }, STARTUP_SPLASH_VISIBLE_MS)
+
+    const hideTimer = window.setTimeout(() => {
+      setIsStartupSplashVisible(false)
+    }, STARTUP_SPLASH_VISIBLE_MS + STARTUP_SPLASH_FADE_MS)
+
+    return () => {
+      window.clearTimeout(exitTimer)
+      window.clearTimeout(hideTimer)
+    }
+  }, [])
 
   useEffect(() => {
     if (!openRowMenuItemId) {
@@ -1580,8 +1600,21 @@ function App() {
     : 'Files added to this view will appear here.'
 
   return (
-    <main className="workspace-shell">
-      <aside className="storage-sidebar">
+    <>
+      {isStartupSplashVisible ? (
+        <div
+          className={`startup-splash ${isStartupSplashExiting ? 'exiting' : 'visible'}`}
+          aria-hidden="true"
+        >
+          <div className="startup-splash-brand">
+            <img className="startup-splash-logo" src={splashIcon} alt="" />
+            <p className="startup-splash-wordmark">Cloud Weave</p>
+          </div>
+        </div>
+      ) : null}
+
+      <main className="workspace-shell">
+        <aside className="storage-sidebar">
         <div className="sidebar-panel">
           <div className="sidebar-list">
             <nav className="sidebar-nav" aria-label="Workspace views">
@@ -1645,9 +1678,9 @@ function App() {
             </section>
           </div>
         </div>
-      </aside>
+        </aside>
 
-      <section className="workspace-main">
+        <section className="workspace-main">
         <div className="library-shell">
           <header className="library-topbar">
             <div className="library-toolbar">
@@ -2224,7 +2257,8 @@ function App() {
           </div>
         </div>
       ) : null}
-    </main>
+      </main>
+    </>
   )
 }
 
