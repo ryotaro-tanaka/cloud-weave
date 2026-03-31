@@ -15,6 +15,7 @@
 - Use existing defined color tokens and theme variables.
 - Shared theme color tokens are defined in `src/index.css`.
 - Do not introduce ad-hoc colors in components unless there is an explicit design decision to add or revise a theme token first.
+- Do not add one-off button styles; map new actions to the shared button definition first.
 - Prefer updating shared theme tokens over hardcoding one-off visual values.
 - Keep visual changes consistent with the current Cloud Weave UI direction: quiet, clear, and utility-first.
 
