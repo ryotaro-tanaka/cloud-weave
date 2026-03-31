@@ -326,6 +326,7 @@ function App() {
   const [isLoadingRemotes, setIsLoadingRemotes] = useState(true)
   const [isLoadingItems, setIsLoadingItems] = useState(true)
   const [isLibraryStreaming, setIsLibraryStreaming] = useState(false)
+  const [isRefreshingItems, setIsRefreshingItems] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isFinalizingDrive, setIsFinalizingDrive] = useState(false)
   const [isRemoving, setIsRemoving] = useState(false)
@@ -632,11 +633,15 @@ function App() {
 
     if (!silent) {
       setIsLoadingItems(true)
+      setIsRefreshingItems(false)
+    } else {
+      setIsRefreshingItems(true)
     }
 
     if (!resolvedRemotes || resolvedRemotes.length === 0) {
       setUnifiedItems([])
       setItemsError('')
+      setIsRefreshingItems(false)
       if (!silent) {
         setIsLoadingItems(false)
       }
@@ -662,6 +667,7 @@ function App() {
       setUnifiedItems([])
       return null
     } finally {
+      setIsRefreshingItems(false)
       if (!silent) {
         setIsLoadingItems(false)
       }
@@ -804,6 +810,7 @@ function App() {
   const initializeLibrary = async () => {
     setIsLoadingItems(true)
     setIsLibraryStreaming(false)
+    setIsRefreshingItems(false)
     setUnifiedItems([])
     setItemsError('')
     setLibraryLoadProgress({
@@ -834,12 +841,14 @@ function App() {
       if (result.totalRemotes === 0) {
         setIsLoadingItems(false)
         setIsLibraryStreaming(false)
+        setIsRefreshingItems(false)
         activeLibraryRequestIdRef.current = null
       }
     } catch (error) {
       setItemsError(error instanceof Error ? error.message : String(error))
       setIsLoadingItems(false)
       setIsLibraryStreaming(false)
+      setIsRefreshingItems(false)
       activeLibraryRequestIdRef.current = null
     }
   }
@@ -1564,7 +1573,7 @@ function App() {
   const shouldShowCategoryEmptyState =
     hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
   const shouldShowLoadingList = isLoadingItems && hasConnectedStorage && unifiedItems.length === 0 && !itemsError
-  const shouldShowStreamingTail = isLibraryStreaming && unifiedItems.length > 0 && !itemsError
+  const shouldShowStreamingTail = (isLibraryStreaming || isRefreshingItems) && unifiedItems.length > 0 && !itemsError
   const emptyListTitle = searchQuery ? `No files match "${searchQuery.trim()}".` : `No files in ${currentViewLabel} yet.`
   const emptyListDescription = searchQuery
     ? 'Try a different search or switch to another view.'
