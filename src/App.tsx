@@ -66,6 +66,7 @@ import {
   type UploadSelection,
   type UploadState,
 } from './features/storage/uploads'
+import { Button } from './components/ui/Button'
 import './App.css'
 
 type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
@@ -318,6 +319,7 @@ function App() {
   const [isIssuesModalOpen, setIsIssuesModalOpen] = useState(false)
   const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null)
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false)
+  const [openRowMenuItemId, setOpenRowMenuItemId] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
   const [selectedDriveId, setSelectedDriveId] = useState('')
@@ -551,6 +553,40 @@ function App() {
       window.removeEventListener('keydown', handleKeyDown)
     }
   }, [isSortMenuOpen])
+
+  useEffect(() => {
+    if (!openRowMenuItemId) {
+      return
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) {
+        return
+      }
+
+      const element = target instanceof Element ? target : target.parentElement
+      if (element?.closest('[data-row-menu-container="true"]')) {
+        return
+      }
+
+      setOpenRowMenuItemId(null)
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpenRowMenuItemId(null)
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown)
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [openRowMenuItemId])
 
   useEffect(() => {
     return () => {
@@ -1555,9 +1591,9 @@ function App() {
             <section className="sidebar-section sidebar-section-storage">
               <div className="sidebar-section-heading">
                 <p className="sidebar-section-label">Storages</p>
-                <button className="sidebar-add-button" type="button" onClick={openAddModal}>
+                <Button family="quiet" size="sm" type="button" onClick={openAddModal}>
                   + Add storage
-                </button>
+                </Button>
               </div>
 
               {isLoadingRemotes ? <p className="empty-state">Loading storage...</p> : null}
@@ -1583,13 +1619,13 @@ function App() {
 
                           <div className="storage-nav-actions">
                             {needsReconnect ? (
-                              <button className="storage-action-button warning" type="button" onClick={() => void handleReconnect(remote)}>
+                              <Button family="quiet" size="sm" tone="warning" type="button" onClick={() => void handleReconnect(remote)}>
                                 Reconnect
-                              </button>
+                              </Button>
                             ) : null}
-                            <button className="storage-action-button remove" type="button" onClick={() => openRemoveModal(remote)}>
+                            <Button family="quiet" size="sm" tone="danger" type="button" onClick={() => openRemoveModal(remote)}>
                               Remove
-                            </button>
+                            </Button>
                           </div>
                         </div>
                       </li>
@@ -1620,7 +1656,9 @@ function App() {
 
               <div className="library-actions">
                 <div className={`toolbar-select ${isSortMenuOpen ? 'open' : ''}`} ref={sortMenuRef}>
-                  <button
+                  <Button
+                    family="quiet"
+                    size="sm"
                     className="toolbar-select-trigger"
                     type="button"
                     aria-label="Sort files"
@@ -1630,7 +1668,7 @@ function App() {
                   >
                     <span className="toolbar-select-value">{getSortLabel(sortKey)}</span>
                     <span className="toolbar-select-icon" aria-hidden="true">v</span>
-                  </button>
+                  </Button>
 
                   {isSortMenuOpen ? (
                     <div className="toolbar-select-menu" role="menu" aria-label="Sort files">
@@ -1654,15 +1692,15 @@ function App() {
                   ) : null}
                 </div>
 
-                <button className="issues-entry-button utility-icon-button" type="button" onClick={() => openIssuesModal()} aria-label="Open issues">
+                <Button family="icon" size="md" className="issues-entry-button utility-icon-button" type="button" onClick={() => openIssuesModal()} aria-label="Open issues">
                   <span aria-hidden="true">!</span>
                   {workspaceIssues.length > 0 ? (
                     <span className="issues-entry-badge">{unreadIssueCount > 0 ? unreadIssueCount : workspaceIssues.length}</span>
                   ) : null}
-                </button>
-                <button className="primary-button" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
+                </Button>
+                <Button family="primary" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
                   Upload
-                </button>
+                </Button>
               </div>
             </div>
 
@@ -1677,12 +1715,12 @@ function App() {
                 <h1>Your files will appear here.</h1>
                 <p>Connect a storage from the sidebar to start browsing everything in one place.</p>
                 <div className="empty-state-actions">
-                  <button className="ghost-button" type="button" onClick={openAddModal}>
+                  <Button family="secondary" type="button" onClick={openAddModal}>
                     Connect storage
-                  </button>
-                  <button className="primary-button" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
+                  </Button>
+                  <Button family="primary" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
                     Upload
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : null}
@@ -1729,6 +1767,9 @@ function App() {
                                 openState={openStates[item.id] ?? IDLE_OPEN_STATE}
                                 onOpen={handleOpen}
                                 onDownload={handleDownload}
+                                isRowMenuOpen={openRowMenuItemId === item.id}
+                                onToggleRowMenu={() => setOpenRowMenuItemId((current) => (current === item.id ? null : item.id))}
+                                onCloseRowMenu={() => setOpenRowMenuItemId(null)}
                               />
                             ))}
                           </div>
@@ -1759,6 +1800,9 @@ function App() {
                             openState={openStates[item.id] ?? IDLE_OPEN_STATE}
                             onOpen={handleOpen}
                             onDownload={handleDownload}
+                            isRowMenuOpen={openRowMenuItemId === item.id}
+                            onToggleRowMenu={() => setOpenRowMenuItemId((current) => (current === item.id ? null : item.id))}
+                            onCloseRowMenu={() => setOpenRowMenuItemId(null)}
                           />
                         ))}
                       </div>
@@ -1781,8 +1825,10 @@ function App() {
                 <span>{formatIssueTimestamp(toast.timestamp)}</span>
               </div>
               {toast.action ? (
-                <button
-                  className="ghost-button toast-action"
+                <Button
+                  family="secondary"
+                  size="sm"
+                  className="toast-action"
                   type="button"
                   onClick={() => {
                     const action = toast.action
@@ -1800,7 +1846,7 @@ function App() {
                   }}
                 >
                   {toast.actionLabel}
-                </button>
+                </Button>
               ) : null}
             </div>
           ))}
@@ -1836,9 +1882,9 @@ function App() {
                 </h2>
               </div>
 
-              <button className="icon-button modal-close" type="button" onClick={closeAddModal} aria-label="Close modal">
+              <Button family="icon" size="sm" className="modal-close" type="button" onClick={closeAddModal} aria-label="Close modal">
                 ×
-              </button>
+              </Button>
             </div>
 
             {addFlowStep === 'providers' ? (
@@ -1894,12 +1940,12 @@ function App() {
                 {addError ? <p className="error-text">{addError}</p> : null}
 
                 <div className="modal-actions">
-                  <button className="ghost-button" type="button" onClick={() => setAddFlowStep('providers')}>
+                  <Button family="secondary" type="button" onClick={() => setAddFlowStep('providers')}>
                     Back
-                  </button>
-                  <button className="primary-button" type="submit" disabled={isSubmitting}>
+                  </Button>
+                  <Button family="primary" type="submit" disabled={isSubmitting}>
                     {isSubmitting ? 'Starting...' : `Connect ${selectedProviderConfig.label}`}
-                  </button>
+                  </Button>
                 </div>
               </form>
             )}
@@ -1928,9 +1974,9 @@ function App() {
                 </h2>
               </div>
 
-              <button className="icon-button modal-close" type="button" onClick={closePendingModal} aria-label="Close modal">
+              <Button family="icon" size="sm" className="modal-close" type="button" onClick={closePendingModal} aria-label="Close modal">
                 ×
-              </button>
+              </Button>
             </div>
 
             <div className="pending-body">
@@ -2021,32 +2067,32 @@ function App() {
               {pendingSession.status === 'error' ? (
                 <>
                   {!pendingHasCallbackStartupFailure ? (
-                    <button className="primary-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                    <Button family="primary" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
                       Remove and connect again
-                    </button>
+                    </Button>
                   ) : null}
                 </>
               ) : pendingSession.status === 'requires_drive_selection' ? (
                 <>
-                  <button className="ghost-button" type="button" onClick={closePendingModal}>
+                  <Button family="secondary" type="button" onClick={closePendingModal}>
                     Cancel
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                  </Button>
+                  <Button family="secondary" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
                     Remove and start over
-                  </button>
-                  <button
-                    className="primary-button"
+                  </Button>
+                  <Button
+                    family="primary"
                     type="button"
                     onClick={() => void handleFinalizeDriveSelection()}
                     disabled={!selectedDriveId || isFinalizingDrive}
                   >
                     {isFinalizingDrive ? 'Connecting...' : 'Use this drive'}
-                  </button>
+                  </Button>
                 </>
               ) : pendingSession.status === 'connected' ? (
-                <button className="primary-button" type="button" onClick={handlePendingDone}>
+                <Button family="primary" type="button" onClick={handlePendingDone}>
                   Done
-                </button>
+                </Button>
               ) : null}
             </div>
           </div>
@@ -2062,14 +2108,16 @@ function App() {
                 <h2 id="remove-title">Remove {removeTarget.name}?</h2>
               </div>
 
-              <button
-                className="icon-button modal-close"
+              <Button
+                family="icon"
+                size="sm"
+                className="modal-close"
                 type="button"
                 onClick={() => setActiveModal('none')}
                 aria-label="Close modal"
               >
                 ×
-              </button>
+              </Button>
             </div>
 
             <div className="confirm-copy">
@@ -2079,12 +2127,12 @@ function App() {
             </div>
 
             <div className="modal-actions">
-              <button className="ghost-button" type="button" onClick={() => setActiveModal('none')}>
+              <Button family="secondary" type="button" onClick={() => setActiveModal('none')}>
                 Cancel
-              </button>
-              <button className="primary-button destructive" type="button" onClick={() => void handleDeleteRemote()} disabled={isRemoving}>
+              </Button>
+              <Button family="primary" tone="danger" type="button" onClick={() => void handleDeleteRemote()} disabled={isRemoving}>
                 {isRemoving ? 'Removing...' : 'Remove'}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -2099,9 +2147,9 @@ function App() {
                 <h2 id="upload-title">Send files to Cloud Weave</h2>
               </div>
 
-              <button className="icon-button modal-close" type="button" onClick={closeUploadModal} aria-label="Close upload modal">
+              <Button family="icon" size="sm" className="modal-close" type="button" onClick={closeUploadModal} aria-label="Close upload modal">
                 ×
-              </button>
+              </Button>
             </div>
 
             <div className="upload-body">
@@ -2112,12 +2160,12 @@ function App() {
                 </p>
 
                 <div className="upload-picker-actions">
-                  <button className="primary-button" type="button" onClick={() => void handleChooseUploadFiles()} disabled={isPreparingUpload || isStartingUpload}>
+                  <Button family="primary" type="button" onClick={() => void handleChooseUploadFiles()} disabled={isPreparingUpload || isStartingUpload}>
                     {isPreparingUpload ? 'Preparing...' : 'Browse files'}
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => void handleChooseUploadFolder()} disabled={isPreparingUpload || isStartingUpload}>
+                  </Button>
+                  <Button family="secondary" type="button" onClick={() => void handleChooseUploadFolder()} disabled={isPreparingUpload || isStartingUpload}>
                     {isPreparingUpload ? 'Preparing...' : 'Browse folder'}
-                  </button>
+                  </Button>
                 </div>
               </div>
 
@@ -2156,12 +2204,12 @@ function App() {
 
             {hasUploadItems ? (
               <div className="modal-actions">
-                <button className="ghost-button" type="button" onClick={resetUploadBatch} disabled={!hasUploadItems || isPreparingUpload}>
+                <Button family="secondary" type="button" onClick={resetUploadBatch} disabled={!hasUploadItems || isPreparingUpload}>
                   Clear
-                </button>
-                <button className="primary-button" type="button" onClick={() => void handleStartUpload()} disabled={!canStartUpload}>
+                </Button>
+                <Button family="primary" type="button" onClick={() => void handleStartUpload()} disabled={!canStartUpload}>
                   {isPreparingUpload ? 'Preparing...' : isStartingUpload ? 'Uploading...' : 'Upload'}
-                </button>
+                </Button>
               </div>
             ) : null}
           </div>
@@ -2177,12 +2225,18 @@ function UnifiedListItem({
   openState,
   onOpen,
   onDownload,
+  isRowMenuOpen,
+  onToggleRowMenu,
+  onCloseRowMenu,
 }: {
   item: UnifiedItem
   downloadState: DownloadState
   openState: OpenState
   onOpen: (item: UnifiedItem) => Promise<void>
   onDownload: (item: UnifiedItem) => Promise<void>
+  isRowMenuOpen: boolean
+  onToggleRowMenu: () => void
+  onCloseRowMenu: () => void
 }) {
   const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
   const canPreview = canPreviewItem(item)
@@ -2191,13 +2245,14 @@ function UnifiedListItem({
   const actionLabel =
     downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
   const canPrimaryOpen = canPreview || canOpen
-  const hasActions = !item.isDir
+  const hasOverflowActions = !item.isDir
   const statusLabel = getListItemStatusLabel(item, downloadState, openState)
   const listPath = formatListPath(item)
+  const primaryActionLabel = canPreview ? (isPreparingOpen ? 'Previewing...' : 'Preview') : (isPreparingOpen ? 'Opening...' : 'Open')
 
   return (
     <article
-      className="unified-item list-item"
+      className={`unified-item list-item ${isRowMenuOpen ? 'row-menu-open' : ''}`}
       data-row-id={item.id}
       tabIndex={0}
       onKeyDown={(event) => {
@@ -2247,32 +2302,59 @@ function UnifiedListItem({
         <p className={`item-status-label ${downloadState.status === 'failed' || openState.status === 'failed' ? 'danger' : ''}`}>{statusLabel}</p>
       </div>
 
-      <div className="item-actions" aria-label="Row actions">
-        {hasActions && canPreview ? (
-          <button
-            className="row-action primary-open-action"
+      {hasOverflowActions ? (
+        <div
+          className="item-actions"
+          aria-label="Row actions"
+          data-row-menu-container="true"
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          <Button
+            family="icon"
+            size="sm"
+            className="item-actions-trigger"
             type="button"
-            onClick={() => void onOpen(item)}
-            disabled={isPreparingOpen || item.isDir}
+            aria-label={`More actions for ${item.name}`}
+            aria-haspopup="menu"
+            aria-expanded={isRowMenuOpen}
+            onClick={onToggleRowMenu}
           >
-            {isPreparingOpen ? 'Previewing...' : 'Preview'}
-          </button>
-        ) : hasActions && canOpen ? (
-          <button
-            className="row-action primary-open-action"
-            type="button"
-            onClick={() => void onOpen(item)}
-            disabled={isPreparingOpen || item.isDir}
-          >
-            {isPreparingOpen ? 'Opening...' : 'Open'}
-          </button>
-        ) : null}
-        {!item.isDir ? (
-          <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
-            {actionLabel}
-          </button>
-        ) : null}
-      </div>
+            …
+          </Button>
+
+          {isRowMenuOpen ? (
+            <div className="row-action-menu" role="menu" aria-label={`Actions for ${item.name}`}>
+              {canPrimaryOpen ? (
+                <button
+                  className="row-menu-item"
+                  type="button"
+                  role="menuitem"
+                  disabled={isPreparingOpen}
+                  onClick={() => {
+                    onCloseRowMenu()
+                    void onOpen(item)
+                  }}
+                >
+                  {primaryActionLabel}
+                </button>
+              ) : null}
+              <button
+                className="row-menu-item"
+                type="button"
+                role="menuitem"
+                disabled={isBusy}
+                onClick={() => {
+                  onCloseRowMenu()
+                  void onDownload(item)
+                }}
+              >
+                {actionLabel}
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </article>
   )
 }
@@ -2433,9 +2515,9 @@ function IssuesModal({
             <h2 id="issues-title">Workspace issues</h2>
           </div>
 
-          <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close issues modal">
+          <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close issues modal">
             ×
-          </button>
+          </Button>
         </div>
 
         {issues.length === 0 ? (
@@ -2532,9 +2614,9 @@ function PreviewModal({
             <h2 id="preview-title">{payload.itemName}</h2>
           </div>
 
-          <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close preview">
+          <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close preview">
             ×
-          </button>
+          </Button>
         </div>
 
         <div className="preview-surface">
