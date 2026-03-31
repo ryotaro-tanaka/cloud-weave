@@ -57,10 +57,7 @@ import {
 } from './features/storage/libraryLoad'
 import {
   applyUploadProgressEvent,
-  describeUploadTarget,
-  formatUploadItemMeta,
   getUploadBatchSummary,
-  getUploadStateSummary,
   IDLE_UPLOAD_STATE,
   type PreparedUploadBatch,
   type PreparedUploadItem,
@@ -120,9 +117,18 @@ type WorkspaceIssue = {
   source: string
   read: boolean
 }
+type ToastKind = 'info' | 'warning' | 'error' | 'success'
+type ToastAction =
+  | { type: 'open-upload' }
+  | { type: 'open-issues'; issueId?: string }
 type ToastNotice = {
   id: string
-  issueId: string
+  kind: ToastKind
+  message: string
+  timestamp: number
+  source: string
+  actionLabel?: string
+  action?: ToastAction
 }
 
 type ProviderDefinition = {
@@ -177,7 +183,7 @@ const PREVIEW_ASSET_PROTOCOL = 'asset'
 const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
 const CONNECT_SYNC_ATTEMPTS = 8
 const CONNECT_SYNC_DELAY_MS = 500
-const TOAST_DURATION_MS = 4800
+const TOAST_DURATION_MS = 5000
 const SORT_OPTIONS: Array<{ value: UnifiedItemSortKey; label: string }> = [
   { value: 'updated-desc', label: 'Newest' },
   { value: 'updated-asc', label: 'Oldest' },
@@ -307,7 +313,6 @@ function App() {
   const [toastNotices, setToastNotices] = useState<ToastNotice[]>([])
   const [isIssuesModalOpen, setIsIssuesModalOpen] = useState(false)
   const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null)
-  const [isTransfersModalOpen, setIsTransfersModalOpen] = useState(false)
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false)
   const [hoveredRemote, setHoveredRemote] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
@@ -335,7 +340,6 @@ function App() {
   const [isPreparingUpload, setIsPreparingUpload] = useState(false)
   const [isStartingUpload, setIsStartingUpload] = useState(false)
   const [isUploadDragActive, setIsUploadDragActive] = useState(false)
-  const [isUploadBrowseChooserOpen, setIsUploadBrowseChooserOpen] = useState(false)
   const [hasPendingUploadRefresh, setHasPendingUploadRefresh] = useState(false)
   const [, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
     requestId: null,
@@ -343,9 +347,9 @@ function App() {
     totalRemoteCount: 0,
   })
   const activeLibraryRequestIdRef = useRef<string | null>(null)
-  const uploadBrowseFilesButtonRef = useRef<HTMLButtonElement | null>(null)
   const toastTimeoutsRef = useRef<Record<string, number>>({})
   const sortMenuRef = useRef<HTMLDivElement | null>(null)
+  const lastUploadOutcomeRef = useRef<{ completed: number; failed: number } | null>(null)
 
   const selectedProviderConfig = useMemo(
     () => STORAGE_PROVIDERS.find((provider) => provider.id === selectedProvider) ?? STORAGE_PROVIDERS[0],
@@ -366,16 +370,7 @@ function App() {
     [remotes],
   )
   const unreadIssueCount = useMemo(() => workspaceIssues.filter((issue) => !issue.read).length, [workspaceIssues])
-  const visibleToasts = useMemo(
-    () =>
-      toastNotices
-        .map((toast) => ({
-          toast,
-          issue: workspaceIssues.find((issue) => issue.id === toast.issueId) ?? null,
-        }))
-        .filter((entry): entry is { toast: ToastNotice; issue: WorkspaceIssue } => entry.issue !== null),
-    [toastNotices, workspaceIssues],
-  )
+  const visibleToasts = toastNotices
 
   const groupedRecentItems = useMemo(() => {
     if (activeView !== 'recent' || sortKey !== 'updated-desc') {
@@ -389,7 +384,7 @@ function App() {
     () => getUploadBatchSummary(uploadBatch?.items ?? [], uploadStates),
     [uploadBatch, uploadStates],
   )
-  const transferItems = useMemo(() => {
+  const uploadListItems = useMemo(() => {
     if (!uploadBatch) {
       return []
     }
@@ -399,6 +394,8 @@ function App() {
       state: uploadStates[item.itemId] ?? IDLE_UPLOAD_STATE,
     }))
   }, [uploadBatch, uploadStates])
+  const hasUploadItems = uploadListItems.length > 0
+  const hasReadyUploads = uploadListItems.some(({ state }) => state.status === 'idle')
   const currentViewLabel = getCategoryLabel(activeView)
 
   const dismissToast = (toastId: string) => {
@@ -409,6 +406,40 @@ function App() {
     }
 
     setToastNotices((current) => current.filter((toast) => toast.id !== toastId))
+  }
+
+  const showToast = ({
+    kind,
+    message,
+    source,
+    actionLabel,
+    action,
+  }: {
+    kind: ToastKind
+    message: string
+    source: string
+    actionLabel?: string
+    action?: ToastAction
+  }) => {
+    const timestamp = Date.now()
+    const toastId = `toast:${source}:${timestamp}:${Math.random().toString(36).slice(2, 8)}`
+
+    toastTimeoutsRef.current[toastId] = window.setTimeout(() => {
+      dismissToast(toastId)
+    }, TOAST_DURATION_MS)
+
+    setToastNotices((current) => [
+      {
+        id: toastId,
+        kind,
+        message,
+        timestamp,
+        source,
+        actionLabel,
+        action,
+      },
+      ...current,
+    ])
   }
 
   const markIssuesRead = (issueIds?: string[]) => {
@@ -468,22 +499,15 @@ function App() {
       return
     }
 
-    setToastNotices((current) => {
-      const nextToasts = createdIssues.map((issue) => {
-        const toastId = `toast:${issue.id}:${issue.timestamp}`
-
-        toastTimeoutsRef.current[toastId] = window.setTimeout(() => {
-          dismissToast(toastId)
-        }, TOAST_DURATION_MS)
-
-        return {
-          id: toastId,
-          issueId: issue.id,
-        }
+    for (const issue of createdIssues) {
+      showToast({
+        kind: issue.level === 'error' ? 'error' : issue.level === 'warning' ? 'warning' : 'info',
+        message: issue.message,
+        source: issue.source,
+        actionLabel: 'View details',
+        action: { type: 'open-issues', issueId: issue.id },
       })
-
-      return [...nextToasts, ...current]
-    })
+    }
   }
 
   useEffect(() => {
@@ -736,29 +760,6 @@ function App() {
     }
   }, [activeModal])
 
-  useEffect(() => {
-    if (!isUploadBrowseChooserOpen) {
-      return
-    }
-
-    uploadBrowseFilesButtonRef.current?.focus()
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') {
-        return
-      }
-
-      event.preventDefault()
-      setIsUploadBrowseChooserOpen(false)
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [isUploadBrowseChooserOpen])
-
   const initializeLibrary = async () => {
     setIsLoadingItems(true)
     setIsLibraryStreaming(false)
@@ -837,14 +838,54 @@ function App() {
       return
     }
 
-    if (uploadSummary.completed === 0) {
+    if (uploadSummary.completed === 0 && uploadSummary.failed === 0) {
       setHasPendingUploadRefresh(false)
+      lastUploadOutcomeRef.current = null
       return
     }
 
+    const previousOutcome = lastUploadOutcomeRef.current
+    const nextOutcome = {
+      completed: uploadSummary.completed,
+      failed: uploadSummary.failed,
+    }
+
+    if (
+      !previousOutcome ||
+      previousOutcome.completed !== nextOutcome.completed ||
+      previousOutcome.failed !== nextOutcome.failed
+    ) {
+      if (uploadSummary.failed > 0 && uploadSummary.completed > 0) {
+        showToast({
+          kind: 'warning',
+          message: `${uploadSummary.completed} uploaded, ${uploadSummary.failed} failed`,
+          source: 'upload',
+          actionLabel: 'Open upload',
+          action: { type: 'open-upload' },
+        })
+      } else if (uploadSummary.failed > 0) {
+        showToast({
+          kind: 'error',
+          message: `${uploadSummary.failed} file${uploadSummary.failed === 1 ? '' : 's'} failed`,
+          source: 'upload',
+          actionLabel: 'Open upload',
+          action: { type: 'open-upload' },
+        })
+      } else {
+        showToast({
+          kind: 'success',
+          message: `${uploadSummary.completed} file${uploadSummary.completed === 1 ? '' : 's'} uploaded`,
+          source: 'upload',
+          actionLabel: 'Open upload',
+          action: { type: 'open-upload' },
+        })
+      }
+    }
+
+    lastUploadOutcomeRef.current = nextOutcome
     setHasPendingUploadRefresh(false)
     void refreshLibrary({ silent: true })
-  }, [hasPendingUploadRefresh, isStartingUpload, uploadSummary.active, uploadSummary.completed])
+  }, [hasPendingUploadRefresh, isStartingUpload, refreshLibrary, showToast, uploadSummary.active, uploadSummary.completed, uploadSummary.failed])
 
   const resetAddFlow = () => {
     setAddFlowStep('providers')
@@ -869,7 +910,6 @@ function App() {
   const closeUploadModal = () => {
     setActiveModal('none')
     setIsUploadDragActive(false)
-    setIsUploadBrowseChooserOpen(false)
   }
 
   const closeAddModal = () => {
@@ -1333,8 +1373,6 @@ function App() {
   }
 
   const handleChooseUploadFiles = async () => {
-    setIsUploadBrowseChooserOpen(false)
-
     try {
       const selected = await openDialog({
         multiple: true,
@@ -1350,8 +1388,6 @@ function App() {
   }
 
   const handleChooseUploadFolder = async () => {
-    setIsUploadBrowseChooserOpen(false)
-
     try {
       const selected = await openDialog({
         multiple: false,
@@ -1366,14 +1402,6 @@ function App() {
     }
   }
 
-  const handleOpenUploadBrowseChooser = () => {
-    if (isPreparingUpload || isStartingUpload) {
-      return
-    }
-
-    setIsUploadBrowseChooserOpen(true)
-  }
-
   const handleStartUpload = async () => {
     if (!uploadBatch || uploadBatch.items.length === 0) {
       setUploadError('Add files or folders before starting the upload.')
@@ -1383,6 +1411,15 @@ function App() {
     setIsStartingUpload(true)
     setUploadError('')
     setHasPendingUploadRefresh(true)
+    lastUploadOutcomeRef.current = null
+
+    showToast({
+      kind: 'info',
+      message: `Uploading ${uploadBatch.items.length} file${uploadBatch.items.length === 1 ? '' : 's'}...`,
+      source: 'upload',
+      actionLabel: 'Open upload',
+      action: { type: 'open-upload' },
+    })
 
     const queuedStates = Object.fromEntries(
       uploadBatch.items.map((item) => [
@@ -1415,7 +1452,12 @@ function App() {
   }
 
   const canStartUpload =
-    !!uploadBatch && uploadBatch.items.length > 0 && uploadSummary.active === 0 && !isPreparingUpload && !isStartingUpload
+    !!uploadBatch &&
+    uploadBatch.items.length > 0 &&
+    hasReadyUploads &&
+    uploadSummary.active === 0 &&
+    !isPreparingUpload &&
+    !isStartingUpload
 
   const handleOpen = async (item: UnifiedItem) => {
     if (item.isDir || (!canPreviewItem(item) && !canOpenInDefaultApp(item))) {
@@ -1606,17 +1648,6 @@ function App() {
                     <span className="issues-entry-badge">{unreadIssueCount > 0 ? unreadIssueCount : workspaceIssues.length}</span>
                   ) : null}
                 </button>
-                <button
-                  className="issues-entry-button utility-icon-button"
-                  type="button"
-                  onClick={() => setIsTransfersModalOpen(true)}
-                  aria-label="Open transfers"
-                >
-                  <span aria-hidden="true">^</span>
-                  {uploadSummary.total > 0 ? (
-                    <span className="issues-entry-badge">{uploadSummary.active > 0 ? uploadSummary.active : uploadSummary.total}</span>
-                  ) : null}
-                </button>
                 <button className="primary-button" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
                   Upload
                 </button>
@@ -1717,34 +1748,37 @@ function App() {
       </section>
 
       {visibleToasts.length > 0 ? (
-        <div className="toast-stack" aria-live="polite" aria-label="Workspace issues">
-          {visibleToasts.map(({ toast, issue }) => (
-            <div key={toast.id} className={`toast-notice ${issue.level}`}>
+        <div className="toast-stack" aria-live="polite" aria-label="Workspace notifications">
+          {visibleToasts.map((toast) => (
+            <div key={toast.id} className={`toast-notice ${toast.kind}`}>
               <div className="toast-copy">
-                <p>{issue.message}</p>
-                <span>{formatIssueTimestamp(issue.timestamp)}</span>
+                <p>{toast.message}</p>
+                <span>{formatIssueTimestamp(toast.timestamp)}</span>
               </div>
-              <button className="ghost-button toast-action" type="button" onClick={() => openIssuesModal(issue.id)}>
-                View details
-              </button>
+              {toast.action ? (
+                <button
+                  className="ghost-button toast-action"
+                  type="button"
+                  onClick={() => {
+                    const action = toast.action
+
+                    if (!action) {
+                      return
+                    }
+
+                    if (action.type === 'open-upload') {
+                      openUploadModal()
+                      return
+                    }
+
+                    openIssuesModal(action.issueId)
+                  }}
+                >
+                  {toast.actionLabel}
+                </button>
+              ) : null}
             </div>
           ))}
-        </div>
-      ) : null}
-
-      {uploadSummary.total > 0 ? (
-        <div className="transfer-tray" aria-live="polite">
-          <div className="transfer-tray-copy">
-            <p>{uploadSummary.label}</p>
-            <span>
-              {uploadSummary.active > 0
-                ? `${uploadSummary.active} in progress`
-                : `${uploadSummary.completed} complete • ${uploadSummary.failed} failed`}
-            </span>
-          </div>
-          <button className="ghost-button transfer-tray-action" type="button" onClick={() => setIsTransfersModalOpen(true)}>
-            View transfers
-          </button>
         </div>
       ) : null}
 
@@ -1763,13 +1797,6 @@ function App() {
             setIsIssuesModalOpen(false)
             setFocusedIssueId(null)
           }}
-        />
-      ) : null}
-
-      {isTransfersModalOpen ? (
-        <TransfersModal
-          items={transferItems}
-          onClose={() => setIsTransfersModalOpen(false)}
         />
       ) : null}
 
@@ -2056,108 +2083,60 @@ function App() {
               <div className={`upload-dropzone ${isUploadDragActive ? 'active' : ''}`}>
                 <p className="upload-dropzone-title">Drop files or folders here</p>
                 <p className="upload-dropzone-copy">
-                  Cloud Weave keeps folder structure, classifies files by category, and routes them to the best connected destination.
+                  Browse from disk or drop files here to add them to the upload list.
                 </p>
 
                 <div className="upload-picker-actions">
-                  <button className="ghost-button" type="button" onClick={handleOpenUploadBrowseChooser} disabled={isPreparingUpload || isStartingUpload}>
-                    Browse…
+                  <button className="primary-button" type="button" onClick={() => void handleChooseUploadFiles()} disabled={isPreparingUpload || isStartingUpload}>
+                    {isPreparingUpload ? 'Preparing...' : 'Browse files'}
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => void handleChooseUploadFolder()} disabled={isPreparingUpload || isStartingUpload}>
+                    {isPreparingUpload ? 'Preparing...' : 'Browse folder'}
                   </button>
                 </div>
-
-                {isUploadBrowseChooserOpen ? (
-                  <div
-                    className="upload-browse-chooser-backdrop"
-                    role="presentation"
-                    onClick={() => setIsUploadBrowseChooserOpen(false)}
-                  >
-                    <div
-                      className="upload-browse-chooser"
-                      role="dialog"
-                      aria-modal="true"
-                      aria-labelledby="upload-browse-title"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <p id="upload-browse-title" className="upload-browse-chooser-title">
-                        What would you like to add?
-                      </p>
-                      <p className="upload-browse-chooser-copy">
-                        Choose files or a folder, then Cloud Weave will open the matching system picker.
-                      </p>
-                      <div className="upload-browse-chooser-actions">
-                        <button
-                          ref={uploadBrowseFilesButtonRef}
-                          className="primary-button"
-                          type="button"
-                          onClick={() => void handleChooseUploadFiles()}
-                          disabled={isPreparingUpload || isStartingUpload}
-                        >
-                          Choose files
-                        </button>
-                        <button
-                          className="ghost-button"
-                          type="button"
-                          onClick={() => void handleChooseUploadFolder()}
-                          disabled={isPreparingUpload || isStartingUpload}
-                        >
-                          Choose folder
-                        </button>
-                        <button
-                          className="ghost-button"
-                          type="button"
-                          onClick={() => setIsUploadBrowseChooserOpen(false)}
-                          disabled={isPreparingUpload || isStartingUpload}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
               </div>
 
-              <div className="upload-summary-card">
-                <p className="upload-summary-label">{uploadSummary.label}</p>
-                <p className="upload-summary-meta">
-                  {uploadSummary.total > 0
-                    ? `${uploadSummary.completed} complete • ${uploadSummary.failed} failed • ${uploadSummary.total} total`
-                    : 'No files queued yet'}
+              {isPreparingUpload ? (
+                <div className="upload-preparing-state" role="status" aria-live="polite">
+                  <p className="upload-preparing-title">Preparing upload list...</p>
+                  <p className="upload-preparing-copy">Checking files and destinations.</p>
+                </div>
+              ) : null}
+
+              {uploadBatch?.notices.map((notice) => (
+                <p key={notice} className="pending-help">
+                  {notice}
                 </p>
-                {uploadBatch?.notices.map((notice) => (
-                  <p key={notice} className="pending-help">
-                    {notice}
-                  </p>
-                ))}
-                {uploadError ? <p className="error-text">{uploadError}</p> : null}
+              ))}
+              {uploadError ? <p className="error-text">{uploadError}</p> : null}
+
+              {hasUploadItems ? (
+                <>
+                  <div className="upload-list-header" aria-hidden="true">
+                    <span>Name</span>
+                    <span>Status</span>
+                    <span>Path</span>
+                    <span>Storage</span>
+                  </div>
+                  <div className="upload-queue" role="list" aria-label="Upload list">
+                    {uploadListItems.map(({ item, state }) => (
+                      <UploadListItem key={item.itemId} item={item} state={state} />
+                    ))}
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            {hasUploadItems ? (
+              <div className="modal-actions">
+                <button className="ghost-button" type="button" onClick={resetUploadBatch} disabled={!hasUploadItems || isPreparingUpload}>
+                  Clear
+                </button>
+                <button className="primary-button" type="button" onClick={() => void handleStartUpload()} disabled={!canStartUpload}>
+                  {isPreparingUpload ? 'Preparing...' : isStartingUpload ? 'Uploading...' : 'Upload'}
+                </button>
               </div>
-
-              {uploadBatch?.items.length ? (
-                <div className="upload-queue" role="list" aria-label="Upload queue">
-                  {uploadBatch.items.map((item) => (
-                    <UploadQueueItem
-                      key={item.itemId}
-                      item={item}
-                      state={uploadStates[item.itemId] ?? IDLE_UPLOAD_STATE}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="main-empty-state compact upload-empty-state">
-                  <p className="eyebrow">Queue</p>
-                  <h2>Nothing queued yet.</h2>
-                  <p>Drop a folder or choose files from disk to prepare the upload batch.</p>
-                </div>
-              )}
-            </div>
-
-            <div className="modal-actions">
-              <button className="ghost-button" type="button" onClick={resetUploadBatch} disabled={uploadSummary.active > 0}>
-                Clear
-              </button>
-              <button className="primary-button" type="button" onClick={() => void handleStartUpload()} disabled={!canStartUpload}>
-                {isPreparingUpload ? 'Preparing...' : isStartingUpload ? 'Starting...' : 'Start upload'}
-              </button>
-            </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -2271,38 +2250,22 @@ function UnifiedListItem({
   )
 }
 
-function UploadQueueItem({
+function UploadListItem({
   item,
   state,
 }: {
   item: PreparedUploadItem
   state: UploadState
 }) {
-  const isRunning = state.status === 'queued' || state.status === 'running' || state.status === 'retrying'
+  const pathLabel = getUploadListPath(item, state)
+  const storageLabel = getUploadListStorage(item, state)
 
   return (
     <article className="upload-queue-item" role="listitem">
-      <div className="upload-queue-copy">
-        <div className="item-title-row">
-          <p className="item-name">{item.displayName}</p>
-          <span className="source-badge">{item.category}</span>
-        </div>
-        <p className="upload-relative-path">{item.relativePath}</p>
-        <div className="item-meta">
-          <span>{formatUploadItemMeta(item)}</span>
-          <span>{describeUploadTarget(item)}</span>
-        </div>
-      </div>
-
-      <div className="upload-queue-status">
-        <p>{getUploadStateSummary(state)}</p>
-        {state.remoteName ? <p className="grid-path">{state.remoteName}</p> : null}
-        {isRunning ? (
-          <div className="download-progress" aria-hidden="true">
-            <div className="download-progress-fill upload-progress-fill" />
-          </div>
-        ) : null}
-      </div>
+      <p className="upload-item-name">{item.displayName}</p>
+      <p className={`upload-item-status ${state.status === 'failed' ? 'danger' : ''}`}>{getUploadListStatusLabel(state)}</p>
+      <p className="upload-item-path">{pathLabel}</p>
+      <p className="upload-item-storage">{storageLabel}</p>
     </article>
   )
 }
@@ -2320,49 +2283,39 @@ function ListHeader() {
   )
 }
 
-function TransferListItem({
-  item,
-  state,
-}: {
-  item: PreparedUploadItem
-  state: UploadState
-}) {
-  const isRunning = state.status === 'queued' || state.status === 'running' || state.status === 'retrying'
-  const transferPath = state.remotePath ?? item.relativePath
-  const storageLabel = state.remoteName ?? item.candidates[0]?.remoteName ?? 'Pending destination'
-
-  return (
-    <article className="transfer-item" role="listitem">
-      <div className="transfer-status">
-        <span className={`storage-status-badge ${state.status === 'failed' ? 'warning' : 'neutral'}`}>
-          {toTransferBadgeLabel(state)}
-        </span>
-        {isRunning ? (
-          <div className="download-progress" aria-hidden="true">
-            <div className="download-progress-fill upload-progress-fill" />
-          </div>
-        ) : null}
-      </div>
-
-      <p className="transfer-path">{transferPath}</p>
-      <p className="transfer-storage">{storageLabel}</p>
-    </article>
-  )
-}
-
-function toTransferBadgeLabel(state: UploadState): string {
+function getUploadListStatusLabel(state: UploadState): string {
   switch (state.status) {
     case 'queued':
     case 'running':
     case 'retrying':
-      return 'In progress'
+      return 'Uploading'
     case 'succeeded':
       return 'Completed'
     case 'failed':
       return 'Failed'
     case 'idle':
-      return 'Queued'
+      return 'Ready'
   }
+}
+
+function getUploadListPath(item: PreparedUploadItem, state: UploadState): string {
+  if (state.remotePath) {
+    return `/${state.remotePath.replace(/^\/+/, '')}`
+  }
+
+  const primaryCandidate = item.candidates[0]
+  const normalizedRelativePath = item.relativePath.replace(/\\/g, '/').replace(/^\/+/, '')
+  const basePath = primaryCandidate?.basePath?.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') ?? ''
+
+  if (!basePath) {
+    return normalizedRelativePath ? `/${normalizedRelativePath}` : '/'
+  }
+
+  return normalizedRelativePath ? `/${basePath}/${normalizedRelativePath}` : `/${basePath}`
+}
+
+function getUploadListStorage(item: PreparedUploadItem, state: UploadState): string {
+  return state.remoteName ?? item.candidates[0]?.remoteName ?? 'Pending'
 }
 
 function IssuesModal({
@@ -2414,52 +2367,6 @@ function IssuesModal({
               </article>
             ))}
           </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function TransfersModal({
-  items,
-  onClose,
-}: {
-  items: Array<{ item: PreparedUploadItem; state: UploadState }>
-  onClose: () => void
-}) {
-  return (
-    <div className="modal-overlay" role="presentation" onClick={onClose}>
-      <div className="issues-modal transfers-modal" role="dialog" aria-modal="true" aria-labelledby="transfers-title" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <div>
-            <p className="eyebrow">Transfers</p>
-            <h2 id="transfers-title">Upload activity</h2>
-          </div>
-
-          <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close transfers modal">
-            ×
-          </button>
-        </div>
-
-        {items.length === 0 ? (
-          <div className="main-empty-state compact issues-empty-state">
-            <p className="eyebrow">Transfers</p>
-            <h2>No transfers yet.</h2>
-            <p>Uploads will appear here after you start sending files to Cloud Weave.</p>
-          </div>
-        ) : (
-          <>
-            <div className="transfer-list-header" aria-hidden="true">
-              <span>Status</span>
-              <span>Path</span>
-              <span>Storage</span>
-            </div>
-            <div className="transfer-list" role="list" aria-label="Transfers">
-              {items.map(({ item, state }) => (
-                <TransferListItem key={item.itemId} item={item} state={state} />
-              ))}
-            </div>
-          </>
         )}
       </div>
     </div>
