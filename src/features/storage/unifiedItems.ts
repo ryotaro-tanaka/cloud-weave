@@ -18,7 +18,7 @@ export type UnifiedItem = {
 }
 
 export type RecentGroup = {
-  label: 'Today' | 'This week' | 'This month' | 'Older' | 'Unknown date'
+  label: 'Today' | 'Last 7 days' | 'Last 30 days' | 'Older than 30 days' | 'Unknown date'
   items: UnifiedItem[]
 }
 
@@ -55,9 +55,9 @@ export function sortItemsByRecent(items: UnifiedItem[]): UnifiedItem[] {
 export function groupRecentItems(items: UnifiedItem[], now = new Date()): RecentGroup[] {
   const grouped = new Map<RecentGroup['label'], UnifiedItem[]>([
     ['Today', []],
-    ['This week', []],
-    ['This month', []],
-    ['Older', []],
+    ['Last 7 days', []],
+    ['Last 30 days', []],
+    ['Older than 30 days', []],
     ['Unknown date', []],
   ])
 
@@ -249,26 +249,24 @@ function resolveRecentGroup(modTime: string | null, now: Date): RecentGroup['lab
   const itemDate = new Date(timestamp)
 
   const startOfToday = new Date(current.getFullYear(), current.getMonth(), current.getDate())
-  const startOfWeek = new Date(startOfToday)
-  const dayOfWeek = startOfWeek.getDay()
-  const normalizedDayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1
-  startOfWeek.setDate(startOfWeek.getDate() - normalizedDayOffset)
-
-  const startOfMonth = new Date(current.getFullYear(), current.getMonth(), 1)
+  const startOfLast7Days = new Date(startOfToday)
+  startOfLast7Days.setDate(startOfLast7Days.getDate() - 6)
+  const startOfLast30Days = new Date(startOfToday)
+  startOfLast30Days.setDate(startOfLast30Days.getDate() - 29)
 
   if (itemDate >= startOfToday) {
     return 'Today'
   }
 
-  if (itemDate >= startOfWeek) {
-    return 'This week'
+  if (itemDate >= startOfLast7Days) {
+    return 'Last 7 days'
   }
 
-  if (itemDate >= startOfMonth) {
-    return 'This month'
+  if (itemDate >= startOfLast30Days) {
+    return 'Last 30 days'
   }
 
-  return 'Older'
+  return 'Older than 30 days'
 }
 
 function toTimestamp(modTime: string | null): number | null {

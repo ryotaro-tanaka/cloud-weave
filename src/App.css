@@ -190,6 +190,7 @@
   max-height: 0;
   opacity: 0;
   overflow: hidden;
+  padding-top: 1px;
   pointer-events: none;
   transform: translateY(-2px);
   transition:
@@ -200,8 +201,9 @@
 
 .storage-nav-item:hover .storage-nav-actions,
 .storage-nav-item:focus-within .storage-nav-actions {
-  max-height: 40px;
+  max-height: 42px;
   opacity: 1;
+  overflow: visible;
   pointer-events: auto;
   transform: translateY(0);
 }
