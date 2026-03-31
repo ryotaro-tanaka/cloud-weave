@@ -178,9 +178,21 @@ const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
 const CONNECT_SYNC_ATTEMPTS = 8
 const CONNECT_SYNC_DELAY_MS = 500
 const TOAST_DURATION_MS = 4800
+const SORT_OPTIONS: Array<{ value: UnifiedItemSortKey; label: string }> = [
+  { value: 'updated-desc', label: 'Newest' },
+  { value: 'updated-asc', label: 'Oldest' },
+  { value: 'name-asc', label: 'Name A-Z' },
+  { value: 'name-desc', label: 'Name Z-A' },
+  { value: 'size-desc', label: 'Size ↓' },
+  { value: 'size-asc', label: 'Size ↑' },
+]
 
 function getDefaultSortKey(view: LogicalView): UnifiedItemSortKey {
   return view === 'recent' ? 'updated-desc' : 'name-asc'
+}
+
+function getSortLabel(sortKey: UnifiedItemSortKey): string {
+  return SORT_OPTIONS.find((option) => option.value === sortKey)?.label ?? 'Newest'
 }
 
 function inferIssueLevel(message: string): IssueLevel {
@@ -296,6 +308,7 @@ function App() {
   const [isIssuesModalOpen, setIsIssuesModalOpen] = useState(false)
   const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null)
   const [isTransfersModalOpen, setIsTransfersModalOpen] = useState(false)
+  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false)
   const [hoveredRemote, setHoveredRemote] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
@@ -332,6 +345,7 @@ function App() {
   const activeLibraryRequestIdRef = useRef<string | null>(null)
   const uploadBrowseFilesButtonRef = useRef<HTMLButtonElement | null>(null)
   const toastTimeoutsRef = useRef<Record<string, number>>({})
+  const sortMenuRef = useRef<HTMLDivElement | null>(null)
 
   const selectedProviderConfig = useMemo(
     () => STORAGE_PROVIDERS.find((provider) => provider.id === selectedProvider) ?? STORAGE_PROVIDERS[0],
@@ -475,6 +489,39 @@ function App() {
   useEffect(() => {
     setSortKey(getDefaultSortKey(activeView))
   }, [activeView])
+
+  useEffect(() => {
+    if (!isSortMenuOpen) {
+      return
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) {
+        return
+      }
+
+      if (sortMenuRef.current?.contains(target)) {
+        return
+      }
+
+      setIsSortMenuOpen(false)
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsSortMenuOpen(false)
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown)
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isSortMenuOpen])
 
   useEffect(() => {
     return () => {
@@ -1518,17 +1565,40 @@ function App() {
               </label>
 
               <div className="library-actions">
-                <label className="toolbar-select">
-                  <span>Sort</span>
-                  <select value={sortKey} onChange={(event) => setSortKey(event.target.value as UnifiedItemSortKey)}>
-                    <option value="updated-desc">Newest first</option>
-                    <option value="updated-asc">Oldest first</option>
-                    <option value="name-asc">Name A-Z</option>
-                    <option value="name-desc">Name Z-A</option>
-                    <option value="size-desc">Size large-small</option>
-                    <option value="size-asc">Size small-large</option>
-                  </select>
-                </label>
+                <div className={`toolbar-select ${isSortMenuOpen ? 'open' : ''}`} ref={sortMenuRef}>
+                  <button
+                    className="toolbar-select-trigger"
+                    type="button"
+                    aria-label="Sort files"
+                    aria-haspopup="menu"
+                    aria-expanded={isSortMenuOpen}
+                    onClick={() => setIsSortMenuOpen((current) => !current)}
+                  >
+                    <span className="toolbar-select-value">{getSortLabel(sortKey)}</span>
+                    <span className="toolbar-select-icon" aria-hidden="true">v</span>
+                  </button>
+
+                  {isSortMenuOpen ? (
+                    <div className="toolbar-select-menu" role="menu" aria-label="Sort files">
+                      {SORT_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          className={`toolbar-select-option ${sortKey === option.value ? 'active' : ''}`}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={sortKey === option.value}
+                          onClick={() => {
+                            setSortKey(option.value)
+                            setIsSortMenuOpen(false)
+                          }}
+                        >
+                          <span>{option.label}</span>
+                          {sortKey === option.value ? <span aria-hidden="true">•</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
 
                 <button className="issues-entry-button utility-icon-button" type="button" onClick={() => openIssuesModal()} aria-label="Open issues">
                   <span aria-hidden="true">!</span>
