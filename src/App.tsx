@@ -31,7 +31,6 @@ import {
 } from './features/storage/unifiedItems'
 import {
   applyDownloadProgressEvent,
-  getDownloadStateSummary,
   IDLE_DOWNLOAD_STATE,
   type DownloadAcceptedResult,
   type DownloadProgressEvent,
@@ -41,7 +40,6 @@ import {
 import {
   canOpenInDefaultApp,
   canPreviewItem,
-  getOpenStateSummary,
   IDLE_OPEN_STATE,
   toFailedOpenState,
   toPreparingOpenState,
@@ -125,7 +123,6 @@ type WorkspaceIssue = {
 type ToastNotice = {
   id: string
   issueId: string
-  expiresAt: number
 }
 
 type ProviderDefinition = {
@@ -168,29 +165,22 @@ const STORAGE_PROVIDERS: ProviderDefinition[] = [
 ]
 
 const PRIMARY_NAV_ITEMS: Array<{ id: LogicalView; label: string }> = [
-  { id: 'all-files', label: 'All Files' },
   { id: 'recent', label: 'Recent' },
   { id: 'documents', label: 'Documents' },
   { id: 'photos', label: 'Photos' },
   { id: 'videos', label: 'Videos' },
   { id: 'audio', label: 'Audio' },
   { id: 'other', label: 'Other' },
-  { id: 'transfers', label: 'Transfers' },
 ]
 const EMPTY_PENDING_MESSAGE = 'Complete authentication in your browser.'
 const PREVIEW_ASSET_PROTOCOL = 'asset'
 const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
 const CONNECT_SYNC_ATTEMPTS = 8
 const CONNECT_SYNC_DELAY_MS = 500
-const TRANSFER_SEARCH_FIELDS = ['displayName', 'relativePath', 'category', 'remoteName'] as const
 const TOAST_DURATION_MS = 4800
 
 function getDefaultSortKey(view: LogicalView): UnifiedItemSortKey {
   return view === 'recent' ? 'updated-desc' : 'name-asc'
-}
-
-function getResultSummaryLabel(count: number, query: string): string {
-  return `${count} item${count === 1 ? '' : 's'}${query.trim() ? ` for "${query.trim()}"` : ''}`
 }
 
 function inferIssueLevel(message: string): IssueLevel {
@@ -217,12 +207,19 @@ function toIssueId(message: string, source: string): string {
 }
 
 function formatIssueTimestamp(timestamp: number): string {
-  return new Date(timestamp).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  const parsed = new Date(timestamp)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return 'Unknown date'
+  }
+
+  const year = parsed.getFullYear()
+  const month = String(parsed.getMonth() + 1).padStart(2, '0')
+  const day = String(parsed.getDate()).padStart(2, '0')
+  const hour = String(parsed.getHours()).padStart(2, '0')
+  const minute = String(parsed.getMinutes()).padStart(2, '0')
+
+  return `${year}/${month}/${day} ${hour}:${minute}`
 }
 
 function describeIssueSource(source: string): string {
@@ -245,19 +242,60 @@ function describeIssueLocation(source: string): string {
   return 'Relevant place: Issues'
 }
 
+function getListItemStatusLabel(item: UnifiedItem, downloadState: DownloadState, openState: OpenState): string {
+  if (downloadState.status === 'failed') {
+    return 'Download failed'
+  }
+
+  if (openState.status === 'failed') {
+    return 'Open failed'
+  }
+
+  if (downloadState.status === 'queued' || downloadState.status === 'running') {
+    return 'Downloading'
+  }
+
+  if (downloadState.status === 'succeeded') {
+    return 'Downloaded'
+  }
+
+  if (openState.status === 'preparing') {
+    return canPreviewItem(item) ? 'Preparing preview' : 'Opening'
+  }
+
+  if (openState.status === 'ready') {
+    return openState.openMode === 'system-default' ? 'Opened' : 'Ready to preview'
+  }
+
+  if (item.isDir) {
+    return 'Folder'
+  }
+
+  if (canPreviewItem(item)) {
+    return 'Preview'
+  }
+
+  if (canOpenInDefaultApp(item)) {
+    return 'Ready'
+  }
+
+  return 'Ready'
+}
+
 function App() {
   const [activeModal, setActiveModal] = useState<ModalName>('none')
   const [addFlowStep, setAddFlowStep] = useState<AddFlowStep>('providers')
   const [selectedProvider, setSelectedProvider] = useState<StorageProvider>('onedrive')
-  const [activeView, setActiveView] = useState<LogicalView>('all-files')
+  const [activeView, setActiveView] = useState<LogicalView>('recent')
   const [searchQuery, setSearchQuery] = useState('')
-  const [sortKey, setSortKey] = useState<UnifiedItemSortKey>(getDefaultSortKey('all-files'))
+  const [sortKey, setSortKey] = useState<UnifiedItemSortKey>(getDefaultSortKey('recent'))
   const [remotes, setRemotes] = useState<RemoteSummary[]>([])
   const [unifiedItems, setUnifiedItems] = useState<UnifiedItem[]>([])
   const [workspaceIssues, setWorkspaceIssues] = useState<WorkspaceIssue[]>([])
   const [toastNotices, setToastNotices] = useState<ToastNotice[]>([])
   const [isIssuesModalOpen, setIsIssuesModalOpen] = useState(false)
   const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null)
+  const [isTransfersModalOpen, setIsTransfersModalOpen] = useState(false)
   const [hoveredRemote, setHoveredRemote] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
@@ -286,7 +324,7 @@ function App() {
   const [isUploadDragActive, setIsUploadDragActive] = useState(false)
   const [isUploadBrowseChooserOpen, setIsUploadBrowseChooserOpen] = useState(false)
   const [hasPendingUploadRefresh, setHasPendingUploadRefresh] = useState(false)
-  const [libraryLoadProgress, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
+  const [, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
     requestId: null,
     loadedRemoteCount: 0,
     totalRemoteCount: 0,
@@ -347,30 +385,7 @@ function App() {
       state: uploadStates[item.itemId] ?? IDLE_UPLOAD_STATE,
     }))
   }, [uploadBatch, uploadStates])
-  const displayedTransferItems = useMemo(() => {
-    const normalizedQuery = searchQuery.trim().toLowerCase()
-
-    return transferItems.filter(({ item, state }) => {
-      if (!normalizedQuery) {
-        return true
-      }
-
-      return TRANSFER_SEARCH_FIELDS.some((field) => {
-        const value = field === 'remoteName' ? state.remoteName : item[field]
-        return typeof value === 'string' && value.toLowerCase().includes(normalizedQuery)
-      })
-    })
-  }, [searchQuery, transferItems])
-
-  const isTransfersView = activeView === 'transfers'
-  const isVisualGrid = activeView === 'photos'
-  const currentResultCount = isTransfersView ? displayedTransferItems.length : displayedItems.length
-  const resultSummaryLabel = getResultSummaryLabel(currentResultCount, searchQuery)
   const currentViewLabel = getCategoryLabel(activeView)
-  const streamingStatusLabel =
-    isLibraryStreaming && libraryLoadProgress.totalRemoteCount > 0
-      ? `${libraryLoadProgress.loadedRemoteCount} / ${libraryLoadProgress.totalRemoteCount} storages loaded`
-      : null
 
   const dismissToast = (toastId: string) => {
     const timeoutId = toastTimeoutsRef.current[toastId]
@@ -450,7 +465,6 @@ function App() {
         return {
           id: toastId,
           issueId: issue.id,
-          expiresAt: Date.now() + TOAST_DURATION_MS,
         }
       })
 
@@ -1407,50 +1421,29 @@ function App() {
   const hasConnectedStorage = displayedRemotes.length > 0
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
-    !isTransfersView &&
-    hasConnectedStorage &&
-    !isLoadingItems &&
-    !isLibraryStreaming &&
-    !itemsError &&
-    displayedItems.length === 0
-  const shouldShowTransfersEmptyState =
-    isTransfersView && !uploadBatch?.items.length && !isPreparingUpload && !isStartingUpload
-  const shouldShowTransfersSearchEmptyState =
-    isTransfersView && !!uploadBatch?.items.length && displayedTransferItems.length === 0 && searchQuery.trim().length > 0
+    hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
+  const emptyListTitle = searchQuery ? `No files match "${searchQuery.trim()}".` : `No files in ${currentViewLabel} yet.`
+  const emptyListDescription = searchQuery
+    ? 'Try a different search or switch to another view.'
+    : 'Files added to this view will appear here.'
 
   return (
     <main className="workspace-shell">
       <aside className="storage-sidebar">
         <div className="sidebar-panel">
-          <div className="sidebar-header">
-            <div>
-              <p className="sidebar-kicker">Workspace</p>
-              <h2>Cloud Weave</h2>
-            </div>
-          </div>
-
           <div className="sidebar-list">
-            <section className="sidebar-section">
-              <p className="sidebar-section-label">Browse</p>
-              <nav className="sidebar-nav" aria-label="Workspace views">
-                {PRIMARY_NAV_ITEMS.map((item) => (
-                  <button
-                    key={item.id}
-                    className={`sidebar-nav-item ${activeView === item.id ? 'active' : ''}`}
-                    type="button"
-                    onClick={() => setActiveView(item.id)}
-                  >
-                    <span className="sidebar-nav-label">{item.label}</span>
-                    {item.id === 'all-files' ? (
-                      <span className="sidebar-nav-meta">{unifiedItems.length}</span>
-                    ) : null}
-                    {item.id === 'transfers' && uploadSummary.total > 0 ? (
-                      <span className="sidebar-nav-meta">{uploadSummary.active > 0 ? uploadSummary.active : uploadSummary.total}</span>
-                    ) : null}
-                  </button>
-                ))}
-              </nav>
-            </section>
+            <nav className="sidebar-nav" aria-label="Workspace views">
+              {PRIMARY_NAV_ITEMS.map((item) => (
+                <button
+                  key={item.id}
+                  className={`sidebar-nav-item ${activeView === item.id ? 'active' : ''}`}
+                  type="button"
+                  onClick={() => setActiveView(item.id)}
+                >
+                  <span className="sidebar-nav-label">{item.label}</span>
+                </button>
+              ))}
+            </nav>
 
             <section className="sidebar-section sidebar-section-storage">
               <div className="sidebar-section-heading">
@@ -1520,32 +1513,38 @@ function App() {
                   type="search"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search files, paths, or storage names"
+                  placeholder="Search files, paths, or sources"
                 />
               </label>
 
               <div className="library-actions">
-                <span className="library-result-summary">{resultSummaryLabel}</span>
-                {streamingStatusLabel ? <span className="library-inline-status">{streamingStatusLabel}</span> : null}
-                {!isTransfersView ? (
-                  <label className="toolbar-select">
-                    <span>Sort</span>
-                    <select value={sortKey} onChange={(event) => setSortKey(event.target.value as UnifiedItemSortKey)}>
-                      <option value="updated-desc">Newest first</option>
-                      <option value="updated-asc">Oldest first</option>
-                      <option value="name-asc">Name A-Z</option>
-                      <option value="name-desc">Name Z-A</option>
-                      <option value="size-desc">Size large-small</option>
-                      <option value="size-asc">Size small-large</option>
-                    </select>
-                  </label>
-                ) : null}
+                <label className="toolbar-select">
+                  <span>Sort</span>
+                  <select value={sortKey} onChange={(event) => setSortKey(event.target.value as UnifiedItemSortKey)}>
+                    <option value="updated-desc">Newest first</option>
+                    <option value="updated-asc">Oldest first</option>
+                    <option value="name-asc">Name A-Z</option>
+                    <option value="name-desc">Name Z-A</option>
+                    <option value="size-desc">Size large-small</option>
+                    <option value="size-asc">Size small-large</option>
+                  </select>
+                </label>
 
-                <button className="issues-entry-button" type="button" onClick={() => openIssuesModal()} aria-label="Open issues">
+                <button className="issues-entry-button utility-icon-button" type="button" onClick={() => openIssuesModal()} aria-label="Open issues">
                   <span aria-hidden="true">!</span>
-                  <span>Issues</span>
                   {workspaceIssues.length > 0 ? (
                     <span className="issues-entry-badge">{unreadIssueCount > 0 ? unreadIssueCount : workspaceIssues.length}</span>
+                  ) : null}
+                </button>
+                <button
+                  className="issues-entry-button utility-icon-button"
+                  type="button"
+                  onClick={() => setIsTransfersModalOpen(true)}
+                  aria-label="Open transfers"
+                >
+                  <span aria-hidden="true">^</span>
+                  {uploadSummary.total > 0 ? (
+                    <span className="issues-entry-badge">{uploadSummary.active > 0 ? uploadSummary.active : uploadSummary.total}</span>
                   ) : null}
                 </button>
                 <button className="primary-button" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
@@ -1567,114 +1566,79 @@ function App() {
                 <p className="eyebrow">Unified Library</p>
                 <h1>Your files will appear here.</h1>
                 <p>Connect a storage from the sidebar to start browsing everything in one place.</p>
-                <button className="primary-button" type="button" onClick={openAddModal}>
-                  Connect storage
-                </button>
+                <div className="empty-state-actions">
+                  <button className="ghost-button" type="button" onClick={openAddModal}>
+                    Connect storage
+                  </button>
+                  <button className="primary-button" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
+                    Upload
+                  </button>
+                </div>
               </div>
             ) : null}
 
-            {shouldShowTransfersEmptyState ? (
-              <div className="main-empty-state compact">
-                <p className="eyebrow">Transfers</p>
-                <h2>No transfers yet.</h2>
-                <p>Uploads will appear here once you start sending files to Cloud Weave.</p>
-              </div>
-            ) : null}
+            {((!isLoadingItems || unifiedItems.length > 0) && !itemsError && hasConnectedStorage) ? (
+              activeView === 'recent' ? (
+                shouldShowCategoryEmptyState ? (
+                  <>
+                    <ListHeader />
+                    <div className="empty-list-state" role="status" aria-live="polite">
+                      <div className="empty-list-copy">
+                        <p className="empty-list-title">{emptyListTitle}</p>
+                        <p className="empty-list-description">{emptyListDescription}</p>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="recent-groups">
+                    {groupedRecentItems.map((group) => (
+                      <section key={group.label} className="recent-group">
+                        <div className="section-heading">
+                          <h3>{group.label}</h3>
+                          <span>{group.items.length}</span>
+                        </div>
 
-            {shouldShowTransfersSearchEmptyState ? (
-              <div className="main-empty-state compact">
-                <p className="eyebrow">Transfers</p>
-                <h2>No matching transfers.</h2>
-                <p>Try a different search or clear the current query.</p>
-              </div>
-            ) : null}
-
-            {shouldShowCategoryEmptyState ? (
-              <div className="main-empty-state compact">
-                <p className="eyebrow">{currentViewLabel}</p>
-                <h2>No matching files.</h2>
-                <p>
-                  {searchQuery
-                    ? 'Try a different search or switch to another view.'
-                    : `There are no files in ${currentViewLabel.toLowerCase()} right now.`}
-                </p>
-              </div>
-            ) : null}
-
-            {isTransfersView ? (
-              displayedTransferItems.length > 0 ? (
-                <section className="transfers-section">
-                  <div className="section-heading">
-                    <h3>Transfers</h3>
-                    <span>{displayedTransferItems.length}</span>
-                  </div>
-                  <div className="transfer-list-header" aria-hidden="true">
-                    <span>Transfer</span>
-                    <span>Destination</span>
-                    <span>Status</span>
-                    <span>Source path</span>
-                  </div>
-                  <div className="transfer-list" role="list" aria-label="Transfers">
-                    {displayedTransferItems.map(({ item, state }) => (
-                      <TransferListItem key={item.itemId} item={item} state={state} />
+                        <ListHeader />
+                        <div className="item-list">
+                          {group.items.map((item) => (
+                            <UnifiedListItem
+                              key={item.id}
+                              item={item}
+                              downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                              openState={openStates[item.id] ?? IDLE_OPEN_STATE}
+                              onOpen={handleOpen}
+                              onDownload={handleDownload}
+                            />
+                          ))}
+                        </div>
+                      </section>
                     ))}
                   </div>
-                </section>
-              ) : null
-            ) : ((!isLoadingItems || unifiedItems.length > 0) && !itemsError && displayedItems.length > 0) ? (
-              activeView === 'recent' ? (
-                <div className="recent-groups">
-                  {groupedRecentItems.map((group) => (
-                    <section key={group.label} className="recent-group">
-                      <div className="section-heading">
-                        <h3>{group.label}</h3>
-                        <span>{group.items.length}</span>
-                      </div>
-
-                      <ListHeader />
-                      <div className="item-list">
-                        {group.items.map((item) => (
-                          <UnifiedListItem
-                            key={item.id}
-                            item={item}
-                            downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
-                            openState={openStates[item.id] ?? IDLE_OPEN_STATE}
-                            onOpen={handleOpen}
-                            onDownload={handleDownload}
-                          />
-                        ))}
-                      </div>
-                    </section>
-                  ))}
-                </div>
-              ) : isVisualGrid ? (
-                <div className="item-grid">
-                  {displayedItems.map((item) => (
-                    <UnifiedGridItem
-                      key={item.id}
-                      item={item}
-                      downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
-                      openState={openStates[item.id] ?? IDLE_OPEN_STATE}
-                      onOpen={handleOpen}
-                      onDownload={handleDownload}
-                    />
-                  ))}
-                </div>
+                )
               ) : (
                 <>
                   <ListHeader />
-                  <div className="item-list">
-                    {displayedItems.map((item) => (
-                      <UnifiedListItem
-                        key={item.id}
-                        item={item}
-                        downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
-                        openState={openStates[item.id] ?? IDLE_OPEN_STATE}
-                        onOpen={handleOpen}
-                        onDownload={handleDownload}
-                      />
-                    ))}
-                  </div>
+                  {shouldShowCategoryEmptyState ? (
+                    <div className="empty-list-state" role="status" aria-live="polite">
+                      <div className="empty-list-copy">
+                        <p className="empty-list-title">{emptyListTitle}</p>
+                        <p className="empty-list-description">{emptyListDescription}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="item-list">
+                      {displayedItems.map((item) => (
+                        <UnifiedListItem
+                          key={item.id}
+                          item={item}
+                          downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                          openState={openStates[item.id] ?? IDLE_OPEN_STATE}
+                          onOpen={handleOpen}
+                          onDownload={handleDownload}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </>
               )
             ) : null}
@@ -1698,6 +1662,22 @@ function App() {
         </div>
       ) : null}
 
+      {uploadSummary.total > 0 ? (
+        <div className="transfer-tray" aria-live="polite">
+          <div className="transfer-tray-copy">
+            <p>{uploadSummary.label}</p>
+            <span>
+              {uploadSummary.active > 0
+                ? `${uploadSummary.active} in progress`
+                : `${uploadSummary.completed} complete • ${uploadSummary.failed} failed`}
+            </span>
+          </div>
+          <button className="ghost-button transfer-tray-action" type="button" onClick={() => setIsTransfersModalOpen(true)}>
+            View transfers
+          </button>
+        </div>
+      ) : null}
+
       {previewPayload ? (
         <PreviewModal
           payload={previewPayload}
@@ -1716,9 +1696,16 @@ function App() {
         />
       ) : null}
 
+      {isTransfersModalOpen ? (
+        <TransfersModal
+          items={transferItems}
+          onClose={() => setIsTransfersModalOpen(false)}
+        />
+      ) : null}
+
       {activeModal === 'add-storage' ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="full-modal" role="dialog" aria-modal="true" aria-labelledby="add-storage-title">
+        <div className="modal-overlay" role="presentation" onClick={closeAddModal}>
+          <div className="full-modal" role="dialog" aria-modal="true" aria-labelledby="add-storage-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">Add Storage</p>
@@ -1799,8 +1786,8 @@ function App() {
       ) : null}
 
       {activeModal === 'oauth-pending' && pendingSession ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="full-modal pending-modal" role="dialog" aria-modal="true" aria-labelledby="pending-title">
+        <div className="modal-overlay" role="presentation" onClick={closePendingModal}>
+          <div className="full-modal pending-modal" role="dialog" aria-modal="true" aria-labelledby="pending-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">{pendingSession.provider}</p>
@@ -1911,9 +1898,6 @@ function App() {
             <div className="modal-actions">
               {pendingSession.status === 'error' ? (
                 <>
-                  <button className="ghost-button" type="button" onClick={closePendingModal}>
-                    Close
-                  </button>
                   {!pendingHasCallbackStartupFailure ? (
                     <button className="primary-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
                       Remove and connect again
@@ -1941,19 +1925,15 @@ function App() {
                 <button className="primary-button" type="button" onClick={handlePendingDone}>
                   Done
                 </button>
-              ) : (
-                <button className="ghost-button" type="button" onClick={closePendingModal}>
-                  Close
-                </button>
-              )}
+              ) : null}
             </div>
           </div>
         </div>
       ) : null}
 
       {activeModal === 'remove-confirm' && removeTarget ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="remove-title">
+        <div className="modal-overlay" role="presentation" onClick={() => setActiveModal('none')}>
+          <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="remove-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">Remove Storage</p>
@@ -1989,8 +1969,8 @@ function App() {
       ) : null}
 
       {activeModal === 'upload' ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="full-modal upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
+        <div className="modal-overlay" role="presentation" onClick={closeUploadModal}>
+          <div className="full-modal upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">Upload</p>
@@ -2104,9 +2084,6 @@ function App() {
               <button className="ghost-button" type="button" onClick={resetUploadBatch} disabled={uploadSummary.active > 0}>
                 Clear
               </button>
-              <button className="ghost-button" type="button" onClick={closeUploadModal}>
-                Close
-              </button>
               <button className="primary-button" type="button" onClick={() => void handleStartUpload()} disabled={!canStartUpload}>
                 {isPreparingUpload ? 'Preparing...' : isStartingUpload ? 'Starting...' : 'Start upload'}
               </button>
@@ -2137,9 +2114,31 @@ function UnifiedListItem({
   const isPreparingOpen = openState.status === 'preparing'
   const actionLabel =
     downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
+  const canPrimaryOpen = canPreview || canOpen
+  const hasActions = !item.isDir
+  const statusLabel = getListItemStatusLabel(item, downloadState, openState)
 
   return (
-    <article className="unified-item list-item">
+    <article
+      className="unified-item list-item"
+      data-row-id={item.id}
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) {
+          return
+        }
+
+        if (event.key === 'Enter' && canPrimaryOpen) {
+          event.preventDefault()
+          void onOpen(item)
+        }
+      }}
+      onDoubleClick={() => {
+        if (canPrimaryOpen) {
+          void onOpen(item)
+        }
+      }}
+    >
       <div className="item-primary">
         <div className="item-leading">
           <span className={`item-monogram ${item.category}`} aria-hidden="true">
@@ -2150,16 +2149,11 @@ function UnifiedListItem({
         <div className="item-copy">
           <div className="item-title-row">
             <p className="item-name">{item.name}</p>
-            <span className="source-badge">{item.sourceRemote}</span>
-          </div>
-
-          <div className="item-meta">
-            <span>{getProviderLabel(item.sourceProvider)}</span>
-            <span>{item.isDir ? 'Folder' : 'File'}</span>
           </div>
         </div>
       </div>
 
+      <p className="item-cell item-storage-cell">{item.sourceRemote}</p>
       <div className="item-path-cell">
         <p className="item-path">{item.sourcePath}</p>
       </div>
@@ -2168,125 +2162,36 @@ function UnifiedListItem({
       <p className="item-cell item-size-cell">{formatFileSize(item.size)}</p>
 
       <div className="item-status-cell">
-        {canPreview ? (
-          <p className="item-status-label">Preview available</p>
-        ) : canOpen ? (
-          <p className="item-status-label">Open available</p>
-        ) : (
-          <p className="item-status-label">{item.isDir ? 'Folder' : 'Ready'}</p>
-        )}
-        <div className="item-status-stack">
-          <OpenStatusView state={openState} />
-          <DownloadStatusView state={downloadState} />
-        </div>
+        <p className={`item-status-label ${downloadState.status === 'failed' || openState.status === 'failed' ? 'danger' : ''}`}>{statusLabel}</p>
       </div>
 
-      <div className="item-actions">
-        {canPreview ? (
-          <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
+      <div className="item-actions" aria-label="Row actions">
+        {hasActions && canPreview ? (
+          <button
+            className="row-action primary-open-action"
+            type="button"
+            onClick={() => void onOpen(item)}
+            disabled={isPreparingOpen || item.isDir}
+          >
             {isPreparingOpen ? 'Previewing...' : 'Preview'}
           </button>
-        ) : canOpen ? (
-          <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
+        ) : hasActions && canOpen ? (
+          <button
+            className="row-action primary-open-action"
+            type="button"
+            onClick={() => void onOpen(item)}
+            disabled={isPreparingOpen || item.isDir}
+          >
             {isPreparingOpen ? 'Opening...' : 'Open'}
           </button>
         ) : null}
-        <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
-          {actionLabel}
-        </button>
-      </div>
-    </article>
-  )
-}
-
-function UnifiedGridItem({
-  item,
-  downloadState,
-  openState,
-  onOpen,
-  onDownload,
-}: {
-  item: UnifiedItem
-  downloadState: DownloadState
-  openState: OpenState
-  onOpen: (item: UnifiedItem) => Promise<void>
-  onDownload: (item: UnifiedItem) => Promise<void>
-}) {
-  const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
-  const canPreview = canPreviewItem(item)
-  const canOpen = canOpenInDefaultApp(item)
-  const isPreparingOpen = openState.status === 'preparing'
-  const actionLabel =
-    downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
-
-  return (
-    <article className="unified-item grid-item">
-      <div className={`grid-preview ${item.category}`}>
-        <span className="source-badge">{item.sourceRemote}</span>
-      </div>
-
-      <div className="grid-copy">
-        <p className="item-name">{item.name}</p>
-        <div className="item-meta">
-          <span>{getProviderLabel(item.sourceProvider)}</span>
-          <span>{formatFileSize(item.size)}</span>
-        </div>
-        <p className="grid-path">{item.sourcePath}</p>
-        <p className="grid-date">{formatModifiedTime(item.modTime)}</p>
-        <div className="grid-actions">
-          {canPreview ? (
-            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
-              {isPreparingOpen ? 'Previewing...' : 'Preview'}
-            </button>
-          ) : canOpen ? (
-            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
-              {isPreparingOpen ? 'Opening...' : 'Open'}
-            </button>
-          ) : null}
+        {!item.isDir ? (
           <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
             {actionLabel}
           </button>
-          <OpenStatusView state={openState} />
-          <DownloadStatusView state={downloadState} />
-        </div>
+        ) : null}
       </div>
     </article>
-  )
-}
-
-function OpenStatusView({ state }: { state: OpenState }) {
-  const summary = getOpenStateSummary(state)
-
-  if (!summary) {
-    return null
-  }
-
-  return (
-    <div className={`open-status ${state.status}`} aria-live="polite">
-      <p className="open-status-copy">{summary}</p>
-    </div>
-  )
-}
-
-function DownloadStatusView({ state }: { state: DownloadState }) {
-  if (state.status === 'idle') {
-    return null
-  }
-
-  const isRunning = state.status === 'queued' || state.status === 'running'
-
-  return (
-    <div className={`download-status ${state.status}`} aria-live="polite">
-      <p className="download-status-copy">{getDownloadStateSummary(state)}</p>
-      {isRunning ? (
-        <div className="download-progress" aria-hidden="true">
-          <div
-            className="download-progress-fill"
-            style={{ width: `${Math.max(6, Math.min(100, state.progressPercent ?? 8))}%` }}
-          />
-        </div>
-      ) : null}
-    </div>
   )
 }
 
@@ -2330,11 +2235,11 @@ function ListHeader() {
   return (
     <div className="item-list-header" aria-hidden="true">
       <span>Name</span>
+      <span>Storage</span>
       <span>Path</span>
       <span>Modified</span>
       <span>Size</span>
       <span>Status</span>
-      <span>Actions</span>
     </div>
   )
 }
@@ -2347,25 +2252,15 @@ function TransferListItem({
   state: UploadState
 }) {
   const isRunning = state.status === 'queued' || state.status === 'running' || state.status === 'retrying'
+  const transferPath = state.remotePath ?? item.relativePath
+  const storageLabel = state.remoteName ?? item.candidates[0]?.remoteName ?? 'Pending destination'
 
   return (
     <article className="transfer-item" role="listitem">
-      <div className="transfer-primary">
-        <div className="item-title-row">
-          <p className="item-name">{item.displayName}</p>
-          <span className="source-badge">{item.category}</span>
-        </div>
-        <p className="transfer-meta">{formatUploadItemMeta(item)}</p>
-      </div>
-
-      <p className="transfer-destination">{describeUploadTarget(item)}</p>
-
       <div className="transfer-status">
         <span className={`storage-status-badge ${state.status === 'failed' ? 'warning' : 'neutral'}`}>
           {toTransferBadgeLabel(state)}
         </span>
-        <p>{getUploadStateSummary(state)}</p>
-        {state.remoteName ? <p className="transfer-remote">{state.remoteName}</p> : null}
         {isRunning ? (
           <div className="download-progress" aria-hidden="true">
             <div className="download-progress-fill upload-progress-fill" />
@@ -2373,7 +2268,8 @@ function TransferListItem({
         ) : null}
       </div>
 
-      <p className="transfer-path">{item.relativePath}</p>
+      <p className="transfer-path">{transferPath}</p>
+      <p className="transfer-storage">{storageLabel}</p>
     </article>
   )
 }
@@ -2403,8 +2299,8 @@ function IssuesModal({
   onClose: () => void
 }) {
   return (
-    <div className="modal-overlay" role="presentation">
-      <div className="issues-modal" role="dialog" aria-modal="true" aria-labelledby="issues-title">
+    <div className="modal-overlay" role="presentation" onClick={onClose}>
+      <div className="issues-modal" role="dialog" aria-modal="true" aria-labelledby="issues-title" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
             <p className="eyebrow">Issues</p>
@@ -2442,6 +2338,52 @@ function IssuesModal({
               </article>
             ))}
           </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function TransfersModal({
+  items,
+  onClose,
+}: {
+  items: Array<{ item: PreparedUploadItem; state: UploadState }>
+  onClose: () => void
+}) {
+  return (
+    <div className="modal-overlay" role="presentation" onClick={onClose}>
+      <div className="issues-modal transfers-modal" role="dialog" aria-modal="true" aria-labelledby="transfers-title" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">Transfers</p>
+            <h2 id="transfers-title">Upload activity</h2>
+          </div>
+
+          <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close transfers modal">
+            ×
+          </button>
+        </div>
+
+        {items.length === 0 ? (
+          <div className="main-empty-state compact issues-empty-state">
+            <p className="eyebrow">Transfers</p>
+            <h2>No transfers yet.</h2>
+            <p>Uploads will appear here after you start sending files to Cloud Weave.</p>
+          </div>
+        ) : (
+          <>
+            <div className="transfer-list-header" aria-hidden="true">
+              <span>Status</span>
+              <span>Path</span>
+              <span>Storage</span>
+            </div>
+            <div className="transfer-list" role="list" aria-label="Transfers">
+              {items.map(({ item, state }) => (
+                <TransferListItem key={item.itemId} item={item} state={state} />
+              ))}
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -2502,8 +2444,8 @@ function PreviewModal({
   }, [assetUrl, payload.previewKind])
 
   return (
-    <div className="modal-overlay" role="presentation">
-      <div className="preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+    <div className="modal-overlay" role="presentation" onClick={onClose}>
+      <div className="preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
             <p className="eyebrow">{payload.previewKind === 'image' ? 'Image Preview' : 'PDF Preview'}</p>
@@ -2534,12 +2476,6 @@ function PreviewModal({
               <p>Loading preview...</p>
             </div>
           )}
-        </div>
-
-        <div className="modal-actions">
-          <button className="ghost-button" type="button" onClick={onClose}>
-            Close
-          </button>
         </div>
       </div>
     </div>

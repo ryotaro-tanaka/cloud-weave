@@ -1,6 +1,6 @@
 export type UnifiedCategory = 'documents' | 'photos' | 'videos' | 'audio' | 'other'
 
-export type LogicalView = 'all-files' | 'recent' | UnifiedCategory | 'transfers'
+export type LogicalView = 'recent' | UnifiedCategory
 export type UnifiedItemSortKey = 'updated-desc' | 'updated-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc'
 
 export type UnifiedItem = {
@@ -23,16 +23,8 @@ export type RecentGroup = {
 }
 
 export function filterItemsByView(items: UnifiedItem[], view: LogicalView): UnifiedItem[] {
-  if (view === 'all-files') {
-    return items
-  }
-
   if (view === 'recent') {
     return sortItemsByRecent(items)
-  }
-
-  if (view === 'transfers') {
-    return []
   }
 
   return items.filter((item) => item.category === view)
@@ -112,19 +104,17 @@ export function formatModifiedTime(modTime: string | null): string {
     return 'Unknown date'
   }
 
-  return parsed.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  const year = parsed.getFullYear()
+  const month = String(parsed.getMonth() + 1).padStart(2, '0')
+  const day = String(parsed.getDate()).padStart(2, '0')
+  const hour = String(parsed.getHours()).padStart(2, '0')
+  const minute = String(parsed.getMinutes()).padStart(2, '0')
+
+  return `${year}/${month}/${day} ${hour}:${minute}`
 }
 
 export function getCategoryLabel(view: LogicalView): string {
   switch (view) {
-    case 'all-files':
-      return 'All Files'
     case 'recent':
       return 'Recent'
     case 'documents':
@@ -137,8 +127,6 @@ export function getCategoryLabel(view: LogicalView): string {
       return 'Audio'
     case 'other':
       return 'Other'
-    case 'transfers':
-      return 'Transfers'
   }
 }
 
