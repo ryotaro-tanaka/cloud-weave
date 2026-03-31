@@ -6,9 +6,7 @@
   align-items: center;
   justify-content: center;
   padding: 32px;
-  background:
-    radial-gradient(circle at top, rgba(55, 77, 120, 0.18), transparent 42%),
-    linear-gradient(180deg, #171e2c, #141b28);
+  background: var(--startup-splash-bg);
   transition: opacity 0.26s ease, visibility 0.26s ease;
 }
 

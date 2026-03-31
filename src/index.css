@@ -1,4 +1,7 @@
 :root {
+  --startup-splash-bg:
+    radial-gradient(circle at top, rgba(55, 77, 120, 0.18), transparent 42%),
+    linear-gradient(180deg, #171e2c, #141b28);
   --text-primary: #0f172a;
   --text-secondary: #5f6b7d;
   --text-inverse: #f8fbff;
@@ -104,6 +107,11 @@ body,
   height: 100%;
 }
 
+html,
+body {
+  background: #141b28;
+}
+
 #root {
   width: 100%;
   margin: 0;
@@ -118,6 +126,52 @@ body,
 body {
   margin: 0;
   overflow: hidden;
+}
+
+.startup-static-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: var(--startup-splash-bg);
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.18s ease, visibility 0.18s ease;
+}
+
+.startup-static-splash.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.startup-static-splash-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(20px, 3vw, 36px);
+  max-width: min(1080px, 100%);
+}
+
+.startup-static-splash-icon {
+  width: clamp(96px, 14vw, 180px);
+  aspect-ratio: 1;
+  border-radius: 24%;
+  background: linear-gradient(135deg, #2f80ff, #25c6d9);
+  box-shadow: 0 20px 32px rgba(6, 12, 24, 0.28);
+}
+
+.startup-static-splash-wordmark {
+  margin: 0;
+  color: #f8fbff;
+  font-family: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+  font-size: clamp(40px, 7vw, 112px);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.04em;
 }
 
 h1,
@@ -152,6 +206,22 @@ h3 {
 }
 p {
   margin: 0;
+}
+
+@media (max-width: 640px) {
+  .startup-static-splash {
+    padding: 24px;
+  }
+
+  .startup-static-splash-brand {
+    flex-direction: column;
+    gap: 18px;
+    text-align: center;
+  }
+
+  .startup-static-splash-wordmark {
+    font-size: clamp(34px, 11vw, 64px);
+  }
 }
 
 code,

@@ -190,7 +190,7 @@ const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
 const CONNECT_SYNC_ATTEMPTS = 8
 const CONNECT_SYNC_DELAY_MS = 500
 const TOAST_DURATION_MS = 5000
-const STARTUP_SPLASH_VISIBLE_MS = 1200
+const STARTUP_SPLASH_VISIBLE_MS = 3000
 const STARTUP_SPLASH_FADE_MS = 260
 const SORT_OPTIONS: Array<{ value: UnifiedItemSortKey; label: string }> = [
   { value: 'updated-desc', label: 'Newest' },
@@ -561,6 +561,8 @@ function App() {
   }, [isSortMenuOpen])
 
   useEffect(() => {
+    document.getElementById('startup-static-splash')?.classList.add('is-hidden')
+
     const exitTimer = window.setTimeout(() => {
       setIsStartupSplashExiting(true)
     }, STARTUP_SPLASH_VISIBLE_MS)
