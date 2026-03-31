@@ -2187,6 +2187,7 @@ function UnifiedListItem({
   const canPrimaryOpen = canPreview || canOpen
   const hasActions = !item.isDir
   const statusLabel = getListItemStatusLabel(item, downloadState, openState)
+  const listPath = formatListPath(item)
 
   return (
     <article
@@ -2225,7 +2226,12 @@ function UnifiedListItem({
 
       <p className="item-cell item-storage-cell">{item.sourceRemote}</p>
       <div className="item-path-cell">
-        <p className="item-path">{item.sourcePath}</p>
+        <div className="item-path-anchor">
+          <p className="item-path">{listPath}</p>
+          <span className="path-tooltip" role="tooltip">
+            {listPath}
+          </span>
+        </div>
       </div>
 
       <p className="item-cell item-modified-cell">{formatModifiedTime(item.modTime)}</p>
@@ -2565,6 +2571,28 @@ function getProviderLabel(provider: string): string {
     default:
       return provider
   }
+}
+
+function formatListPath(item: UnifiedItem): string {
+  const normalizedPath = item.sourcePath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+
+  if (!normalizedPath) {
+    return '/'
+  }
+
+  if (item.isDir) {
+    return `/${normalizedPath}`
+  }
+
+  const lastSeparatorIndex = normalizedPath.lastIndexOf('/')
+
+  if (lastSeparatorIndex < 0) {
+    return '/'
+  }
+
+  const parentPath = normalizedPath.slice(0, lastSeparatorIndex)
+
+  return parentPath ? `/${parentPath}` : '/'
 }
 
 function normalizeDialogSelection(selection: string | string[] | null): string[] {
