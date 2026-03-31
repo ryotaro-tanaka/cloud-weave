@@ -130,6 +130,10 @@ type ToastNotice = {
   actionLabel?: string
   action?: ToastAction
 }
+type PreparingUploadItem = {
+  id: string
+  displayName: string
+}
 
 type ProviderDefinition = {
   id: StorageProvider
@@ -335,6 +339,7 @@ function App() {
   const [openStates, setOpenStates] = useState<OpenStateMap>({})
   const [uploadStates, setUploadStates] = useState<UploadStateMap>({})
   const [uploadBatch, setUploadBatch] = useState<PreparedUploadBatch | null>(null)
+  const [preparingUploadItems, setPreparingUploadItems] = useState<PreparingUploadItem[]>([])
   const [previewPayload, setPreviewPayload] = useState<PreviewPayload | null>(null)
   const [uploadError, setUploadError] = useState('')
   const [isPreparingUpload, setIsPreparingUpload] = useState(false)
@@ -396,6 +401,7 @@ function App() {
   }, [uploadBatch, uploadStates])
   const hasUploadItems = uploadListItems.length > 0
   const hasReadyUploads = uploadListItems.some(({ state }) => state.status === 'idle')
+  const shouldShowPreparingUploadList = isPreparingUpload && preparingUploadItems.length > 0
   const currentViewLabel = getCategoryLabel(activeView)
 
   const dismissToast = (toastId: string) => {
@@ -910,6 +916,9 @@ function App() {
   const closeUploadModal = () => {
     setActiveModal('none')
     setIsUploadDragActive(false)
+    if (!isPreparingUpload) {
+      setPreparingUploadItems([])
+    }
   }
 
   const closeAddModal = () => {
@@ -1321,6 +1330,7 @@ function App() {
 
   const resetUploadBatch = () => {
     setUploadBatch(null)
+    setPreparingUploadItems([])
     setUploadStates({})
     setUploadError('')
     setIsPreparingUpload(false)
@@ -1334,6 +1344,12 @@ function App() {
       return
     }
 
+    setPreparingUploadItems(
+      selections.map((selection, index) => ({
+        id: `${selection.kind}:${selection.path}:${index}`,
+        displayName: getUploadSelectionDisplayName(selection.path),
+      })),
+    )
     setIsPreparingUpload(true)
     setUploadError('')
 
@@ -1369,6 +1385,7 @@ function App() {
       setActiveModal('upload')
     } finally {
       setIsPreparingUpload(false)
+      setPreparingUploadItems([])
     }
   }
 
@@ -1511,6 +1528,8 @@ function App() {
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
     hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
+  const shouldShowLoadingList = isLoadingItems && hasConnectedStorage && unifiedItems.length === 0 && !itemsError
+  const shouldShowStreamingTail = isLibraryStreaming && unifiedItems.length > 0 && !itemsError
   const emptyListTitle = searchQuery ? `No files match "${searchQuery.trim()}".` : `No files in ${currentViewLabel} yet.`
   const emptyListDescription = searchQuery
     ? 'Try a different search or switch to another view.'
@@ -1657,9 +1676,6 @@ function App() {
           </header>
 
           <div className="library-content">
-            {isLoadingItems && hasConnectedStorage && unifiedItems.length === 0 ? (
-              <p className="empty-state">Loading your unified library...</p>
-            ) : null}
             {!isLoadingItems && itemsError ? <p className="error-text">{itemsError}</p> : null}
 
             {shouldShowNoStorageState ? (
@@ -1678,7 +1694,17 @@ function App() {
               </div>
             ) : null}
 
-            {((!isLoadingItems || unifiedItems.length > 0) && !itemsError && hasConnectedStorage) ? (
+            {shouldShowLoadingList ? (
+              <>
+                <p className="loading-list-copy" role="status" aria-live="polite">
+                  Loading files...
+                </p>
+                <ListHeader />
+                <LoadingList />
+              </>
+            ) : null}
+
+            {((!isLoadingItems || unifiedItems.length > 0) && !itemsError && hasConnectedStorage && !shouldShowLoadingList) ? (
               activeView === 'recent' ? (
                 shouldShowCategoryEmptyState ? (
                   <>
@@ -1691,30 +1717,33 @@ function App() {
                     </div>
                   </>
                 ) : (
-                  <div className="recent-groups">
-                    {groupedRecentItems.map((group) => (
-                      <section key={group.label} className="recent-group">
-                        <div className="section-heading">
-                          <h3>{group.label}</h3>
-                          <span>{group.items.length}</span>
-                        </div>
+                  <>
+                    <div className="recent-groups">
+                      {groupedRecentItems.map((group) => (
+                        <section key={group.label} className="recent-group">
+                          <div className="section-heading">
+                            <h3>{group.label}</h3>
+                            <span>{group.items.length}</span>
+                          </div>
 
-                        <ListHeader />
-                        <div className="item-list">
-                          {group.items.map((item) => (
-                            <UnifiedListItem
-                              key={item.id}
-                              item={item}
-                              downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
-                              openState={openStates[item.id] ?? IDLE_OPEN_STATE}
-                              onOpen={handleOpen}
-                              onDownload={handleDownload}
-                            />
-                          ))}
-                        </div>
-                      </section>
-                    ))}
-                  </div>
+                          <ListHeader />
+                          <div className="item-list">
+                            {group.items.map((item) => (
+                              <UnifiedListItem
+                                key={item.id}
+                                item={item}
+                                downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                                openState={openStates[item.id] ?? IDLE_OPEN_STATE}
+                                onOpen={handleOpen}
+                                onDownload={handleDownload}
+                              />
+                            ))}
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+                    {shouldShowStreamingTail ? <StreamingLoadingTail /> : null}
+                  </>
                 )
               ) : (
                 <>
@@ -1727,18 +1756,21 @@ function App() {
                       </div>
                     </div>
                   ) : (
-                    <div className="item-list">
-                      {displayedItems.map((item) => (
-                        <UnifiedListItem
-                          key={item.id}
-                          item={item}
-                          downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
-                          openState={openStates[item.id] ?? IDLE_OPEN_STATE}
-                          onOpen={handleOpen}
-                          onDownload={handleDownload}
-                        />
-                      ))}
-                    </div>
+                    <>
+                      <div className="item-list">
+                        {displayedItems.map((item) => (
+                          <UnifiedListItem
+                            key={item.id}
+                            item={item}
+                            downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                            openState={openStates[item.id] ?? IDLE_OPEN_STATE}
+                            onOpen={handleOpen}
+                            onDownload={handleDownload}
+                          />
+                        ))}
+                      </div>
+                      {shouldShowStreamingTail ? <StreamingLoadingTail /> : null}
+                    </>
                   )}
                 </>
               )
@@ -2096,13 +2128,6 @@ function App() {
                 </div>
               </div>
 
-              {isPreparingUpload ? (
-                <div className="upload-preparing-state" role="status" aria-live="polite">
-                  <p className="upload-preparing-title">Preparing upload list...</p>
-                  <p className="upload-preparing-copy">Checking files and destinations.</p>
-                </div>
-              ) : null}
-
               {uploadBatch?.notices.map((notice) => (
                 <p key={notice} className="pending-help">
                   {notice}
@@ -2110,7 +2135,13 @@ function App() {
               ))}
               {uploadError ? <p className="error-text">{uploadError}</p> : null}
 
-              {hasUploadItems ? (
+              {shouldShowPreparingUploadList ? (
+                <p className="upload-preparing-summary" role="status" aria-live="polite">
+                  {preparingUploadItems.length} file{preparingUploadItems.length === 1 ? '' : 's'} selected
+                </p>
+              ) : null}
+
+              {hasUploadItems || shouldShowPreparingUploadList ? (
                 <>
                   <div className="upload-list-header" aria-hidden="true">
                     <span>Name</span>
@@ -2121,6 +2152,9 @@ function App() {
                   <div className="upload-queue" role="list" aria-label="Upload list">
                     {uploadListItems.map(({ item, state }) => (
                       <UploadListItem key={item.itemId} item={item} state={state} />
+                    ))}
+                    {preparingUploadItems.map((item) => (
+                      <PreparingUploadListItem key={item.id} item={item} />
                     ))}
                   </div>
                 </>
@@ -2270,6 +2304,21 @@ function UploadListItem({
   )
 }
 
+function PreparingUploadListItem({ item }: { item: PreparingUploadItem }) {
+  return (
+    <article className="upload-queue-item preparing" role="listitem" aria-hidden="true">
+      <p className="upload-item-name">{item.displayName}</p>
+      <p className="upload-item-status">Preparing...</p>
+      <p className="upload-item-path">
+        <span className="upload-skeleton path" />
+      </p>
+      <p className="upload-item-storage">
+        <span className="upload-skeleton storage" />
+      </p>
+    </article>
+  )
+}
+
 function ListHeader() {
   return (
     <div className="item-list-header" aria-hidden="true">
@@ -2280,6 +2329,61 @@ function ListHeader() {
       <span>Size</span>
       <span>Status</span>
     </div>
+  )
+}
+
+function LoadingList({ count = 6, className = '' }: { count?: number; className?: string }) {
+  const classes = className ? `loading-list ${className}` : 'loading-list'
+
+  return (
+    <div className={classes} aria-hidden="true">
+      {Array.from({ length: count }, (_, index) => (
+        <article key={`loading-row-${index}`} className="unified-item list-item loading-row">
+          <div className="item-primary">
+            <div className="item-leading">
+              <span className="item-monogram loading-monogram" />
+            </div>
+
+            <div className="item-copy">
+              <div className="item-title-row">
+                <span className="loading-placeholder name" />
+              </div>
+            </div>
+          </div>
+
+          <p className="item-cell item-storage-cell">
+            <span className="loading-placeholder storage" />
+          </p>
+
+          <div className="item-path-cell">
+            <span className="loading-placeholder path" />
+          </div>
+
+          <p className="item-cell item-modified-cell">
+            <span className="loading-placeholder modified" />
+          </p>
+
+          <p className="item-cell item-size-cell">
+            <span className="loading-placeholder size" />
+          </p>
+
+          <div className="item-status-cell">
+            <span className="loading-placeholder status" />
+          </div>
+        </article>
+      ))}
+    </div>
+  )
+}
+
+function StreamingLoadingTail() {
+  return (
+    <>
+      <p className="loading-list-copy streaming-tail" role="status" aria-live="polite">
+        Loading more files...
+      </p>
+      <LoadingList count={3} className="streaming-tail" />
+    </>
   )
 }
 
@@ -2512,6 +2616,17 @@ function normalizeDialogSelection(selection: string | string[] | null): string[]
 
 function toUploadSelections(paths: string[], kind: UploadSelection['kind'] = 'file'): UploadSelection[] {
   return paths.map((path) => ({ path, kind }))
+}
+
+function getUploadSelectionDisplayName(path: string): string {
+  const normalizedPath = path.replace(/\\/g, '/').replace(/\/+$/, '')
+
+  if (!normalizedPath) {
+    return path
+  }
+
+  const segments = normalizedPath.split('/')
+  return segments[segments.length - 1] || normalizedPath
 }
 
 export default App
