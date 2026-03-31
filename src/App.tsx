@@ -318,7 +318,6 @@ function App() {
   const [isIssuesModalOpen, setIsIssuesModalOpen] = useState(false)
   const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null)
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false)
-  const [hoveredRemote, setHoveredRemote] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
   const [selectedDriveId, setSelectedDriveId] = useState('')
@@ -1568,36 +1567,30 @@ function App() {
               {!isLoadingRemotes && !listError && displayedRemotes.length > 0 ? (
                 <ul className="storage-nav-list">
                   {displayedRemotes.map((remote) => {
-                    const isHovered = hoveredRemote === remote.name
                     const needsReconnect = remote.status === 'reconnect_required'
 
                     return (
-                      <li
-                        key={remote.name}
-                        className={`storage-nav-item ${isHovered ? 'hovered' : ''}`}
-                        onMouseEnter={() => setHoveredRemote(remote.name)}
-                        onMouseLeave={() => setHoveredRemote((current) => (current === remote.name ? null : current))}
-                      >
+                      <li key={remote.name} className="storage-nav-item">
                         <div className="storage-nav-copy">
-                          <div className="storage-nav-title-row">
-                            <p className="remote-name">{remote.name}</p>
-                            <span className={`storage-status-badge ${needsReconnect ? 'warning' : 'neutral'}`}>
-                              {needsReconnect ? 'Reconnect' : 'Connected'}
-                            </span>
-                          </div>
+                          <p className="remote-name">{remote.name}</p>
                           <p className="remote-provider">{getProviderLabel(remote.provider)}</p>
-                          {needsReconnect && remote.message ? <p className="storage-nav-hint">{remote.message}</p> : null}
                         </div>
 
-                        <div className="storage-nav-actions">
-                          {needsReconnect ? (
-                            <button className="storage-action-button warning" type="button" onClick={() => void handleReconnect(remote)}>
-                              Reconnect
+                        <div className="storage-nav-side">
+                          <span className={`storage-status-badge ${needsReconnect ? 'warning' : 'neutral'}`}>
+                            {needsReconnect ? 'Needs reconnect' : 'Connected'}
+                          </span>
+
+                          <div className="storage-nav-actions">
+                            {needsReconnect ? (
+                              <button className="storage-action-button warning" type="button" onClick={() => void handleReconnect(remote)}>
+                                Reconnect
+                              </button>
+                            ) : null}
+                            <button className="storage-action-button remove" type="button" onClick={() => openRemoveModal(remote)}>
+                              Remove
                             </button>
-                          ) : null}
-                          <button className="storage-action-button" type="button" onClick={() => openRemoveModal(remote)}>
-                            Remove
-                          </button>
+                          </div>
                         </div>
                       </li>
                     )
