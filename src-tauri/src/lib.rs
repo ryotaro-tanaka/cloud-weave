@@ -4,6 +4,7 @@ mod backend_common;
 mod providers;
 mod rclone_runtime;
 
+use chrono::{SecondsFormat, Utc};
 use rclone_logic::{
     classify_item, classify_rclone_error, derive_extension, parse_listremotes, parse_lsjson_items,
     parse_unified_items, prefix_unified_item_paths, LsjsonItem, OneDriveDriveCandidate,
@@ -37,7 +38,7 @@ use crate::{
     },
     backend_common::{
         default_remote_config_state, ensure_rclone_config, resolve_app_local_data_dir,
-        resolve_app_log_dir, summarize_output, user_facing_command_error,
+        resolve_app_log_dir, resolve_diagnostics_dir, summarize_output, user_facing_command_error,
     },
     providers::onedrive::{
         finalize_remote as finalize_onedrive_remote_with_drive,
@@ -79,6 +80,24 @@ struct CreateOneDriveRemoteInput {
 struct ActionResult {
     status: String,
     message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportDiagnosticsResult {
+    status: String,
+    diagnostics_dir: String,
+    summary_path: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticsSummary {
+    app_version: String,
+    platform: String,
+    connected_storage_count: usize,
+    exported_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -373,6 +392,13 @@ async fn delete_remote(app: AppHandle, name: String) -> Result<ActionResult, Str
     tauri::async_runtime::spawn_blocking(move || delete_remote_impl(app, name))
         .await
         .map_err(|error| format!("failed to join delete task: {error}"))?
+}
+
+#[tauri::command]
+async fn export_diagnostics(app: AppHandle) -> Result<ExportDiagnosticsResult, String> {
+    tauri::async_runtime::spawn_blocking(move || export_diagnostics_impl(app))
+        .await
+        .map_err(|error| format!("failed to join diagnostics export task: {error}"))?
 }
 
 #[tauri::command]
@@ -1164,6 +1190,38 @@ fn delete_remote_impl(app: AppHandle, name: String) -> Result<ActionResult, Stri
     }
 }
 
+fn export_diagnostics_impl(app: AppHandle) -> Result<ExportDiagnosticsResult, String> {
+    let exported_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let export_id = Utc::now().format("export-%Y%m%dT%H%M%SZ-%f").to_string();
+    let diagnostics_dir = resolve_diagnostics_dir(&app)?.join(&export_id);
+
+    fs::create_dir_all(&diagnostics_dir)
+        .map_err(|error| format!("failed to create diagnostics export directory: {error}"))?;
+
+    let config_path = ensure_rclone_config(&app)?;
+    let connected_storage_count = list_connected_remote_targets(&app, &config_path)?.len();
+    let summary_path = diagnostics_dir.join("summary.json");
+    let summary = DiagnosticsSummary {
+        app_version: app.package_info().version.to_string(),
+        platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        connected_storage_count,
+        exported_at,
+    };
+
+    let summary_json = serde_json::to_string_pretty(&summary)
+        .map_err(|error| format!("failed to serialize diagnostics summary: {error}"))?;
+
+    fs::write(&summary_path, summary_json)
+        .map_err(|error| format!("failed to write diagnostics summary: {error}"))?;
+
+    Ok(ExportDiagnosticsResult {
+        status: "success".to_string(),
+        diagnostics_dir: diagnostics_dir.to_string_lossy().into_owned(),
+        summary_path: summary_path.to_string_lossy().into_owned(),
+        message: "Diagnostics summary was exported successfully.".to_string(),
+    })
+}
+
 fn start_download_impl(
     app: AppHandle,
     input: StartDownloadInput,
@@ -1484,6 +1542,7 @@ pub fn run() {
             finalize_onedrive_remote,
             get_auth_session_status,
             delete_remote,
+            export_diagnostics,
             start_download,
             prepare_upload_batch,
             start_upload_batch,

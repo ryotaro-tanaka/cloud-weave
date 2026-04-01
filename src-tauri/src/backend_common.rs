@@ -83,6 +83,15 @@ pub(crate) fn resolve_app_local_data_dir(app: &AppHandle) -> Result<PathBuf, Str
     Ok(app_local_data_dir)
 }
 
+pub(crate) fn resolve_diagnostics_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let diagnostics_dir = resolve_app_local_data_dir(app)?.join("diagnostics");
+
+    fs::create_dir_all(&diagnostics_dir)
+        .map_err(|error| format!("failed to prepare diagnostics directory: {error}"))?;
+
+    Ok(diagnostics_dir)
+}
+
 pub(crate) fn default_remote_config_state() -> RemoteConfigState {
     RemoteConfigState {
         provider: "unknown".to_string(),
