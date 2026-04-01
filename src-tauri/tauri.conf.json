@@ -12,9 +12,10 @@
   "app": {
     "windows": [
       {
-        "title": "cloud-weave",
+        "title": "Cloud Weave",
         "width": 800,
         "height": 600,
+        "backgroundColor": "#141b28",
         "resizable": true,
         "fullscreen": false
       }

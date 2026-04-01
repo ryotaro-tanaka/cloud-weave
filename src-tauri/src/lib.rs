@@ -1435,6 +1435,26 @@ pub fn run() {
             if let Err(error) = cleanup_stale_open_temp_files(&handle) {
                 log::warn!("failed to clean stale open file cache: {error}");
             }
+
+            #[cfg(windows)]
+            {
+                match app.get_webview_window("main") {
+                    Some(main_window) => match app.default_window_icon().cloned() {
+                        Some(icon) => {
+                            if let Err(error) = main_window.set_icon(icon) {
+                                log::warn!("failed to apply the default window icon: {error}");
+                            }
+                        }
+                        None => {
+                            log::warn!("default window icon is not available during setup");
+                        }
+                    },
+                    None => {
+                        log::warn!("main webview window was not available during setup");
+                    }
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

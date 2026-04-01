@@ -26,11 +26,11 @@ import {
   searchUnifiedItems,
   sortUnifiedItems,
   type LogicalView,
+  type UnifiedItemSortKey,
   type UnifiedItem,
 } from './features/storage/unifiedItems'
 import {
   applyDownloadProgressEvent,
-  getDownloadStateSummary,
   IDLE_DOWNLOAD_STATE,
   type DownloadAcceptedResult,
   type DownloadProgressEvent,
@@ -40,7 +40,6 @@ import {
 import {
   canOpenInDefaultApp,
   canPreviewItem,
-  getOpenStateSummary,
   IDLE_OPEN_STATE,
   toFailedOpenState,
   toPreparingOpenState,
@@ -52,17 +51,13 @@ import {
   type PreviewPayload,
 } from './features/storage/openFiles'
 import {
-  mergeNotices,
   mergeUnifiedItems,
   type StartUnifiedLibraryLoadResult,
   type UnifiedLibraryLoadEvent,
 } from './features/storage/libraryLoad'
 import {
   applyUploadProgressEvent,
-  describeUploadTarget,
-  formatUploadItemMeta,
   getUploadBatchSummary,
-  getUploadStateSummary,
   IDLE_UPLOAD_STATE,
   type PreparedUploadBatch,
   type PreparedUploadItem,
@@ -71,6 +66,8 @@ import {
   type UploadSelection,
   type UploadState,
 } from './features/storage/uploads'
+import { Button } from './components/ui/Button'
+import splashLockup from '../assets/brand/cloud-weave-lockup.png'
 import './App.css'
 
 type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
@@ -113,6 +110,32 @@ type LibraryLoadProgress = {
   loadedRemoteCount: number
   totalRemoteCount: number
 }
+type IssueLevel = 'info' | 'warning' | 'error'
+type WorkspaceIssue = {
+  id: string
+  message: string
+  level: IssueLevel
+  timestamp: number
+  source: string
+  read: boolean
+}
+type ToastKind = 'info' | 'warning' | 'error' | 'success'
+type ToastAction =
+  | { type: 'open-upload' }
+  | { type: 'open-issues'; issueId?: string }
+type ToastNotice = {
+  id: string
+  kind: ToastKind
+  message: string
+  timestamp: number
+  source: string
+  actionLabel?: string
+  action?: ToastAction
+}
+type PreparingUploadItem = {
+  id: string
+  displayName: string
+}
 
 type ProviderDefinition = {
   id: StorageProvider
@@ -153,30 +176,162 @@ const STORAGE_PROVIDERS: ProviderDefinition[] = [
   },
 ]
 
-const LOGICAL_VIEWS: LogicalView[] = ['recent', 'documents', 'photos', 'videos', 'audio', 'other']
+const PRIMARY_NAV_ITEMS: Array<{ id: LogicalView; label: string }> = [
+  { id: 'recent', label: 'Recent' },
+  { id: 'documents', label: 'Documents' },
+  { id: 'photos', label: 'Photos' },
+  { id: 'videos', label: 'Videos' },
+  { id: 'audio', label: 'Audio' },
+  { id: 'other', label: 'Other' },
+]
 const EMPTY_PENDING_MESSAGE = 'Complete authentication in your browser.'
 const PREVIEW_ASSET_PROTOCOL = 'asset'
 const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
 const CONNECT_SYNC_ATTEMPTS = 8
 const CONNECT_SYNC_DELAY_MS = 500
+const TOAST_DURATION_MS = 5000
+const STARTUP_SPLASH_VISIBLE_MS = 3000
+const STARTUP_SPLASH_FADE_MS = 260
+const SORT_OPTIONS: Array<{ value: UnifiedItemSortKey; label: string }> = [
+  { value: 'updated-desc', label: 'Newest' },
+  { value: 'updated-asc', label: 'Oldest' },
+  { value: 'name-asc', label: 'Name A-Z' },
+  { value: 'name-desc', label: 'Name Z-A' },
+  { value: 'size-desc', label: 'Size ↓' },
+  { value: 'size-asc', label: 'Size ↑' },
+]
+
+function getDefaultSortKey(view: LogicalView): UnifiedItemSortKey {
+  return view === 'recent' ? 'updated-desc' : 'name-asc'
+}
+
+function getSortLabel(sortKey: UnifiedItemSortKey): string {
+  return SORT_OPTIONS.find((option) => option.value === sortKey)?.label ?? 'Newest'
+}
+
+function inferIssueLevel(message: string): IssueLevel {
+  const normalized = message.toLowerCase()
+
+  if (
+    normalized.includes('failed') ||
+    normalized.includes('error') ||
+    normalized.includes('could not') ||
+    normalized.includes('cannot')
+  ) {
+    return 'error'
+  }
+
+  if (normalized.includes('reconnect') || normalized.includes('skipped') || normalized.includes('unsupported')) {
+    return 'warning'
+  }
+
+  return 'info'
+}
+
+function toIssueId(message: string, source: string): string {
+  return `${source}:${message.trim().toLowerCase()}`
+}
+
+function formatIssueTimestamp(timestamp: number): string {
+  const parsed = new Date(timestamp)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return 'Unknown date'
+  }
+
+  const year = parsed.getFullYear()
+  const month = String(parsed.getMonth() + 1).padStart(2, '0')
+  const day = String(parsed.getDate()).padStart(2, '0')
+  const hour = String(parsed.getHours()).padStart(2, '0')
+  const minute = String(parsed.getMinutes()).padStart(2, '0')
+
+  return `${year}/${month}/${day} ${hour}:${minute}`
+}
+
+function describeIssueSource(source: string): string {
+  if (source.startsWith('storage:')) {
+    return source.replace('storage:', '')
+  }
+
+  if (source === 'library-stream') {
+    return 'Unified library'
+  }
+
+  return 'Workspace'
+}
+
+function describeIssueLocation(source: string): string {
+  if (source.startsWith('storage:')) {
+    return 'Relevant place: Storages'
+  }
+
+  return 'Relevant place: Issues'
+}
+
+function getListItemStatusLabel(item: UnifiedItem, downloadState: DownloadState, openState: OpenState): string {
+  if (downloadState.status === 'failed') {
+    return 'Download failed'
+  }
+
+  if (openState.status === 'failed') {
+    return 'Open failed'
+  }
+
+  if (downloadState.status === 'queued' || downloadState.status === 'running') {
+    return 'Downloading'
+  }
+
+  if (downloadState.status === 'succeeded') {
+    return 'Downloaded'
+  }
+
+  if (openState.status === 'preparing') {
+    return canPreviewItem(item) ? 'Preparing preview' : 'Opening'
+  }
+
+  if (openState.status === 'ready') {
+    return openState.openMode === 'system-default' ? 'Opened' : 'Ready to preview'
+  }
+
+  if (item.isDir) {
+    return 'Folder'
+  }
+
+  if (canPreviewItem(item)) {
+    return 'Preview'
+  }
+
+  if (canOpenInDefaultApp(item)) {
+    return 'Ready'
+  }
+
+  return 'Ready'
+}
 
 function App() {
-  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [activeModal, setActiveModal] = useState<ModalName>('none')
   const [addFlowStep, setAddFlowStep] = useState<AddFlowStep>('providers')
   const [selectedProvider, setSelectedProvider] = useState<StorageProvider>('onedrive')
   const [activeView, setActiveView] = useState<LogicalView>('recent')
   const [searchQuery, setSearchQuery] = useState('')
+  const [sortKey, setSortKey] = useState<UnifiedItemSortKey>(getDefaultSortKey('recent'))
   const [remotes, setRemotes] = useState<RemoteSummary[]>([])
   const [unifiedItems, setUnifiedItems] = useState<UnifiedItem[]>([])
-  const [libraryNotices, setLibraryNotices] = useState<string[]>([])
-  const [hoveredRemote, setHoveredRemote] = useState<string | null>(null)
+  const [workspaceIssues, setWorkspaceIssues] = useState<WorkspaceIssue[]>([])
+  const [toastNotices, setToastNotices] = useState<ToastNotice[]>([])
+  const [isIssuesModalOpen, setIsIssuesModalOpen] = useState(false)
+  const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null)
+  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false)
+  const [openRowMenuItemId, setOpenRowMenuItemId] = useState<string | null>(null)
+  const [isStartupSplashVisible, setIsStartupSplashVisible] = useState(true)
+  const [isStartupSplashExiting, setIsStartupSplashExiting] = useState(false)
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
   const [selectedDriveId, setSelectedDriveId] = useState('')
   const [isLoadingRemotes, setIsLoadingRemotes] = useState(true)
   const [isLoadingItems, setIsLoadingItems] = useState(true)
   const [isLibraryStreaming, setIsLibraryStreaming] = useState(false)
+  const [isRefreshingItems, setIsRefreshingItems] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isFinalizingDrive, setIsFinalizingDrive] = useState(false)
   const [isRemoving, setIsRemoving] = useState(false)
@@ -191,20 +346,22 @@ function App() {
   const [openStates, setOpenStates] = useState<OpenStateMap>({})
   const [uploadStates, setUploadStates] = useState<UploadStateMap>({})
   const [uploadBatch, setUploadBatch] = useState<PreparedUploadBatch | null>(null)
+  const [preparingUploadItems, setPreparingUploadItems] = useState<PreparingUploadItem[]>([])
   const [previewPayload, setPreviewPayload] = useState<PreviewPayload | null>(null)
   const [uploadError, setUploadError] = useState('')
   const [isPreparingUpload, setIsPreparingUpload] = useState(false)
   const [isStartingUpload, setIsStartingUpload] = useState(false)
   const [isUploadDragActive, setIsUploadDragActive] = useState(false)
-  const [isUploadBrowseChooserOpen, setIsUploadBrowseChooserOpen] = useState(false)
   const [hasPendingUploadRefresh, setHasPendingUploadRefresh] = useState(false)
-  const [libraryLoadProgress, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
+  const [, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
     requestId: null,
     loadedRemoteCount: 0,
     totalRemoteCount: 0,
   })
   const activeLibraryRequestIdRef = useRef<string | null>(null)
-  const uploadBrowseFilesButtonRef = useRef<HTMLButtonElement | null>(null)
+  const toastTimeoutsRef = useRef<Record<string, number>>({})
+  const sortMenuRef = useRef<HTMLDivElement | null>(null)
+  const lastUploadOutcomeRef = useRef<{ completed: number; failed: number } | null>(null)
 
   const selectedProviderConfig = useMemo(
     () => STORAGE_PROVIDERS.find((provider) => provider.id === selectedProvider) ?? STORAGE_PROVIDERS[0],
@@ -213,8 +370,9 @@ function App() {
 
   const displayedItems = useMemo(() => {
     const viewItems = filterItemsByView(unifiedItems, activeView)
-    return searchUnifiedItems(viewItems, searchQuery)
-  }, [activeView, searchQuery, unifiedItems])
+    const searchResults = searchUnifiedItems(viewItems, searchQuery)
+    return sortUnifiedItems(searchResults, sortKey)
+  }, [activeView, searchQuery, sortKey, unifiedItems])
 
   const displayedRemotes = useMemo(() => overlayPendingRemote(remotes, pendingSession), [pendingSession, remotes])
   const pendingHasCallbackStartupFailure = pendingSession ? isCallbackStartupFailure(pendingSession.errorCode) : false
@@ -223,21 +381,249 @@ function App() {
     () => remotes.filter((remote) => remote.status === 'reconnect_required'),
     [remotes],
   )
-  const activeReconnectTarget = reconnectRequiredRemotes[0] ?? null
+  const unreadIssueCount = useMemo(() => workspaceIssues.filter((issue) => !issue.read).length, [workspaceIssues])
+  const visibleToasts = toastNotices
 
   const groupedRecentItems = useMemo(() => {
-    if (activeView !== 'recent') {
+    if (activeView !== 'recent' || sortKey !== 'updated-desc') {
       return []
     }
 
     return groupRecentItems(displayedItems)
-  }, [activeView, displayedItems])
+  }, [activeView, displayedItems, sortKey])
 
-  const isVisualGrid = activeView === 'photos' || activeView === 'videos'
   const uploadSummary = useMemo(
     () => getUploadBatchSummary(uploadBatch?.items ?? [], uploadStates),
     [uploadBatch, uploadStates],
   )
+  const uploadListItems = useMemo(() => {
+    if (!uploadBatch) {
+      return []
+    }
+
+    return uploadBatch.items.map((item) => ({
+      item,
+      state: uploadStates[item.itemId] ?? IDLE_UPLOAD_STATE,
+    }))
+  }, [uploadBatch, uploadStates])
+  const hasUploadItems = uploadListItems.length > 0
+  const hasReadyUploads = uploadListItems.some(({ state }) => state.status === 'idle')
+  const shouldShowPreparingUploadList = isPreparingUpload && preparingUploadItems.length > 0
+  const currentViewLabel = getCategoryLabel(activeView)
+
+  const dismissToast = (toastId: string) => {
+    const timeoutId = toastTimeoutsRef.current[toastId]
+    if (timeoutId) {
+      window.clearTimeout(timeoutId)
+      delete toastTimeoutsRef.current[toastId]
+    }
+
+    setToastNotices((current) => current.filter((toast) => toast.id !== toastId))
+  }
+
+  const showToast = ({
+    kind,
+    message,
+    source,
+    actionLabel,
+    action,
+  }: {
+    kind: ToastKind
+    message: string
+    source: string
+    actionLabel?: string
+    action?: ToastAction
+  }) => {
+    const timestamp = Date.now()
+    const toastId = `toast:${source}:${timestamp}:${Math.random().toString(36).slice(2, 8)}`
+
+    toastTimeoutsRef.current[toastId] = window.setTimeout(() => {
+      dismissToast(toastId)
+    }, TOAST_DURATION_MS)
+
+    setToastNotices((current) => [
+      {
+        id: toastId,
+        kind,
+        message,
+        timestamp,
+        source,
+        actionLabel,
+        action,
+      },
+      ...current,
+    ])
+  }
+
+  const markIssuesRead = (issueIds?: string[]) => {
+    setWorkspaceIssues((current) =>
+      current.map((issue) =>
+        !issueIds || issueIds.includes(issue.id)
+          ? {
+              ...issue,
+              read: true,
+            }
+          : issue,
+      ),
+    )
+  }
+
+  const openIssuesModal = (issueId?: string) => {
+    setFocusedIssueId(issueId ?? null)
+    setIsIssuesModalOpen(true)
+    markIssuesRead(issueId ? [issueId] : undefined)
+  }
+
+  const recordIssueMessages = (messages: string[], source: string) => {
+    const normalizedMessages = messages.map((message) => message.trim()).filter(Boolean)
+
+    if (normalizedMessages.length === 0) {
+      return
+    }
+
+    const createdIssues: WorkspaceIssue[] = []
+
+    setWorkspaceIssues((current) => {
+      const next = [...current]
+
+      for (const message of normalizedMessages) {
+        const issueId = toIssueId(message, source)
+        if (next.some((issue) => issue.id === issueId)) {
+          continue
+        }
+
+        const issue: WorkspaceIssue = {
+          id: issueId,
+          message,
+          level: inferIssueLevel(message),
+          timestamp: Date.now(),
+          source,
+          read: false,
+        }
+
+        createdIssues.push(issue)
+        next.unshift(issue)
+      }
+
+      return next
+    })
+
+    if (createdIssues.length === 0) {
+      return
+    }
+
+    for (const issue of createdIssues) {
+      showToast({
+        kind: issue.level === 'error' ? 'error' : issue.level === 'warning' ? 'warning' : 'info',
+        message: issue.message,
+        source: issue.source,
+        actionLabel: 'View details',
+        action: { type: 'open-issues', issueId: issue.id },
+      })
+    }
+  }
+
+  useEffect(() => {
+    setSortKey(getDefaultSortKey(activeView))
+  }, [activeView])
+
+  useEffect(() => {
+    if (!isSortMenuOpen) {
+      return
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) {
+        return
+      }
+
+      if (sortMenuRef.current?.contains(target)) {
+        return
+      }
+
+      setIsSortMenuOpen(false)
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsSortMenuOpen(false)
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown)
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isSortMenuOpen])
+
+  useEffect(() => {
+    document.getElementById('startup-static-splash')?.classList.add('is-hidden')
+
+    const exitTimer = window.setTimeout(() => {
+      setIsStartupSplashExiting(true)
+    }, STARTUP_SPLASH_VISIBLE_MS)
+
+    const hideTimer = window.setTimeout(() => {
+      setIsStartupSplashVisible(false)
+    }, STARTUP_SPLASH_VISIBLE_MS + STARTUP_SPLASH_FADE_MS)
+
+    return () => {
+      window.clearTimeout(exitTimer)
+      window.clearTimeout(hideTimer)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!openRowMenuItemId) {
+      return
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) {
+        return
+      }
+
+      const element = target instanceof Element ? target : target.parentElement
+      if (element?.closest('[data-row-menu-container="true"]')) {
+        return
+      }
+
+      setOpenRowMenuItemId(null)
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpenRowMenuItemId(null)
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown)
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [openRowMenuItemId])
+
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of Object.values(toastTimeoutsRef.current)) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    for (const remote of reconnectRequiredRemotes) {
+      recordIssueMessages([remote.message || `${remote.name} needs reconnect.`], `storage:${remote.name}`)
+    }
+  }, [reconnectRequiredRemotes])
 
   const fetchRemotes = async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false
@@ -269,12 +655,15 @@ function App() {
 
     if (!silent) {
       setIsLoadingItems(true)
+      setIsRefreshingItems(false)
+    } else {
+      setIsRefreshingItems(true)
     }
 
     if (!resolvedRemotes || resolvedRemotes.length === 0) {
       setUnifiedItems([])
-      setLibraryNotices([])
       setItemsError('')
+      setIsRefreshingItems(false)
       if (!silent) {
         setIsLoadingItems(false)
       }
@@ -284,7 +673,7 @@ function App() {
     try {
       const result = await invoke<UnifiedLibraryResult>('list_unified_items')
       setUnifiedItems(sortUnifiedItems(result.items))
-      setLibraryNotices(result.notices)
+      recordIssueMessages(result.notices, 'library')
       setItemsError('')
       setIsLibraryStreaming(false)
       activeLibraryRequestIdRef.current = null
@@ -298,9 +687,9 @@ function App() {
       const message = error instanceof Error ? error.message : String(error)
       setItemsError(message)
       setUnifiedItems([])
-      setLibraryNotices([])
       return null
     } finally {
+      setIsRefreshingItems(false)
       if (!silent) {
         setIsLoadingItems(false)
       }
@@ -377,14 +766,15 @@ function App() {
 
       if (payload.status === 'remote_loaded') {
         setUnifiedItems((current) => mergeUnifiedItems(current, payload.items ?? []))
-        setLibraryNotices((current) => mergeNotices(current, payload.notices ?? []))
+        recordIssueMessages(payload.notices ?? [], payload.remoteName ? `storage:${payload.remoteName}` : 'library')
         setIsLoadingItems(false)
         return
       }
 
       if (payload.status === 'remote_failed') {
-        setLibraryNotices((current) =>
-          mergeNotices(current, payload.message ? [payload.message, ...(payload.notices ?? [])] : (payload.notices ?? [])),
+        recordIssueMessages(
+          payload.message ? [payload.message, ...(payload.notices ?? [])] : (payload.notices ?? []),
+          payload.remoteName ? `storage:${payload.remoteName}` : 'library-stream',
         )
         void fetchRemotes({ silent: true })
         setIsLoadingItems(false)
@@ -439,34 +829,11 @@ function App() {
     }
   }, [activeModal])
 
-  useEffect(() => {
-    if (!isUploadBrowseChooserOpen) {
-      return
-    }
-
-    uploadBrowseFilesButtonRef.current?.focus()
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') {
-        return
-      }
-
-      event.preventDefault()
-      setIsUploadBrowseChooserOpen(false)
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [isUploadBrowseChooserOpen])
-
   const initializeLibrary = async () => {
     setIsLoadingItems(true)
     setIsLibraryStreaming(false)
+    setIsRefreshingItems(false)
     setUnifiedItems([])
-    setLibraryNotices([])
     setItemsError('')
     setLibraryLoadProgress({
       requestId: null,
@@ -496,12 +863,14 @@ function App() {
       if (result.totalRemotes === 0) {
         setIsLoadingItems(false)
         setIsLibraryStreaming(false)
+        setIsRefreshingItems(false)
         activeLibraryRequestIdRef.current = null
       }
     } catch (error) {
       setItemsError(error instanceof Error ? error.message : String(error))
       setIsLoadingItems(false)
       setIsLibraryStreaming(false)
+      setIsRefreshingItems(false)
       activeLibraryRequestIdRef.current = null
     }
   }
@@ -541,14 +910,54 @@ function App() {
       return
     }
 
-    if (uploadSummary.completed === 0) {
+    if (uploadSummary.completed === 0 && uploadSummary.failed === 0) {
       setHasPendingUploadRefresh(false)
+      lastUploadOutcomeRef.current = null
       return
     }
 
+    const previousOutcome = lastUploadOutcomeRef.current
+    const nextOutcome = {
+      completed: uploadSummary.completed,
+      failed: uploadSummary.failed,
+    }
+
+    if (
+      !previousOutcome ||
+      previousOutcome.completed !== nextOutcome.completed ||
+      previousOutcome.failed !== nextOutcome.failed
+    ) {
+      if (uploadSummary.failed > 0 && uploadSummary.completed > 0) {
+        showToast({
+          kind: 'warning',
+          message: `${uploadSummary.completed} uploaded, ${uploadSummary.failed} failed`,
+          source: 'upload',
+          actionLabel: 'Open upload',
+          action: { type: 'open-upload' },
+        })
+      } else if (uploadSummary.failed > 0) {
+        showToast({
+          kind: 'error',
+          message: `${uploadSummary.failed} file${uploadSummary.failed === 1 ? '' : 's'} failed`,
+          source: 'upload',
+          actionLabel: 'Open upload',
+          action: { type: 'open-upload' },
+        })
+      } else {
+        showToast({
+          kind: 'success',
+          message: `${uploadSummary.completed} file${uploadSummary.completed === 1 ? '' : 's'} uploaded`,
+          source: 'upload',
+          actionLabel: 'Open upload',
+          action: { type: 'open-upload' },
+        })
+      }
+    }
+
+    lastUploadOutcomeRef.current = nextOutcome
     setHasPendingUploadRefresh(false)
     void refreshLibrary({ silent: true })
-  }, [hasPendingUploadRefresh, isStartingUpload, uploadSummary.active, uploadSummary.completed])
+  }, [hasPendingUploadRefresh, isStartingUpload, refreshLibrary, showToast, uploadSummary.active, uploadSummary.completed, uploadSummary.failed])
 
   const resetAddFlow = () => {
     setAddFlowStep('providers')
@@ -573,7 +982,9 @@ function App() {
   const closeUploadModal = () => {
     setActiveModal('none')
     setIsUploadDragActive(false)
-    setIsUploadBrowseChooserOpen(false)
+    if (!isPreparingUpload) {
+      setPreparingUploadItems([])
+    }
   }
 
   const closeAddModal = () => {
@@ -985,6 +1396,7 @@ function App() {
 
   const resetUploadBatch = () => {
     setUploadBatch(null)
+    setPreparingUploadItems([])
     setUploadStates({})
     setUploadError('')
     setIsPreparingUpload(false)
@@ -998,6 +1410,12 @@ function App() {
       return
     }
 
+    setPreparingUploadItems(
+      selections.map((selection, index) => ({
+        id: `${selection.kind}:${selection.path}:${index}`,
+        displayName: getUploadSelectionDisplayName(selection.path),
+      })),
+    )
     setIsPreparingUpload(true)
     setUploadError('')
 
@@ -1033,12 +1451,11 @@ function App() {
       setActiveModal('upload')
     } finally {
       setIsPreparingUpload(false)
+      setPreparingUploadItems([])
     }
   }
 
   const handleChooseUploadFiles = async () => {
-    setIsUploadBrowseChooserOpen(false)
-
     try {
       const selected = await openDialog({
         multiple: true,
@@ -1054,8 +1471,6 @@ function App() {
   }
 
   const handleChooseUploadFolder = async () => {
-    setIsUploadBrowseChooserOpen(false)
-
     try {
       const selected = await openDialog({
         multiple: false,
@@ -1070,14 +1485,6 @@ function App() {
     }
   }
 
-  const handleOpenUploadBrowseChooser = () => {
-    if (isPreparingUpload || isStartingUpload) {
-      return
-    }
-
-    setIsUploadBrowseChooserOpen(true)
-  }
-
   const handleStartUpload = async () => {
     if (!uploadBatch || uploadBatch.items.length === 0) {
       setUploadError('Add files or folders before starting the upload.')
@@ -1087,6 +1494,15 @@ function App() {
     setIsStartingUpload(true)
     setUploadError('')
     setHasPendingUploadRefresh(true)
+    lastUploadOutcomeRef.current = null
+
+    showToast({
+      kind: 'info',
+      message: `Uploading ${uploadBatch.items.length} file${uploadBatch.items.length === 1 ? '' : 's'}...`,
+      source: 'upload',
+      actionLabel: 'Open upload',
+      action: { type: 'open-upload' },
+    })
 
     const queuedStates = Object.fromEntries(
       uploadBatch.items.map((item) => [
@@ -1119,7 +1535,12 @@ function App() {
   }
 
   const canStartUpload =
-    !!uploadBatch && uploadBatch.items.length > 0 && uploadSummary.active === 0 && !isPreparingUpload && !isStartingUpload
+    !!uploadBatch &&
+    uploadBatch.items.length > 0 &&
+    hasReadyUploads &&
+    uploadSummary.active === 0 &&
+    !isPreparingUpload &&
+    !isStartingUpload
 
   const handleOpen = async (item: UnifiedItem) => {
     if (item.isDir || (!canPreviewItem(item) && !canOpenInDefaultApp(item))) {
@@ -1173,85 +1594,94 @@ function App() {
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
     hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
-  const shouldShowStreamingBanner = isLibraryStreaming && unifiedItems.length > 0
+  const shouldShowLoadingList = isLoadingItems && hasConnectedStorage && unifiedItems.length === 0 && !itemsError
+  const shouldShowStreamingTail = (isLibraryStreaming || isRefreshingItems) && unifiedItems.length > 0 && !itemsError
+  const emptyListTitle = searchQuery ? `No files match "${searchQuery.trim()}".` : `No files in ${currentViewLabel} yet.`
+  const emptyListDescription = searchQuery
+    ? 'Try a different search or switch to another view.'
+    : 'Files added to this view will appear here.'
 
   return (
-    <main className={`workspace-shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
-      <aside className={`storage-sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
-        <div className="sidebar-rail">
-          <button
-            className="icon-button sidebar-toggle"
-            onClick={() => setSidebarOpen((open) => !open)}
-            type="button"
-            aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-          >
-            <svg className="hamburger-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M5 7.25h14" />
-              <path d="M5 12h14" />
-              <path d="M5 16.75h14" />
-            </svg>
-          </button>
+    <>
+      {isStartupSplashVisible ? (
+        <div
+          className={`startup-splash ${isStartupSplashExiting ? 'exiting' : 'visible'}`}
+          aria-hidden="true"
+        >
+          <div className="startup-splash-brand">
+            <img className="startup-splash-lockup" src={splashLockup} alt="" />
+          </div>
         </div>
+      ) : null}
 
-        {sidebarOpen ? (
-          <div className="sidebar-panel">
-            <div className="sidebar-topbar">
-              <h2>Storage</h2>
-              <button className="add-storage-button" type="button" onClick={openAddModal} aria-label="Add storage">
-                +
-              </button>
-            </div>
+      <main className="workspace-shell">
+        <aside className="storage-sidebar">
+        <div className="sidebar-panel">
+          <div className="sidebar-list">
+            <nav className="sidebar-nav" aria-label="Workspace views">
+              {PRIMARY_NAV_ITEMS.map((item) => (
+                <button
+                  key={item.id}
+                  className={`sidebar-nav-item ${activeView === item.id ? 'active' : ''}`}
+                  type="button"
+                  onClick={() => setActiveView(item.id)}
+                >
+                  <span className="sidebar-nav-label">{item.label}</span>
+                </button>
+              ))}
+            </nav>
 
-            <div className="sidebar-list">
+            <section className="sidebar-section sidebar-section-storage">
+              <div className="sidebar-section-heading">
+                <p className="sidebar-section-label">Storages</p>
+                <Button family="quiet" size="sm" type="button" onClick={openAddModal}>
+                  + Add storage
+                </Button>
+              </div>
+
               {isLoadingRemotes ? <p className="empty-state">Loading storage...</p> : null}
               {!isLoadingRemotes && listError ? <p className="error-text">{listError}</p> : null}
               {shouldShowNoStorageState ? <p className="empty-state">No storage connected yet.</p> : null}
 
               {!isLoadingRemotes && !listError && displayedRemotes.length > 0 ? (
-                <ul className="remote-list">
+                <ul className="storage-nav-list">
                   {displayedRemotes.map((remote) => {
-                    const isHovered = hoveredRemote === remote.name
-                    const shouldShowReconnectAction = remote.status !== 'reconnect_required'
+                    const needsReconnect = remote.status === 'reconnect_required'
 
                     return (
-                      <li
-                        key={remote.name}
-                        className={`remote-item ${isHovered ? 'hovered' : ''}`}
-                        onMouseEnter={() => setHoveredRemote(remote.name)}
-                        onMouseLeave={() => setHoveredRemote((current) => (current === remote.name ? null : current))}
-                      >
-                        <div className="remote-summary">
-                          <div>
-                            <p className="remote-name">{remote.name}</p>
-                            <p className="remote-provider">{getProviderLabel(remote.provider)}</p>
-                            {remote.message ? <p className="remote-message">{remote.message}</p> : null}
-                          </div>
+                      <li key={remote.name} className="storage-nav-item">
+                        <div className="storage-nav-copy">
+                          <p className="remote-name">{remote.name}</p>
+                          <p className="remote-provider">{getProviderLabel(remote.provider)}</p>
                         </div>
 
-                        <div className={`remote-actions ${isHovered ? 'visible' : ''}`}>
-                          <span className={`status-badge ${remote.status === 'reconnect_required' ? 'status-badge-warning' : ''}`}>
-                            {remote.status}
+                        <div className="storage-nav-side">
+                          <span className={`storage-status-badge ${needsReconnect ? 'warning' : 'neutral'}`}>
+                            {needsReconnect ? 'Needs reconnect' : 'Connected'}
                           </span>
-                          {shouldShowReconnectAction ? (
-                            <button className="row-action" type="button" onClick={() => void handleReconnect(remote)}>
-                              Reconnect
-                            </button>
-                          ) : null}
-                          <button className="row-action danger" type="button" onClick={() => openRemoveModal(remote)}>
-                            Remove
-                          </button>
+
+                          <div className="storage-nav-actions">
+                            {needsReconnect ? (
+                              <Button family="quiet" size="sm" tone="warning" type="button" onClick={() => void handleReconnect(remote)}>
+                                Reconnect
+                              </Button>
+                            ) : null}
+                            <Button family="quiet" size="sm" tone="danger" type="button" onClick={() => openRemoveModal(remote)}>
+                              Remove
+                            </Button>
+                          </div>
                         </div>
                       </li>
                     )
                   })}
                 </ul>
               ) : null}
-            </div>
+            </section>
           </div>
-        ) : null}
-      </aside>
+        </div>
+        </aside>
 
-      <section className="workspace-main">
+        <section className="workspace-main">
         <div className="library-shell">
           <header className="library-topbar">
             <div className="library-toolbar">
@@ -1263,71 +1693,63 @@ function App() {
                   type="search"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search files, paths, or storage names"
+                  placeholder="Search files, paths, or sources"
                 />
               </label>
 
               <div className="library-actions">
-                <button className="primary-button" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
+                <div className={`toolbar-select ${isSortMenuOpen ? 'open' : ''}`} ref={sortMenuRef}>
+                  <Button
+                    family="quiet"
+                    size="sm"
+                    className="toolbar-select-trigger"
+                    type="button"
+                    aria-label="Sort files"
+                    aria-haspopup="menu"
+                    aria-expanded={isSortMenuOpen}
+                    onClick={() => setIsSortMenuOpen((current) => !current)}
+                  >
+                    <span className="toolbar-select-value">{getSortLabel(sortKey)}</span>
+                    <span className="toolbar-select-icon" aria-hidden="true">v</span>
+                  </Button>
+
+                  {isSortMenuOpen ? (
+                    <div className="toolbar-select-menu" role="menu" aria-label="Sort files">
+                      {SORT_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          className={`toolbar-select-option ${sortKey === option.value ? 'active' : ''}`}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={sortKey === option.value}
+                          onClick={() => {
+                            setSortKey(option.value)
+                            setIsSortMenuOpen(false)
+                          }}
+                        >
+                          <span>{option.label}</span>
+                          {sortKey === option.value ? <span aria-hidden="true">•</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
+                <Button family="icon" size="md" className="issues-entry-button utility-icon-button" type="button" onClick={() => openIssuesModal()} aria-label="Open issues">
+                  <span aria-hidden="true">!</span>
+                  {workspaceIssues.length > 0 ? (
+                    <span className="issues-entry-badge">{unreadIssueCount > 0 ? unreadIssueCount : workspaceIssues.length}</span>
+                  ) : null}
+                </Button>
+                <Button family="primary" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
                   Upload
-                </button>
+                </Button>
               </div>
             </div>
 
-            <nav className="view-tabs" aria-label="Logical views">
-              {LOGICAL_VIEWS.map((view) => (
-                <button
-                  key={view}
-                  className={`view-tab ${activeView === view ? 'active' : ''}`}
-                  type="button"
-                  onClick={() => setActiveView(view)}
-                >
-                  {getCategoryLabel(view)}
-                </button>
-              ))}
-            </nav>
           </header>
 
           <div className="library-content">
-            {libraryNotices.map((notice) => (
-              <div key={notice} className="info-banner" role="note">
-                <p>{notice}</p>
-              </div>
-            ))}
-
-            {activeReconnectTarget ? (
-              <div className="reconnect-banner" role="alert" aria-live="polite">
-                <div className="reconnect-banner-copy">
-                  <p className="eyebrow">Reconnect required</p>
-                  <h2>{activeReconnectTarget.name} needs to be reconnected.</h2>
-                  <p>
-                    Cloud Weave cannot use this storage until reconnect is completed. To keep using your files, press
-                    Reconnect.
-                  </p>
-                </div>
-
-                <div className="reconnect-banner-actions">
-                  <button className="primary-button" type="button" onClick={() => void handleReconnect(activeReconnectTarget)}>
-                    Reconnect
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            {shouldShowStreamingBanner ? (
-              <div className="info-banner" role="status" aria-live="polite">
-                <p>
-                  Showing files while Cloud Weave loads the rest of your connected storage...
-                  {libraryLoadProgress.totalRemoteCount > 0
-                    ? ` ${libraryLoadProgress.loadedRemoteCount} / ${libraryLoadProgress.totalRemoteCount} storages fully loaded.`
-                    : ''}
-                </p>
-              </div>
-            ) : null}
-
-            {isLoadingItems && hasConnectedStorage && unifiedItems.length === 0 ? (
-              <p className="empty-state">Loading your unified library...</p>
-            ) : null}
             {!isLoadingItems && itemsError ? <p className="error-text">{itemsError}</p> : null}
 
             {shouldShowNoStorageState ? (
@@ -1335,36 +1757,85 @@ function App() {
                 <p className="eyebrow">Unified Library</p>
                 <h1>Your files will appear here.</h1>
                 <p>Connect a storage from the sidebar to start browsing everything in one place.</p>
-                <button className="primary-button" type="button" onClick={openAddModal}>
-                  Connect storage
-                </button>
+                <div className="empty-state-actions">
+                  <Button family="secondary" type="button" onClick={openAddModal}>
+                    Connect storage
+                  </Button>
+                  <Button family="primary" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
+                    Upload
+                  </Button>
+                </div>
               </div>
             ) : null}
 
-            {shouldShowCategoryEmptyState ? (
-              <div className="main-empty-state compact">
-                <p className="eyebrow">{getCategoryLabel(activeView)}</p>
-                <h2>No matching files.</h2>
-                <p>
-                  {searchQuery
-                    ? 'Try a different search or switch to another view.'
-                    : `There are no files in ${getCategoryLabel(activeView).toLowerCase()} right now.`}
+            {shouldShowLoadingList ? (
+              <>
+                <p className="loading-list-copy" role="status" aria-live="polite">
+                  Loading files...
                 </p>
-              </div>
+                <ListHeader />
+                <LoadingList />
+              </>
             ) : null}
 
-            {(!isLoadingItems || unifiedItems.length > 0) && !itemsError && displayedItems.length > 0 ? (
+            {((!isLoadingItems || unifiedItems.length > 0) && !itemsError && hasConnectedStorage && !shouldShowLoadingList) ? (
               activeView === 'recent' ? (
-                <div className="recent-groups">
-                  {groupedRecentItems.map((group) => (
-                    <section key={group.label} className="recent-group">
-                      <div className="section-heading">
-                        <h3>{group.label}</h3>
-                        <span>{group.items.length}</span>
+                shouldShowCategoryEmptyState ? (
+                  <>
+                    <ListHeader />
+                    <div className="empty-list-state" role="status" aria-live="polite">
+                      <div className="empty-list-copy">
+                        <p className="empty-list-title">{emptyListTitle}</p>
+                        <p className="empty-list-description">{emptyListDescription}</p>
                       </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="recent-groups">
+                      {groupedRecentItems.map((group) => (
+                        <section key={group.label} className="recent-group">
+                          <div className="section-heading">
+                            <h3>{group.label}</h3>
+                            <span>{group.items.length}</span>
+                          </div>
 
+                          <ListHeader />
+                          <div className="item-list">
+                            {group.items.map((item) => (
+                              <UnifiedListItem
+                                key={item.id}
+                                item={item}
+                                downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
+                                openState={openStates[item.id] ?? IDLE_OPEN_STATE}
+                                onOpen={handleOpen}
+                                onDownload={handleDownload}
+                                isRowMenuOpen={openRowMenuItemId === item.id}
+                                onToggleRowMenu={() => setOpenRowMenuItemId((current) => (current === item.id ? null : item.id))}
+                                onCloseRowMenu={() => setOpenRowMenuItemId(null)}
+                              />
+                            ))}
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+                    {shouldShowStreamingTail ? <StreamingLoadingTail /> : null}
+                  </>
+                )
+              ) : (
+                <>
+                  <ListHeader />
+                  {shouldShowCategoryEmptyState ? (
+                    <div className="empty-list-state" role="status" aria-live="polite">
+                      <div className="empty-list-copy">
+                        <p className="empty-list-title">{emptyListTitle}</p>
+                        <p className="empty-list-description">{emptyListDescription}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
                       <div className="item-list">
-                        {group.items.map((item) => (
+                        {displayedItems.map((item) => (
                           <UnifiedListItem
                             key={item.id}
                             item={item}
@@ -1372,43 +1843,58 @@ function App() {
                             openState={openStates[item.id] ?? IDLE_OPEN_STATE}
                             onOpen={handleOpen}
                             onDownload={handleDownload}
+                            isRowMenuOpen={openRowMenuItemId === item.id}
+                            onToggleRowMenu={() => setOpenRowMenuItemId((current) => (current === item.id ? null : item.id))}
+                            onCloseRowMenu={() => setOpenRowMenuItemId(null)}
                           />
                         ))}
                       </div>
-                    </section>
-                  ))}
-                </div>
-              ) : isVisualGrid ? (
-                <div className="item-grid">
-                  {displayedItems.map((item) => (
-                    <UnifiedGridItem
-                      key={item.id}
-                      item={item}
-                      downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
-                      openState={openStates[item.id] ?? IDLE_OPEN_STATE}
-                      onOpen={handleOpen}
-                      onDownload={handleDownload}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="item-list">
-                  {displayedItems.map((item) => (
-                    <UnifiedListItem
-                      key={item.id}
-                      item={item}
-                      downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
-                      openState={openStates[item.id] ?? IDLE_OPEN_STATE}
-                      onOpen={handleOpen}
-                      onDownload={handleDownload}
-                    />
-                  ))}
-                </div>
+                      {shouldShowStreamingTail ? <StreamingLoadingTail /> : null}
+                    </>
+                  )}
+                </>
               )
             ) : null}
           </div>
         </div>
       </section>
+
+      {visibleToasts.length > 0 ? (
+        <div className="toast-stack" aria-live="polite" aria-label="Workspace notifications">
+          {visibleToasts.map((toast) => (
+            <div key={toast.id} className={`toast-notice ${toast.kind}`}>
+              <div className="toast-copy">
+                <p>{toast.message}</p>
+                <span>{formatIssueTimestamp(toast.timestamp)}</span>
+              </div>
+              {toast.action ? (
+                <Button
+                  family="secondary"
+                  size="sm"
+                  className="toast-action"
+                  type="button"
+                  onClick={() => {
+                    const action = toast.action
+
+                    if (!action) {
+                      return
+                    }
+
+                    if (action.type === 'open-upload') {
+                      openUploadModal()
+                      return
+                    }
+
+                    openIssuesModal(action.issueId)
+                  }}
+                >
+                  {toast.actionLabel}
+                </Button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {previewPayload ? (
         <PreviewModal
@@ -1417,9 +1903,20 @@ function App() {
         />
       ) : null}
 
+      {isIssuesModalOpen ? (
+        <IssuesModal
+          issues={workspaceIssues}
+          focusedIssueId={focusedIssueId}
+          onClose={() => {
+            setIsIssuesModalOpen(false)
+            setFocusedIssueId(null)
+          }}
+        />
+      ) : null}
+
       {activeModal === 'add-storage' ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="full-modal" role="dialog" aria-modal="true" aria-labelledby="add-storage-title">
+        <div className="modal-overlay" role="presentation" onClick={closeAddModal}>
+          <div className="full-modal" role="dialog" aria-modal="true" aria-labelledby="add-storage-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">Add Storage</p>
@@ -1428,9 +1925,9 @@ function App() {
                 </h2>
               </div>
 
-              <button className="icon-button modal-close" type="button" onClick={closeAddModal} aria-label="Close modal">
+              <Button family="icon" size="sm" className="modal-close" type="button" onClick={closeAddModal} aria-label="Close modal">
                 ×
-              </button>
+              </Button>
             </div>
 
             {addFlowStep === 'providers' ? (
@@ -1486,12 +1983,12 @@ function App() {
                 {addError ? <p className="error-text">{addError}</p> : null}
 
                 <div className="modal-actions">
-                  <button className="ghost-button" type="button" onClick={() => setAddFlowStep('providers')}>
+                  <Button family="secondary" type="button" onClick={() => setAddFlowStep('providers')}>
                     Back
-                  </button>
-                  <button className="primary-button" type="submit" disabled={isSubmitting}>
+                  </Button>
+                  <Button family="primary" type="submit" disabled={isSubmitting}>
                     {isSubmitting ? 'Starting...' : `Connect ${selectedProviderConfig.label}`}
-                  </button>
+                  </Button>
                 </div>
               </form>
             )}
@@ -1500,8 +1997,8 @@ function App() {
       ) : null}
 
       {activeModal === 'oauth-pending' && pendingSession ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="full-modal pending-modal" role="dialog" aria-modal="true" aria-labelledby="pending-title">
+        <div className="modal-overlay" role="presentation" onClick={closePendingModal}>
+          <div className="full-modal pending-modal" role="dialog" aria-modal="true" aria-labelledby="pending-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">{pendingSession.provider}</p>
@@ -1520,9 +2017,9 @@ function App() {
                 </h2>
               </div>
 
-              <button className="icon-button modal-close" type="button" onClick={closePendingModal} aria-label="Close modal">
+              <Button family="icon" size="sm" className="modal-close" type="button" onClick={closePendingModal} aria-label="Close modal">
                 ×
-              </button>
+              </Button>
             </div>
 
             <div className="pending-body">
@@ -1612,63 +2109,58 @@ function App() {
             <div className="modal-actions">
               {pendingSession.status === 'error' ? (
                 <>
-                  <button className="ghost-button" type="button" onClick={closePendingModal}>
-                    Close
-                  </button>
                   {!pendingHasCallbackStartupFailure ? (
-                    <button className="primary-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                    <Button family="primary" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
                       Remove and connect again
-                    </button>
+                    </Button>
                   ) : null}
                 </>
               ) : pendingSession.status === 'requires_drive_selection' ? (
                 <>
-                  <button className="ghost-button" type="button" onClick={closePendingModal}>
+                  <Button family="secondary" type="button" onClick={closePendingModal}>
                     Cancel
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
+                  </Button>
+                  <Button family="secondary" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
                     Remove and start over
-                  </button>
-                  <button
-                    className="primary-button"
+                  </Button>
+                  <Button
+                    family="primary"
                     type="button"
                     onClick={() => void handleFinalizeDriveSelection()}
                     disabled={!selectedDriveId || isFinalizingDrive}
                   >
                     {isFinalizingDrive ? 'Connecting...' : 'Use this drive'}
-                  </button>
+                  </Button>
                 </>
               ) : pendingSession.status === 'connected' ? (
-                <button className="primary-button" type="button" onClick={handlePendingDone}>
+                <Button family="primary" type="button" onClick={handlePendingDone}>
                   Done
-                </button>
-              ) : (
-                <button className="ghost-button" type="button" onClick={closePendingModal}>
-                  Close
-                </button>
-              )}
+                </Button>
+              ) : null}
             </div>
           </div>
         </div>
       ) : null}
 
       {activeModal === 'remove-confirm' && removeTarget ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="remove-title">
+        <div className="modal-overlay" role="presentation" onClick={() => setActiveModal('none')}>
+          <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="remove-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">Remove Storage</p>
                 <h2 id="remove-title">Remove {removeTarget.name}?</h2>
               </div>
 
-              <button
-                className="icon-button modal-close"
+              <Button
+                family="icon"
+                size="sm"
+                className="modal-close"
                 type="button"
                 onClick={() => setActiveModal('none')}
                 aria-label="Close modal"
               >
                 ×
-              </button>
+              </Button>
             </div>
 
             <div className="confirm-copy">
@@ -1678,144 +2170,96 @@ function App() {
             </div>
 
             <div className="modal-actions">
-              <button className="ghost-button" type="button" onClick={() => setActiveModal('none')}>
+              <Button family="secondary" type="button" onClick={() => setActiveModal('none')}>
                 Cancel
-              </button>
-              <button className="primary-button destructive" type="button" onClick={() => void handleDeleteRemote()} disabled={isRemoving}>
+              </Button>
+              <Button family="primary" tone="danger" type="button" onClick={() => void handleDeleteRemote()} disabled={isRemoving}>
                 {isRemoving ? 'Removing...' : 'Remove'}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
       ) : null}
 
       {activeModal === 'upload' ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="full-modal upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
+        <div className="modal-overlay" role="presentation" onClick={closeUploadModal}>
+          <div className="full-modal upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">Upload</p>
                 <h2 id="upload-title">Send files to Cloud Weave</h2>
               </div>
 
-              <button className="icon-button modal-close" type="button" onClick={closeUploadModal} aria-label="Close upload modal">
+              <Button family="icon" size="sm" className="modal-close" type="button" onClick={closeUploadModal} aria-label="Close upload modal">
                 ×
-              </button>
+              </Button>
             </div>
 
             <div className="upload-body">
               <div className={`upload-dropzone ${isUploadDragActive ? 'active' : ''}`}>
                 <p className="upload-dropzone-title">Drop files or folders here</p>
                 <p className="upload-dropzone-copy">
-                  Cloud Weave keeps folder structure, classifies files by category, and routes them to the best connected destination.
+                  Browse from disk or drop files here to add them to the upload list.
                 </p>
 
                 <div className="upload-picker-actions">
-                  <button className="ghost-button" type="button" onClick={handleOpenUploadBrowseChooser} disabled={isPreparingUpload || isStartingUpload}>
-                    Browse…
-                  </button>
+                  <Button family="primary" type="button" onClick={() => void handleChooseUploadFiles()} disabled={isPreparingUpload || isStartingUpload}>
+                    {isPreparingUpload ? 'Preparing...' : 'Browse files'}
+                  </Button>
+                  <Button family="secondary" type="button" onClick={() => void handleChooseUploadFolder()} disabled={isPreparingUpload || isStartingUpload}>
+                    {isPreparingUpload ? 'Preparing...' : 'Browse folder'}
+                  </Button>
                 </div>
-
-                {isUploadBrowseChooserOpen ? (
-                  <div
-                    className="upload-browse-chooser-backdrop"
-                    role="presentation"
-                    onClick={() => setIsUploadBrowseChooserOpen(false)}
-                  >
-                    <div
-                      className="upload-browse-chooser"
-                      role="dialog"
-                      aria-modal="true"
-                      aria-labelledby="upload-browse-title"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <p id="upload-browse-title" className="upload-browse-chooser-title">
-                        What would you like to add?
-                      </p>
-                      <p className="upload-browse-chooser-copy">
-                        Choose files or a folder, then Cloud Weave will open the matching system picker.
-                      </p>
-                      <div className="upload-browse-chooser-actions">
-                        <button
-                          ref={uploadBrowseFilesButtonRef}
-                          className="primary-button"
-                          type="button"
-                          onClick={() => void handleChooseUploadFiles()}
-                          disabled={isPreparingUpload || isStartingUpload}
-                        >
-                          Choose files
-                        </button>
-                        <button
-                          className="ghost-button"
-                          type="button"
-                          onClick={() => void handleChooseUploadFolder()}
-                          disabled={isPreparingUpload || isStartingUpload}
-                        >
-                          Choose folder
-                        </button>
-                        <button
-                          className="ghost-button"
-                          type="button"
-                          onClick={() => setIsUploadBrowseChooserOpen(false)}
-                          disabled={isPreparingUpload || isStartingUpload}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
               </div>
 
-              <div className="upload-summary-card">
-                <p className="upload-summary-label">{uploadSummary.label}</p>
-                <p className="upload-summary-meta">
-                  {uploadSummary.total > 0
-                    ? `${uploadSummary.completed} complete • ${uploadSummary.failed} failed • ${uploadSummary.total} total`
-                    : 'No files queued yet'}
+              {uploadBatch?.notices.map((notice) => (
+                <p key={notice} className="pending-help">
+                  {notice}
                 </p>
-                {uploadBatch?.notices.map((notice) => (
-                  <p key={notice} className="pending-help">
-                    {notice}
-                  </p>
-                ))}
-                {uploadError ? <p className="error-text">{uploadError}</p> : null}
+              ))}
+              {uploadError ? <p className="error-text">{uploadError}</p> : null}
+
+              {shouldShowPreparingUploadList ? (
+                <p className="upload-preparing-summary" role="status" aria-live="polite">
+                  {preparingUploadItems.length} file{preparingUploadItems.length === 1 ? '' : 's'} selected
+                </p>
+              ) : null}
+
+              {hasUploadItems || shouldShowPreparingUploadList ? (
+                <>
+                  <div className="upload-list-header" aria-hidden="true">
+                    <span>Name</span>
+                    <span>Status</span>
+                    <span>Path</span>
+                    <span>Storage</span>
+                  </div>
+                  <div className="upload-queue" role="list" aria-label="Upload list">
+                    {uploadListItems.map(({ item, state }) => (
+                      <UploadListItem key={item.itemId} item={item} state={state} />
+                    ))}
+                    {preparingUploadItems.map((item) => (
+                      <PreparingUploadListItem key={item.id} item={item} />
+                    ))}
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            {hasUploadItems ? (
+              <div className="modal-actions">
+                <Button family="secondary" type="button" onClick={resetUploadBatch} disabled={!hasUploadItems || isPreparingUpload}>
+                  Clear
+                </Button>
+                <Button family="primary" type="button" onClick={() => void handleStartUpload()} disabled={!canStartUpload}>
+                  {isPreparingUpload ? 'Preparing...' : isStartingUpload ? 'Uploading...' : 'Upload'}
+                </Button>
               </div>
-
-              {uploadBatch?.items.length ? (
-                <div className="upload-queue" role="list" aria-label="Upload queue">
-                  {uploadBatch.items.map((item) => (
-                    <UploadQueueItem
-                      key={item.itemId}
-                      item={item}
-                      state={uploadStates[item.itemId] ?? IDLE_UPLOAD_STATE}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="main-empty-state compact upload-empty-state">
-                  <p className="eyebrow">Queue</p>
-                  <h2>Nothing queued yet.</h2>
-                  <p>Drop a folder or choose files from disk to prepare the upload batch.</p>
-                </div>
-              )}
-            </div>
-
-            <div className="modal-actions">
-              <button className="ghost-button" type="button" onClick={resetUploadBatch} disabled={uploadSummary.active > 0}>
-                Clear
-              </button>
-              <button className="ghost-button" type="button" onClick={closeUploadModal}>
-                Close
-              </button>
-              <button className="primary-button" type="button" onClick={() => void handleStartUpload()} disabled={!canStartUpload}>
-                {isPreparingUpload ? 'Preparing...' : isStartingUpload ? 'Starting...' : 'Start upload'}
-              </button>
-            </div>
+            ) : null}
           </div>
         </div>
       ) : null}
-    </main>
+      </main>
+    </>
   )
 }
 
@@ -1825,12 +2269,18 @@ function UnifiedListItem({
   openState,
   onOpen,
   onDownload,
+  isRowMenuOpen,
+  onToggleRowMenu,
+  onCloseRowMenu,
 }: {
   item: UnifiedItem
   downloadState: DownloadState
   openState: OpenState
   onOpen: (item: UnifiedItem) => Promise<void>
   onDownload: (item: UnifiedItem) => Promise<void>
+  isRowMenuOpen: boolean
+  onToggleRowMenu: () => void
+  onCloseRowMenu: () => void
 }) {
   const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
   const canPreview = canPreviewItem(item)
@@ -1838,175 +2288,311 @@ function UnifiedListItem({
   const isPreparingOpen = openState.status === 'preparing'
   const actionLabel =
     downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
+  const canPrimaryOpen = canPreview || canOpen
+  const hasOverflowActions = !item.isDir
+  const statusLabel = getListItemStatusLabel(item, downloadState, openState)
+  const listPath = formatListPath(item)
+  const primaryActionLabel = canPreview ? (isPreparingOpen ? 'Previewing...' : 'Preview') : (isPreparingOpen ? 'Opening...' : 'Open')
 
   return (
-    <article className="unified-item list-item">
-      <div className="item-leading">
-        <span className={`item-monogram ${item.category}`} aria-hidden="true">
-          {getCategoryMonogram(item.category)}
-        </span>
-      </div>
+    <article
+      className={`unified-item list-item ${isRowMenuOpen ? 'row-menu-open' : ''}`}
+      data-row-id={item.id}
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) {
+          return
+        }
 
-      <div className="item-copy">
-        <div className="item-title-row">
-          <p className="item-name">{item.name}</p>
-          <span className="source-badge">{item.sourceRemote}</span>
+        if (event.key === 'Enter' && canPrimaryOpen) {
+          event.preventDefault()
+          void onOpen(item)
+        }
+      }}
+      onDoubleClick={() => {
+        if (canPrimaryOpen) {
+          void onOpen(item)
+        }
+      }}
+    >
+      <div className="item-primary">
+        <div className="item-leading">
+          <span className={`item-monogram ${item.category}`} aria-hidden="true">
+            {getCategoryMonogram(item.category)}
+          </span>
         </div>
 
-        <div className="item-meta">
-          <span>{getProviderLabel(item.sourceProvider)}</span>
-          <span>{item.sourcePath}</span>
+        <div className="item-copy">
+          <div className="item-title-row">
+            <p className="item-name">{item.name}</p>
+          </div>
         </div>
       </div>
 
-      <div className="item-trailing">
-        <span>{formatFileSize(item.size)}</span>
-        <span>{formatModifiedTime(item.modTime)}</span>
-        <div className="item-actions">
-          {canPreview ? (
-            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
-              {isPreparingOpen ? 'Previewing...' : 'Preview'}
-            </button>
-          ) : canOpen ? (
-            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
-              {isPreparingOpen ? 'Opening...' : 'Open'}
-            </button>
+      <p className="item-cell item-storage-cell">{item.sourceRemote}</p>
+      <div className="item-path-cell">
+        <div className="item-path-anchor">
+          <p className="item-path">{listPath}</p>
+          <span className="path-tooltip" role="tooltip">
+            {listPath}
+          </span>
+        </div>
+      </div>
+
+      <p className="item-cell item-modified-cell">{formatModifiedTime(item.modTime)}</p>
+      <p className="item-cell item-size-cell">{formatFileSize(item.size)}</p>
+
+      <div className="item-status-cell">
+        <p className={`item-status-label ${downloadState.status === 'failed' || openState.status === 'failed' ? 'danger' : ''}`}>{statusLabel}</p>
+      </div>
+
+      {hasOverflowActions ? (
+        <div
+          className="item-actions"
+          aria-label="Row actions"
+          data-row-menu-container="true"
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          <Button
+            family="icon"
+            size="sm"
+            className="item-actions-trigger"
+            type="button"
+            aria-label={`More actions for ${item.name}`}
+            aria-haspopup="menu"
+            aria-expanded={isRowMenuOpen}
+            onClick={onToggleRowMenu}
+          >
+            …
+          </Button>
+
+          {isRowMenuOpen ? (
+            <div className="row-action-menu" role="menu" aria-label={`Actions for ${item.name}`}>
+              {canPrimaryOpen ? (
+                <button
+                  className="row-menu-item"
+                  type="button"
+                  role="menuitem"
+                  disabled={isPreparingOpen}
+                  onClick={() => {
+                    onCloseRowMenu()
+                    void onOpen(item)
+                  }}
+                >
+                  {primaryActionLabel}
+                </button>
+              ) : null}
+              <button
+                className="row-menu-item"
+                type="button"
+                role="menuitem"
+                disabled={isBusy}
+                onClick={() => {
+                  onCloseRowMenu()
+                  void onDownload(item)
+                }}
+              >
+                {actionLabel}
+              </button>
+            </div>
           ) : null}
-          <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
-            {actionLabel}
-          </button>
-          <OpenStatusView state={openState} />
-          <DownloadStatusView state={downloadState} />
-        </div>
-      </div>
-    </article>
-  )
-}
-
-function UnifiedGridItem({
-  item,
-  downloadState,
-  openState,
-  onOpen,
-  onDownload,
-}: {
-  item: UnifiedItem
-  downloadState: DownloadState
-  openState: OpenState
-  onOpen: (item: UnifiedItem) => Promise<void>
-  onDownload: (item: UnifiedItem) => Promise<void>
-}) {
-  const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
-  const canPreview = canPreviewItem(item)
-  const canOpen = canOpenInDefaultApp(item)
-  const isPreparingOpen = openState.status === 'preparing'
-  const actionLabel =
-    downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
-
-  return (
-    <article className="unified-item grid-item">
-      <div className={`grid-preview ${item.category}`}>
-        <span className="source-badge">{item.sourceRemote}</span>
-      </div>
-
-      <div className="grid-copy">
-        <p className="item-name">{item.name}</p>
-        <div className="item-meta">
-          <span>{getProviderLabel(item.sourceProvider)}</span>
-          <span>{formatFileSize(item.size)}</span>
-        </div>
-        <p className="grid-path">{item.sourcePath}</p>
-        <p className="grid-date">{formatModifiedTime(item.modTime)}</p>
-        <div className="grid-actions">
-          {canPreview ? (
-            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
-              {isPreparingOpen ? 'Previewing...' : 'Preview'}
-            </button>
-          ) : canOpen ? (
-            <button className="row-action primary-open-action" type="button" onClick={() => void onOpen(item)} disabled={isPreparingOpen || item.isDir}>
-              {isPreparingOpen ? 'Opening...' : 'Open'}
-            </button>
-          ) : null}
-          <button className="row-action" type="button" onClick={() => void onDownload(item)} disabled={isBusy || item.isDir}>
-            {actionLabel}
-          </button>
-          <OpenStatusView state={openState} />
-          <DownloadStatusView state={downloadState} />
-        </div>
-      </div>
-    </article>
-  )
-}
-
-function OpenStatusView({ state }: { state: OpenState }) {
-  const summary = getOpenStateSummary(state)
-
-  if (!summary) {
-    return null
-  }
-
-  return (
-    <div className={`open-status ${state.status}`} aria-live="polite">
-      <p className="open-status-copy">{summary}</p>
-    </div>
-  )
-}
-
-function DownloadStatusView({ state }: { state: DownloadState }) {
-  if (state.status === 'idle') {
-    return null
-  }
-
-  const isRunning = state.status === 'queued' || state.status === 'running'
-
-  return (
-    <div className={`download-status ${state.status}`} aria-live="polite">
-      <p className="download-status-copy">{getDownloadStateSummary(state)}</p>
-      {isRunning ? (
-        <div className="download-progress" aria-hidden="true">
-          <div
-            className="download-progress-fill"
-            style={{ width: `${Math.max(6, Math.min(100, state.progressPercent ?? 8))}%` }}
-          />
         </div>
       ) : null}
-    </div>
+    </article>
   )
 }
 
-function UploadQueueItem({
+function UploadListItem({
   item,
   state,
 }: {
   item: PreparedUploadItem
   state: UploadState
 }) {
-  const isRunning = state.status === 'queued' || state.status === 'running' || state.status === 'retrying'
+  const pathLabel = getUploadListPath(item, state)
+  const storageLabel = getUploadListStorage(item, state)
 
   return (
     <article className="upload-queue-item" role="listitem">
-      <div className="upload-queue-copy">
-        <div className="item-title-row">
-          <p className="item-name">{item.displayName}</p>
-          <span className="source-badge">{item.category}</span>
-        </div>
-        <p className="upload-relative-path">{item.relativePath}</p>
-        <div className="item-meta">
-          <span>{formatUploadItemMeta(item)}</span>
-          <span>{describeUploadTarget(item)}</span>
-        </div>
-      </div>
-
-      <div className="upload-queue-status">
-        <p>{getUploadStateSummary(state)}</p>
-        {state.remoteName ? <p className="grid-path">{state.remoteName}</p> : null}
-        {isRunning ? (
-          <div className="download-progress" aria-hidden="true">
-            <div className="download-progress-fill upload-progress-fill" />
-          </div>
-        ) : null}
-      </div>
+      <p className="upload-item-name">{item.displayName}</p>
+      <p className={`upload-item-status ${state.status === 'failed' ? 'danger' : ''}`}>{getUploadListStatusLabel(state)}</p>
+      <p className="upload-item-path">{pathLabel}</p>
+      <p className="upload-item-storage">{storageLabel}</p>
     </article>
+  )
+}
+
+function PreparingUploadListItem({ item }: { item: PreparingUploadItem }) {
+  return (
+    <article className="upload-queue-item preparing" role="listitem" aria-hidden="true">
+      <p className="upload-item-name">{item.displayName}</p>
+      <p className="upload-item-status">Preparing...</p>
+      <p className="upload-item-path">
+        <span className="upload-skeleton path" />
+      </p>
+      <p className="upload-item-storage">
+        <span className="upload-skeleton storage" />
+      </p>
+    </article>
+  )
+}
+
+function ListHeader() {
+  return (
+    <div className="item-list-header" aria-hidden="true">
+      <span>Name</span>
+      <span>Storage</span>
+      <span>Path</span>
+      <span>Modified</span>
+      <span>Size</span>
+      <span>Status</span>
+    </div>
+  )
+}
+
+function LoadingList({ count = 6, className = '' }: { count?: number; className?: string }) {
+  const classes = className ? `loading-list ${className}` : 'loading-list'
+
+  return (
+    <div className={classes} aria-hidden="true">
+      {Array.from({ length: count }, (_, index) => (
+        <article key={`loading-row-${index}`} className="unified-item list-item loading-row">
+          <div className="item-primary">
+            <div className="item-leading">
+              <span className="item-monogram loading-monogram" />
+            </div>
+
+            <div className="item-copy">
+              <div className="item-title-row">
+                <span className="loading-placeholder name" />
+              </div>
+            </div>
+          </div>
+
+          <p className="item-cell item-storage-cell">
+            <span className="loading-placeholder storage" />
+          </p>
+
+          <div className="item-path-cell">
+            <span className="loading-placeholder path" />
+          </div>
+
+          <p className="item-cell item-modified-cell">
+            <span className="loading-placeholder modified" />
+          </p>
+
+          <p className="item-cell item-size-cell">
+            <span className="loading-placeholder size" />
+          </p>
+
+          <div className="item-status-cell">
+            <span className="loading-placeholder status" />
+          </div>
+        </article>
+      ))}
+    </div>
+  )
+}
+
+function StreamingLoadingTail() {
+  return (
+    <>
+      <p className="loading-list-copy streaming-tail" role="status" aria-live="polite">
+        Loading more files...
+      </p>
+      <LoadingList count={3} className="streaming-tail" />
+    </>
+  )
+}
+
+function getUploadListStatusLabel(state: UploadState): string {
+  switch (state.status) {
+    case 'queued':
+    case 'running':
+    case 'retrying':
+      return 'Uploading'
+    case 'succeeded':
+      return 'Completed'
+    case 'failed':
+      return 'Failed'
+    case 'idle':
+      return 'Ready'
+  }
+}
+
+function getUploadListPath(item: PreparedUploadItem, state: UploadState): string {
+  if (state.remotePath) {
+    return `/${state.remotePath.replace(/^\/+/, '')}`
+  }
+
+  const primaryCandidate = item.candidates[0]
+  const normalizedRelativePath = item.relativePath.replace(/\\/g, '/').replace(/^\/+/, '')
+  const basePath = primaryCandidate?.basePath?.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') ?? ''
+
+  if (!basePath) {
+    return normalizedRelativePath ? `/${normalizedRelativePath}` : '/'
+  }
+
+  return normalizedRelativePath ? `/${basePath}/${normalizedRelativePath}` : `/${basePath}`
+}
+
+function getUploadListStorage(item: PreparedUploadItem, state: UploadState): string {
+  return state.remoteName ?? item.candidates[0]?.remoteName ?? 'Pending'
+}
+
+function IssuesModal({
+  issues,
+  focusedIssueId,
+  onClose,
+}: {
+  issues: WorkspaceIssue[]
+  focusedIssueId: string | null
+  onClose: () => void
+}) {
+  return (
+    <div className="modal-overlay" role="presentation" onClick={onClose}>
+      <div className="issues-modal" role="dialog" aria-modal="true" aria-labelledby="issues-title" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">Issues</p>
+            <h2 id="issues-title">Workspace issues</h2>
+          </div>
+
+          <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close issues modal">
+            ×
+          </Button>
+        </div>
+
+        {issues.length === 0 ? (
+          <div className="main-empty-state compact issues-empty-state">
+            <p className="eyebrow">Issues</p>
+            <h2>No issues right now.</h2>
+            <p>Cloud Weave will show skipped folders, reconnect problems, and similar notices here.</p>
+          </div>
+        ) : (
+          <div className="issues-list" role="list" aria-label="Workspace issues">
+            {issues.map((issue) => (
+              <article
+                key={issue.id}
+                className={`issue-item ${issue.level} ${focusedIssueId === issue.id ? 'focused' : ''}`}
+                role="listitem"
+              >
+                <div className="issue-item-header">
+                  <span className={`storage-status-badge ${issue.level === 'error' ? 'warning' : 'neutral'}`}>{issue.level}</span>
+                  <span className="issue-item-time">{formatIssueTimestamp(issue.timestamp)}</span>
+                </div>
+                <p className="issue-item-message">{issue.message}</p>
+                <div className="issue-item-meta">
+                  <span>{describeIssueSource(issue.source)}</span>
+                  <span>{describeIssueLocation(issue.source)}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -2064,17 +2650,17 @@ function PreviewModal({
   }, [assetUrl, payload.previewKind])
 
   return (
-    <div className="modal-overlay" role="presentation">
-      <div className="preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+    <div className="modal-overlay" role="presentation" onClick={onClose}>
+      <div className="preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
             <p className="eyebrow">{payload.previewKind === 'image' ? 'Image Preview' : 'PDF Preview'}</p>
             <h2 id="preview-title">{payload.itemName}</h2>
           </div>
 
-          <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close preview">
+          <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close preview">
             ×
-          </button>
+          </Button>
         </div>
 
         <div className="preview-surface">
@@ -2097,12 +2683,6 @@ function PreviewModal({
             </div>
           )}
         </div>
-
-        <div className="modal-actions">
-          <button className="ghost-button" type="button" onClick={onClose}>
-            Close
-          </button>
-        </div>
       </div>
     </div>
   )
@@ -2123,6 +2703,28 @@ function getProviderLabel(provider: string): string {
   }
 }
 
+function formatListPath(item: UnifiedItem): string {
+  const normalizedPath = item.sourcePath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+
+  if (!normalizedPath) {
+    return '/'
+  }
+
+  if (item.isDir) {
+    return `/${normalizedPath}`
+  }
+
+  const lastSeparatorIndex = normalizedPath.lastIndexOf('/')
+
+  if (lastSeparatorIndex < 0) {
+    return '/'
+  }
+
+  const parentPath = normalizedPath.slice(0, lastSeparatorIndex)
+
+  return parentPath ? `/${parentPath}` : '/'
+}
+
 function normalizeDialogSelection(selection: string | string[] | null): string[] {
   if (!selection) {
     return []
@@ -2133,6 +2735,17 @@ function normalizeDialogSelection(selection: string | string[] | null): string[]
 
 function toUploadSelections(paths: string[], kind: UploadSelection['kind'] = 'file'): UploadSelection[] {
   return paths.map((path) => ({ path, kind }))
+}
+
+function getUploadSelectionDisplayName(path: string): string {
+  const normalizedPath = path.replace(/\\/g, '/').replace(/\/+$/, '')
+
+  if (!normalizedPath) {
+    return path
+  }
+
+  const segments = normalizedPath.split('/')
+  return segments[segments.length - 1] || normalizedPath
 }
 
 export default App

@@ -1,6 +1,7 @@
 export type UnifiedCategory = 'documents' | 'photos' | 'videos' | 'audio' | 'other'
 
 export type LogicalView = 'recent' | UnifiedCategory
+export type UnifiedItemSortKey = 'updated-desc' | 'updated-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc'
 
 export type UnifiedItem = {
   id: string
@@ -17,7 +18,7 @@ export type UnifiedItem = {
 }
 
 export type RecentGroup = {
-  label: 'Today' | 'This week' | 'This month' | 'Older' | 'Unknown date'
+  label: 'Today' | 'Last 7 days' | 'Last 30 days' | 'Older than 30 days' | 'Unknown date'
   items: UnifiedItem[]
 }
 
@@ -43,10 +44,8 @@ export function searchUnifiedItems(items: UnifiedItem[], query: string): Unified
   )
 }
 
-export function sortUnifiedItems(items: UnifiedItem[]): UnifiedItem[] {
-  return [...items].sort((left, right) =>
-    left.sourceRemote.localeCompare(right.sourceRemote) || left.sourcePath.localeCompare(right.sourcePath),
-  )
+export function sortUnifiedItems(items: UnifiedItem[], sortKey: UnifiedItemSortKey = 'name-asc'): UnifiedItem[] {
+  return [...items].sort((left, right) => compareItems(left, right, sortKey))
 }
 
 export function sortItemsByRecent(items: UnifiedItem[]): UnifiedItem[] {
@@ -56,9 +55,9 @@ export function sortItemsByRecent(items: UnifiedItem[]): UnifiedItem[] {
 export function groupRecentItems(items: UnifiedItem[], now = new Date()): RecentGroup[] {
   const grouped = new Map<RecentGroup['label'], UnifiedItem[]>([
     ['Today', []],
-    ['This week', []],
-    ['This month', []],
-    ['Older', []],
+    ['Last 7 days', []],
+    ['Last 30 days', []],
+    ['Older than 30 days', []],
     ['Unknown date', []],
   ])
 
@@ -105,13 +104,13 @@ export function formatModifiedTime(modTime: string | null): string {
     return 'Unknown date'
   }
 
-  return parsed.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  const year = parsed.getFullYear()
+  const month = String(parsed.getMonth() + 1).padStart(2, '0')
+  const day = String(parsed.getDate()).padStart(2, '0')
+  const hour = String(parsed.getHours()).padStart(2, '0')
+  const minute = String(parsed.getMinutes()).padStart(2, '0')
+
+  return `${year}/${month}/${day} ${hour}:${minute}`
 }
 
 export function getCategoryLabel(view: LogicalView): string {
@@ -169,6 +168,77 @@ function compareItemsByRecent(left: UnifiedItem, right: UnifiedItem): number {
   return left.name.localeCompare(right.name)
 }
 
+function compareItems(left: UnifiedItem, right: UnifiedItem, sortKey: UnifiedItemSortKey): number {
+  switch (sortKey) {
+    case 'updated-desc':
+      return compareItemsByRecent(left, right)
+    case 'updated-asc':
+      return compareItemsByOldest(left, right)
+    case 'name-asc':
+      return compareItemsByName(left, right)
+    case 'name-desc':
+      return compareItemsByName(right, left)
+    case 'size-desc':
+      return compareItemsBySize(left, right, 'desc')
+    case 'size-asc':
+      return compareItemsBySize(left, right, 'asc')
+  }
+}
+
+function compareItemsByOldest(left: UnifiedItem, right: UnifiedItem): number {
+  const leftTimestamp = toTimestamp(left.modTime)
+  const rightTimestamp = toTimestamp(right.modTime)
+
+  if (leftTimestamp === null && rightTimestamp === null) {
+    return compareItemsByName(left, right)
+  }
+
+  if (leftTimestamp === null) {
+    return 1
+  }
+
+  if (rightTimestamp === null) {
+    return -1
+  }
+
+  if (leftTimestamp !== rightTimestamp) {
+    return leftTimestamp - rightTimestamp
+  }
+
+  return compareItemsByName(left, right)
+}
+
+function compareItemsByName(left: UnifiedItem, right: UnifiedItem): number {
+  return (
+    left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }) ||
+    left.sourceRemote.localeCompare(right.sourceRemote, undefined, { sensitivity: 'base' }) ||
+    left.sourcePath.localeCompare(right.sourcePath, undefined, { sensitivity: 'base' })
+  )
+}
+
+function compareItemsBySize(left: UnifiedItem, right: UnifiedItem, direction: 'asc' | 'desc'): number {
+  const leftSize = left.isDir ? null : left.size
+  const rightSize = right.isDir ? null : right.size
+
+  if (leftSize === null && rightSize === null) {
+    return compareItemsByName(left, right)
+  }
+
+  if (leftSize === null) {
+    return 1
+  }
+
+  if (rightSize === null) {
+    return -1
+  }
+
+  if (leftSize !== rightSize) {
+    return direction === 'desc' ? rightSize - leftSize : leftSize - rightSize
+  }
+
+  return compareItemsByName(left, right)
+}
+
 function resolveRecentGroup(modTime: string | null, now: Date): RecentGroup['label'] {
   const timestamp = toTimestamp(modTime)
   if (timestamp === null) {
@@ -179,26 +249,24 @@ function resolveRecentGroup(modTime: string | null, now: Date): RecentGroup['lab
   const itemDate = new Date(timestamp)
 
   const startOfToday = new Date(current.getFullYear(), current.getMonth(), current.getDate())
-  const startOfWeek = new Date(startOfToday)
-  const dayOfWeek = startOfWeek.getDay()
-  const normalizedDayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1
-  startOfWeek.setDate(startOfWeek.getDate() - normalizedDayOffset)
-
-  const startOfMonth = new Date(current.getFullYear(), current.getMonth(), 1)
+  const startOfLast7Days = new Date(startOfToday)
+  startOfLast7Days.setDate(startOfLast7Days.getDate() - 6)
+  const startOfLast30Days = new Date(startOfToday)
+  startOfLast30Days.setDate(startOfLast30Days.getDate() - 29)
 
   if (itemDate >= startOfToday) {
     return 'Today'
   }
 
-  if (itemDate >= startOfWeek) {
-    return 'This week'
+  if (itemDate >= startOfLast7Days) {
+    return 'Last 7 days'
   }
 
-  if (itemDate >= startOfMonth) {
-    return 'This month'
+  if (itemDate >= startOfLast30Days) {
+    return 'Last 30 days'
   }
 
-  return 'Older'
+  return 'Older than 30 days'
 }
 
 function toTimestamp(modTime: string | null): number | null {

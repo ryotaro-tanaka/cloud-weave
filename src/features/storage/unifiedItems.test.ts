@@ -86,7 +86,7 @@ describe('groupRecentItems', () => {
         items: [items[1]],
       },
       {
-        label: 'This week',
+        label: 'Last 7 days',
         items: [items[0]],
       },
       {
