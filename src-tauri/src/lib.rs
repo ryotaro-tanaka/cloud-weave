@@ -36,8 +36,8 @@ use crate::{
         ReconnectRequestStore,
     },
     backend_common::{
-        default_remote_config_state, ensure_rclone_config, resolve_app_log_dir,
-        summarize_output, user_facing_command_error,
+        default_remote_config_state, ensure_rclone_config, resolve_app_local_data_dir,
+        resolve_app_log_dir, summarize_output, user_facing_command_error,
     },
     providers::onedrive::{
         finalize_remote as finalize_onedrive_remote_with_drive,
@@ -1507,11 +1507,7 @@ fn resolve_downloads_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn resolve_open_temp_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let temp_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("failed to resolve the app data directory: {error}"))?
-        .join("open-cache");
+    let temp_dir = resolve_app_local_data_dir(app)?.join("open-cache");
 
     fs::create_dir_all(&temp_dir)
         .map_err(|error| format!("failed to prepare the open file cache: {error}"))?;

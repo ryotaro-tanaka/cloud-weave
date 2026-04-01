@@ -71,6 +71,18 @@ pub(crate) fn resolve_app_log_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_log_dir)
 }
 
+pub(crate) fn resolve_app_local_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("failed to resolve local app data directory: {error}"))?;
+
+    fs::create_dir_all(&app_local_data_dir)
+        .map_err(|error| format!("failed to prepare local app data directory: {error}"))?;
+
+    Ok(app_local_data_dir)
+}
+
 pub(crate) fn default_remote_config_state() -> RemoteConfigState {
     RemoteConfigState {
         provider: "unknown".to_string(),
