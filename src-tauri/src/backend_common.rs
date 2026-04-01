@@ -59,6 +59,18 @@ pub(crate) fn ensure_rclone_config(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(config_path)
 }
 
+pub(crate) fn resolve_app_log_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_log_dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|error| format!("failed to resolve app log directory: {error}"))?;
+
+    fs::create_dir_all(&app_log_dir)
+        .map_err(|error| format!("failed to prepare app log directory: {error}"))?;
+
+    Ok(app_log_dir)
+}
+
 pub(crate) fn default_remote_config_state() -> RemoteConfigState {
     RemoteConfigState {
         provider: "unknown".to_string(),

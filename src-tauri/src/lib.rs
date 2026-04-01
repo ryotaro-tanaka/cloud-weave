@@ -25,6 +25,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_log::{Target, TargetKind};
 
 use crate::{
     auth_flow::start_auth_flow,
@@ -35,8 +36,8 @@ use crate::{
         ReconnectRequestStore,
     },
     backend_common::{
-        default_remote_config_state, ensure_rclone_config, summarize_output,
-        user_facing_command_error,
+        default_remote_config_state, ensure_rclone_config, resolve_app_log_dir,
+        summarize_output, user_facing_command_error,
     },
     providers::onedrive::{
         finalize_remote as finalize_onedrive_remote_with_drive,
@@ -54,6 +55,7 @@ const LIBRARY_PROGRESS_EVENT: &str = "library://progress";
 const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(400);
 const OPEN_TEMP_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 const UPLOAD_ROUTING_CONFIG_FILE: &str = "upload-routing.json";
+const APP_LOG_FILE_BASENAME: &str = "cloud-weave";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1427,11 +1429,27 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_log::Builder::default()
+                .clear_targets()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some(APP_LOG_FILE_BASENAME.into()),
+                    }),
+                ])
                 .level(log::LevelFilter::Info)
                 .build(),
         )
         .setup(|app| {
             let handle = app.handle().clone();
+            match resolve_app_log_dir(&handle) {
+                Ok(log_dir) => {
+                    log::info!("app logs will be written to {}", log_dir.display());
+                }
+                Err(error) => {
+                    log::warn!("failed to confirm app log directory: {error}");
+                }
+            }
+
             if let Err(error) = cleanup_stale_open_temp_files(&handle) {
                 log::warn!("failed to clean stale open file cache: {error}");
             }
