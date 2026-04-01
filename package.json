@@ -9,6 +9,7 @@
   "scripts": {
     "ui:dev": "vite",
     "ui:build": "tsc -b && vite build",
+    "brand:icons": "tauri icon assets/brand/cloud-weave-logo.png -o src-tauri/icons",
     "test:run": "vitest run",
     "rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all",
     "rust:fmt:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",

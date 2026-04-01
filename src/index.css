@@ -152,26 +152,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: clamp(20px, 3vw, 36px);
   max-width: min(1080px, 100%);
 }
 
-.startup-static-splash-icon {
-  width: clamp(96px, 14vw, 180px);
-  aspect-ratio: 1;
-  border-radius: 24%;
-  background: linear-gradient(135deg, #2f80ff, #25c6d9);
-  box-shadow: 0 20px 32px rgba(6, 12, 24, 0.28);
-}
-
-.startup-static-splash-wordmark {
-  margin: 0;
-  color: #f8fbff;
-  font-family: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
-  font-size: clamp(40px, 7vw, 112px);
-  font-weight: 500;
-  line-height: 1;
-  letter-spacing: -0.04em;
+.startup-static-splash-lockup {
+  width: min(100%, 640px);
+  height: auto;
+  display: block;
+  filter: drop-shadow(0 20px 32px rgba(6, 12, 24, 0.28));
 }
 
 h1,
@@ -214,13 +202,7 @@ p {
   }
 
   .startup-static-splash-brand {
-    flex-direction: column;
-    gap: 18px;
-    text-align: center;
-  }
-
-  .startup-static-splash-wordmark {
-    font-size: clamp(34px, 11vw, 64px);
+    width: min(100%, 420px);
   }
 }
 

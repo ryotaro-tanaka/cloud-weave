@@ -67,7 +67,7 @@ import {
   type UploadState,
 } from './features/storage/uploads'
 import { Button } from './components/ui/Button'
-import splashIcon from '../src-tauri/icons/icon.png'
+import splashLockup from '../assets/brand/cloud-weave-lockup.png'
 import './App.css'
 
 type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
@@ -1609,8 +1609,7 @@ function App() {
           aria-hidden="true"
         >
           <div className="startup-splash-brand">
-            <img className="startup-splash-logo" src={splashIcon} alt="" />
-            <p className="startup-splash-wordmark">Cloud Weave</p>
+            <img className="startup-splash-lockup" src={splashLockup} alt="" />
           </div>
         </div>
       ) : null}
