@@ -15,6 +15,7 @@ use std::{
     collections::{HashMap, VecDeque},
     fs,
     hash::{Hash, Hasher},
+    io::{Read, Write},
     path::Component,
     path::{Path, PathBuf},
     sync::mpsc,
@@ -27,6 +28,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_log::{Target, TargetKind};
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 use crate::{
     auth_flow::start_auth_flow,
@@ -57,6 +59,8 @@ const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(400);
 const OPEN_TEMP_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 const UPLOAD_ROUTING_CONFIG_FILE: &str = "upload-routing.json";
 const APP_LOG_FILE_BASENAME: &str = "cloud-weave";
+const APP_LOG_FILE_NAME: &str = "cloud-weave.log";
+const DIAGNOSTICS_ZIP_FILE_NAME: &str = "diagnostics.zip";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +92,7 @@ struct ExportDiagnosticsResult {
     status: String,
     diagnostics_dir: String,
     summary_path: String,
+    zip_path: String,
     message: String,
 }
 
@@ -1214,12 +1219,70 @@ fn export_diagnostics_impl(app: AppHandle) -> Result<ExportDiagnosticsResult, St
     fs::write(&summary_path, summary_json)
         .map_err(|error| format!("failed to write diagnostics summary: {error}"))?;
 
+    let zip_path = diagnostics_dir.join(DIAGNOSTICS_ZIP_FILE_NAME);
+    let app_log_path = resolve_app_log_dir(&app)?.join(APP_LOG_FILE_NAME);
+    let included_log_path = app_log_path.exists().then_some(app_log_path.as_path());
+
+    create_diagnostics_zip(&zip_path, &summary_path, included_log_path)?;
+
     Ok(ExportDiagnosticsResult {
         status: "success".to_string(),
         diagnostics_dir: diagnostics_dir.to_string_lossy().into_owned(),
         summary_path: summary_path.to_string_lossy().into_owned(),
-        message: "Diagnostics summary was exported successfully.".to_string(),
+        zip_path: zip_path.to_string_lossy().into_owned(),
+        message: if included_log_path.is_some() {
+            "Diagnostics ZIP was exported successfully.".to_string()
+        } else {
+            "Diagnostics ZIP was exported successfully without the current log file.".to_string()
+        },
     })
+}
+
+fn create_diagnostics_zip(
+    zip_path: &Path,
+    summary_path: &Path,
+    app_log_path: Option<&Path>,
+) -> Result<(), String> {
+    let zip_file = fs::File::create(zip_path)
+        .map_err(|error| format!("failed to create diagnostics ZIP: {error}"))?;
+    let mut zip_writer = ZipWriter::new(zip_file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+    add_file_to_zip(&mut zip_writer, summary_path, "summary.json", options)?;
+
+    if let Some(log_path) = app_log_path {
+        add_file_to_zip(&mut zip_writer, log_path, "logs/cloud-weave.log", options)?;
+    }
+
+    zip_writer
+        .finish()
+        .map_err(|error| format!("failed to finalize diagnostics ZIP: {error}"))?;
+
+    Ok(())
+}
+
+fn add_file_to_zip(
+    zip_writer: &mut ZipWriter<fs::File>,
+    source_path: &Path,
+    zip_entry_name: &str,
+    options: SimpleFileOptions,
+) -> Result<(), String> {
+    let mut source_file = fs::File::open(source_path)
+        .map_err(|error| format!("failed to open file for ZIP packaging: {error}"))?;
+    let mut buffer = Vec::new();
+
+    source_file
+        .read_to_end(&mut buffer)
+        .map_err(|error| format!("failed to read file for ZIP packaging: {error}"))?;
+
+    zip_writer
+        .start_file(zip_entry_name, options)
+        .map_err(|error| format!("failed to start ZIP entry: {error}"))?;
+    zip_writer
+        .write_all(&buffer)
+        .map_err(|error| format!("failed to write ZIP entry: {error}"))?;
+
+    Ok(())
 }
 
 fn start_download_impl(
