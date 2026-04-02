@@ -105,6 +105,11 @@ type ExportDiagnosticsResult = {
   message: string
 }
 
+type RecentDiagnosticsExport = {
+  diagnosticsDir: string
+  zipPath: string
+}
+
 type UnifiedLibraryResult = {
   items: UnifiedItem[]
   notices: string[]
@@ -131,6 +136,7 @@ type ToastKind = 'info' | 'warning' | 'error' | 'success'
 type ToastAction =
   | { type: 'open-upload' }
   | { type: 'open-issues'; issueId?: string }
+  | { type: 'open-path'; path: string }
 type ToastNotice = {
   id: string
   kind: ToastKind
@@ -270,6 +276,14 @@ function describeIssueSource(source: string): string {
   return 'Workspace'
 }
 
+function inferFeedbackTypeFromIssue(issue: WorkspaceIssue | null): string | null {
+  if (!issue) {
+    return null
+  }
+
+  return issue.level === 'error' || issue.level === 'warning' ? 'Bug' : 'Other'
+}
+
 function describeIssueLocation(source: string): string {
   if (source.startsWith('storage:')) {
     return 'Relevant place: Storages'
@@ -367,6 +381,7 @@ function App() {
   const [isExportingDiagnostics, setIsExportingDiagnostics] = useState(false)
   const [isOpeningLogsFolder, setIsOpeningLogsFolder] = useState(false)
   const [isOpeningFeedbackForm, setIsOpeningFeedbackForm] = useState(false)
+  const [recentDiagnosticsExport, setRecentDiagnosticsExport] = useState<RecentDiagnosticsExport | null>(null)
   const [, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
     requestId: null,
     loadedRemoteCount: 0,
@@ -397,6 +412,10 @@ function App() {
   )
   const unreadIssueCount = useMemo(() => workspaceIssues.filter((issue) => !issue.read).length, [workspaceIssues])
   const visibleToasts = toastNotices
+  const focusedIssue = useMemo(
+    () => (focusedIssueId ? workspaceIssues.find((issue) => issue.id === focusedIssueId) ?? null : null),
+    [focusedIssueId, workspaceIssues],
+  )
 
   const groupedRecentItems = useMemo(() => {
     if (activeView !== 'recent' || sortKey !== 'updated-desc') {
@@ -497,10 +516,16 @@ function App() {
 
     try {
       const result = await invoke<ExportDiagnosticsResult>('export_diagnostics')
+      setRecentDiagnosticsExport({
+        diagnosticsDir: result.diagnosticsDir,
+        zipPath: result.zipPath,
+      })
       showToast({
         kind: 'success',
-        message: result.message,
+        message: 'Diagnostics ZIP is ready to attach.',
         source: 'feedback',
+        actionLabel: 'Open folder',
+        action: { type: 'open-path', path: result.diagnosticsDir },
       })
       return result
     } catch (error) {
@@ -545,7 +570,16 @@ function App() {
     setIsOpeningFeedbackForm(true)
 
     try {
-      await openPath(BASIN_FEEDBACK_URL)
+      const feedbackUrl = new URL(BASIN_FEEDBACK_URL)
+      const appVersion = '0.2.0'
+      const feedbackType = inferFeedbackTypeFromIssue(focusedIssue)
+
+      feedbackUrl.searchParams.set('app_version', appVersion)
+      if (feedbackType) {
+        feedbackUrl.searchParams.set('feedback_type', feedbackType)
+      }
+
+      await openPath(feedbackUrl.toString())
       setIsFeedbackPromptOpen(false)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not open the feedback form.'
@@ -1970,6 +2004,11 @@ function App() {
                       return
                     }
 
+                    if (action.type === 'open-path') {
+                      void openPath(action.path)
+                      return
+                    }
+
                     openIssuesModal(action.issueId)
                   }}
                 >
@@ -2012,6 +2051,7 @@ function App() {
         <FeedbackPromptModal
           isExportingDiagnostics={isExportingDiagnostics}
           isOpeningFeedbackForm={isOpeningFeedbackForm}
+          recentDiagnosticsExport={recentDiagnosticsExport}
           onClose={() => setIsFeedbackPromptOpen(false)}
           onExportDiagnostics={() => {
             void exportDiagnostics()
@@ -2729,12 +2769,14 @@ function IssuesModal({
 function FeedbackPromptModal({
   isExportingDiagnostics,
   isOpeningFeedbackForm,
+  recentDiagnosticsExport,
   onClose,
   onExportDiagnostics,
   onOpenFeedbackForm,
 }: {
   isExportingDiagnostics: boolean
   isOpeningFeedbackForm: boolean
+  recentDiagnosticsExport: RecentDiagnosticsExport | null
   onClose: () => void
   onExportDiagnostics: () => void
   onOpenFeedbackForm: () => void
@@ -2757,6 +2799,7 @@ function FeedbackPromptModal({
           <p>Describe the issue briefly.</p>
           <p>Attach diagnostics.zip if you want help debugging.</p>
           <p>Do not include personal or sensitive information.</p>
+          {recentDiagnosticsExport ? <p>Diagnostics ZIP is ready to attach.</p> : null}
         </div>
 
         <div className="modal-actions">
