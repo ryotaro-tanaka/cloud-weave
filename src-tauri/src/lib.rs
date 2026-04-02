@@ -1270,7 +1270,8 @@ fn export_diagnostics_impl(
     fs::write(&summary_path, summary_json)
         .map_err(|error| format!("failed to write diagnostics summary: {error}"))?;
 
-    let zip_path = resolve_downloads_dir(&app)?.join(format!("{DIAGNOSTICS_ZIP_DOWNLOAD_PREFIX}-{export_id}.zip"));
+    let zip_path = resolve_downloads_dir(&app)?
+        .join(format!("{DIAGNOSTICS_ZIP_DOWNLOAD_PREFIX}-{export_id}.zip"));
     let app_log_path = resolve_app_log_dir(&app)?.join(APP_LOG_FILE_NAME);
     let included_log_path = app_log_path.exists().then_some(app_log_path.as_path());
 
@@ -1284,7 +1285,8 @@ fn export_diagnostics_impl(
         message: if included_log_path.is_some() {
             "Diagnostics ZIP was exported to Downloads successfully.".to_string()
         } else {
-            "Diagnostics ZIP was exported to Downloads successfully without the current log file.".to_string()
+            "Diagnostics ZIP was exported to Downloads successfully without the current log file."
+                .to_string()
         },
     })
 }
