@@ -60,7 +60,7 @@ const OPEN_TEMP_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 const UPLOAD_ROUTING_CONFIG_FILE: &str = "upload-routing.json";
 const APP_LOG_FILE_BASENAME: &str = "cloud-weave";
 const APP_LOG_FILE_NAME: &str = "cloud-weave.log";
-const DIAGNOSTICS_ZIP_FILE_NAME: &str = "diagnostics.zip";
+const DIAGNOSTICS_ZIP_DOWNLOAD_PREFIX: &str = "cloud-weave-diagnostics";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1219,7 +1219,7 @@ fn export_diagnostics_impl(app: AppHandle) -> Result<ExportDiagnosticsResult, St
     fs::write(&summary_path, summary_json)
         .map_err(|error| format!("failed to write diagnostics summary: {error}"))?;
 
-    let zip_path = diagnostics_dir.join(DIAGNOSTICS_ZIP_FILE_NAME);
+    let zip_path = resolve_downloads_dir(&app)?.join(format!("{DIAGNOSTICS_ZIP_DOWNLOAD_PREFIX}-{export_id}.zip"));
     let app_log_path = resolve_app_log_dir(&app)?.join(APP_LOG_FILE_NAME);
     let included_log_path = app_log_path.exists().then_some(app_log_path.as_path());
 
@@ -1231,9 +1231,9 @@ fn export_diagnostics_impl(app: AppHandle) -> Result<ExportDiagnosticsResult, St
         summary_path: summary_path.to_string_lossy().into_owned(),
         zip_path: zip_path.to_string_lossy().into_owned(),
         message: if included_log_path.is_some() {
-            "Diagnostics ZIP was exported successfully.".to_string()
+            "Diagnostics ZIP was exported to Downloads successfully.".to_string()
         } else {
-            "Diagnostics ZIP was exported successfully without the current log file.".to_string()
+            "Diagnostics ZIP was exported to Downloads successfully without the current log file.".to_string()
         },
     })
 }

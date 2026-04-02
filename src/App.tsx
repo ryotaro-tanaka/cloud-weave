@@ -105,11 +105,6 @@ type ExportDiagnosticsResult = {
   message: string
 }
 
-type RecentDiagnosticsExport = {
-  diagnosticsDir: string
-  zipPath: string
-}
-
 type UnifiedLibraryResult = {
   items: UnifiedItem[]
   notices: string[]
@@ -207,7 +202,6 @@ const TOAST_DURATION_MS = 5000
 const STARTUP_SPLASH_VISIBLE_MS = 3000
 const STARTUP_SPLASH_FADE_MS = 260
 const BASIN_FEEDBACK_URL = 'https://usebasin.com/form/37c12519bb6c/hosted/46b7f138fca3'
-const APP_LOGS_DIRECTORY = 'C:\\Users\\taroh\\AppData\\Local\\com.ryotaro.cloudweave\\logs'
 const SORT_OPTIONS: Array<{ value: UnifiedItemSortKey; label: string }> = [
   { value: 'updated-desc', label: 'Newest' },
   { value: 'updated-asc', label: 'Oldest' },
@@ -262,6 +256,28 @@ function formatIssueTimestamp(timestamp: number): string {
   const minute = String(parsed.getMinutes()).padStart(2, '0')
 
   return `${year}/${month}/${day} ${hour}:${minute}`
+}
+
+function getParentDirectory(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, '')
+  const lastSeparatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+
+  if (lastSeparatorIndex <= 0) {
+    return path
+  }
+
+  return normalized.slice(0, lastSeparatorIndex)
+}
+
+function getFileName(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, '')
+  const lastSeparatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+
+  if (lastSeparatorIndex < 0) {
+    return normalized
+  }
+
+  return normalized.slice(lastSeparatorIndex + 1)
 }
 
 function describeIssueSource(source: string): string {
@@ -379,9 +395,7 @@ function App() {
   const [isUploadDragActive, setIsUploadDragActive] = useState(false)
   const [hasPendingUploadRefresh, setHasPendingUploadRefresh] = useState(false)
   const [isExportingDiagnostics, setIsExportingDiagnostics] = useState(false)
-  const [isOpeningLogsFolder, setIsOpeningLogsFolder] = useState(false)
   const [isOpeningFeedbackForm, setIsOpeningFeedbackForm] = useState(false)
-  const [recentDiagnosticsExport, setRecentDiagnosticsExport] = useState<RecentDiagnosticsExport | null>(null)
   const [, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
     requestId: null,
     loadedRemoteCount: 0,
@@ -515,19 +529,7 @@ function App() {
     setIsExportingDiagnostics(true)
 
     try {
-      const result = await invoke<ExportDiagnosticsResult>('export_diagnostics')
-      setRecentDiagnosticsExport({
-        diagnosticsDir: result.diagnosticsDir,
-        zipPath: result.zipPath,
-      })
-      showToast({
-        kind: 'success',
-        message: 'Diagnostics ZIP is ready to attach.',
-        source: 'feedback',
-        actionLabel: 'Open folder',
-        action: { type: 'open-path', path: result.diagnosticsDir },
-      })
-      return result
+      return await invoke<ExportDiagnosticsResult>('export_diagnostics')
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not export diagnostics right now.'
       showToast({
@@ -541,29 +543,13 @@ function App() {
     }
   }
 
-  const openLogsFolder = async () => {
-    if (isOpeningLogsFolder) {
+  const startFeedbackFlow = async () => {
+    if (isExportingDiagnostics || isOpeningFeedbackForm) {
       return
     }
 
-    setIsOpeningLogsFolder(true)
-
-    try {
-      await openPath(APP_LOGS_DIRECTORY)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not open the logs folder.'
-      showToast({
-        kind: 'error',
-        message,
-        source: 'feedback',
-      })
-    } finally {
-      setIsOpeningLogsFolder(false)
-    }
-  }
-
-  const openFeedbackForm = async () => {
-    if (isOpeningFeedbackForm) {
+    const diagnosticsResult = await exportDiagnostics()
+    if (!diagnosticsResult) {
       return
     }
 
@@ -581,6 +567,14 @@ function App() {
 
       await openPath(feedbackUrl.toString())
       setIsFeedbackPromptOpen(false)
+      const zipFileName = getFileName(diagnosticsResult.zipPath)
+      showToast({
+        kind: 'success',
+        message: `Feedback form opened. Attach ${zipFileName} from Downloads.`,
+        source: 'feedback',
+        actionLabel: 'Open Downloads',
+        action: { type: 'open-path', path: getParentDirectory(diagnosticsResult.zipPath) },
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not open the feedback form.'
       showToast({
@@ -2031,15 +2025,7 @@ function App() {
         <IssuesModal
           issues={workspaceIssues}
           focusedIssueId={focusedIssueId}
-          isExportingDiagnostics={isExportingDiagnostics}
-          isOpeningLogsFolder={isOpeningLogsFolder}
           onReportIssue={() => setIsFeedbackPromptOpen(true)}
-          onExportDiagnostics={() => {
-            void exportDiagnostics()
-          }}
-          onOpenLogsFolder={() => {
-            void openLogsFolder()
-          }}
           onClose={() => {
             setIsIssuesModalOpen(false)
             setFocusedIssueId(null)
@@ -2051,13 +2037,9 @@ function App() {
         <FeedbackPromptModal
           isExportingDiagnostics={isExportingDiagnostics}
           isOpeningFeedbackForm={isOpeningFeedbackForm}
-          recentDiagnosticsExport={recentDiagnosticsExport}
           onClose={() => setIsFeedbackPromptOpen(false)}
-          onExportDiagnostics={() => {
-            void exportDiagnostics()
-          }}
-          onOpenFeedbackForm={() => {
-            void openFeedbackForm()
+          onContinue={() => {
+            void startFeedbackFlow()
           }}
         />
       ) : null}
@@ -2692,20 +2674,12 @@ function getUploadListStorage(item: PreparedUploadItem, state: UploadState): str
 function IssuesModal({
   issues,
   focusedIssueId,
-  isExportingDiagnostics,
-  isOpeningLogsFolder,
   onReportIssue,
-  onExportDiagnostics,
-  onOpenLogsFolder,
   onClose,
 }: {
   issues: WorkspaceIssue[]
   focusedIssueId: string | null
-  isExportingDiagnostics: boolean
-  isOpeningLogsFolder: boolean
   onReportIssue: () => void
-  onExportDiagnostics: () => void
-  onOpenLogsFolder: () => void
   onClose: () => void
 }) {
   return (
@@ -2725,12 +2699,6 @@ function IssuesModal({
         <div className="issues-feedback-actions">
           <Button family="secondary" size="sm" type="button" onClick={onReportIssue}>
             Report issue
-          </Button>
-          <Button family="quiet" size="sm" type="button" onClick={onExportDiagnostics} disabled={isExportingDiagnostics}>
-            {isExportingDiagnostics ? 'Exporting...' : 'Export diagnostics'}
-          </Button>
-          <Button family="quiet" size="sm" type="button" onClick={onOpenLogsFolder} disabled={isOpeningLogsFolder}>
-            {isOpeningLogsFolder ? 'Opening...' : 'Open logs folder'}
           </Button>
         </div>
 
@@ -2769,18 +2737,21 @@ function IssuesModal({
 function FeedbackPromptModal({
   isExportingDiagnostics,
   isOpeningFeedbackForm,
-  recentDiagnosticsExport,
   onClose,
-  onExportDiagnostics,
-  onOpenFeedbackForm,
+  onContinue,
 }: {
   isExportingDiagnostics: boolean
   isOpeningFeedbackForm: boolean
-  recentDiagnosticsExport: RecentDiagnosticsExport | null
   onClose: () => void
-  onExportDiagnostics: () => void
-  onOpenFeedbackForm: () => void
+  onContinue: () => void
 }) {
+  const isContinuing = isExportingDiagnostics || isOpeningFeedbackForm
+  const continueLabel = isExportingDiagnostics
+    ? 'Preparing diagnostics...'
+    : isOpeningFeedbackForm
+      ? 'Opening form...'
+      : 'Continue'
+
   return (
     <div className="modal-overlay" role="presentation" onClick={onClose}>
       <div className="confirm-modal feedback-prompt-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-prompt-title" onClick={(event) => event.stopPropagation()}>
@@ -2796,21 +2767,18 @@ function FeedbackPromptModal({
         </div>
 
         <div className="feedback-prompt-copy">
-          <p>Describe the issue briefly.</p>
-          <p>Attach diagnostics.zip if you want help debugging.</p>
+          <p>Cloud Weave will save a diagnostics ZIP to your Downloads folder.</p>
+          <p>You will attach that ZIP in the feedback form next.</p>
+          <p>The feedback form will open in your browser after the ZIP is prepared.</p>
           <p>Do not include personal or sensitive information.</p>
-          {recentDiagnosticsExport ? <p>Diagnostics ZIP is ready to attach.</p> : null}
         </div>
 
         <div className="modal-actions">
-          <Button family="quiet" type="button" onClick={onClose}>
+          <Button family="quiet" type="button" onClick={onClose} disabled={isContinuing}>
             Cancel
           </Button>
-          <Button family="secondary" type="button" onClick={onExportDiagnostics} disabled={isExportingDiagnostics}>
-            {isExportingDiagnostics ? 'Exporting...' : 'Export diagnostics'}
-          </Button>
-          <Button family="primary" type="button" onClick={onOpenFeedbackForm} disabled={isOpeningFeedbackForm}>
-            {isOpeningFeedbackForm ? 'Opening...' : 'Open feedback form'}
+          <Button family="primary" type="button" onClick={onContinue} disabled={isContinuing}>
+            {continueLabel}
           </Button>
         </div>
       </div>

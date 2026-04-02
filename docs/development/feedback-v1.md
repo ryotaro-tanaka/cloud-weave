@@ -11,13 +11,10 @@ For the Basin form field contract, see [feedback-basin-v1.md](./feedback-basin-v
 ## Current User Flow
 
 1. Open the Issues modal.
-2. Choose one of the feedback actions:
-   - `Report issue`
-   - `Export diagnostics`
-   - `Open logs folder`
-3. `Report issue` opens a short in-app prompt with guidance.
-4. Users can export `diagnostics.zip` if they want debugging context.
-5. Cloud Weave opens the Basin hosted form in an external browser.
+2. Press `Report issue`.
+3. Cloud Weave opens a short in-app prompt explaining what happens next.
+4. When the user continues, Cloud Weave exports `diagnostics.zip` to `Downloads`.
+5. Cloud Weave opens the Basin hosted form in an external browser and tells the user which ZIP filename to attach from `Downloads`.
 6. In V1, `diagnostics.zip` is attached manually by the user.
 
 ## Diagnostics Payload Contract
@@ -33,7 +30,7 @@ Cloud Weave writes a `summary.json` file with these fields:
 
 ### `diagnostics.zip`
 
-Cloud Weave creates `diagnostics.zip` in the same export directory.
+Cloud Weave creates the user-facing diagnostics ZIP in `Downloads`.
 
 The ZIP currently contains:
 
@@ -48,8 +45,13 @@ Used for local-only and machine-local data:
 
 - `logs/cloud-weave.log`
 - `diagnostics/export-.../summary.json`
-- `diagnostics/export-.../diagnostics.zip`
 - `open-cache/...`
+
+### Downloads
+
+Used for user-facing exported files:
+
+- `cloud-weave-diagnostics-export-....zip`
 
 ### Roaming app data
 
