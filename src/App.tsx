@@ -97,6 +97,14 @@ type ActionResult = {
   message: string
 }
 
+type ExportDiagnosticsResult = {
+  status: 'success'
+  diagnosticsDir: string
+  summaryPath: string
+  zipPath: string
+  message: string
+}
+
 type UnifiedLibraryResult = {
   items: UnifiedItem[]
   notices: string[]
@@ -192,6 +200,8 @@ const CONNECT_SYNC_DELAY_MS = 500
 const TOAST_DURATION_MS = 5000
 const STARTUP_SPLASH_VISIBLE_MS = 3000
 const STARTUP_SPLASH_FADE_MS = 260
+const BASIN_FEEDBACK_URL = 'https://usebasin.com/form/37c12519bb6c/hosted/46b7f138fca3'
+const APP_LOGS_DIRECTORY = 'C:\\Users\\taroh\\AppData\\Local\\com.ryotaro.cloudweave\\logs'
 const SORT_OPTIONS: Array<{ value: UnifiedItemSortKey; label: string }> = [
   { value: 'updated-desc', label: 'Newest' },
   { value: 'updated-asc', label: 'Oldest' },
@@ -348,11 +358,15 @@ function App() {
   const [uploadBatch, setUploadBatch] = useState<PreparedUploadBatch | null>(null)
   const [preparingUploadItems, setPreparingUploadItems] = useState<PreparingUploadItem[]>([])
   const [previewPayload, setPreviewPayload] = useState<PreviewPayload | null>(null)
+  const [isFeedbackPromptOpen, setIsFeedbackPromptOpen] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [isPreparingUpload, setIsPreparingUpload] = useState(false)
   const [isStartingUpload, setIsStartingUpload] = useState(false)
   const [isUploadDragActive, setIsUploadDragActive] = useState(false)
   const [hasPendingUploadRefresh, setHasPendingUploadRefresh] = useState(false)
+  const [isExportingDiagnostics, setIsExportingDiagnostics] = useState(false)
+  const [isOpeningLogsFolder, setIsOpeningLogsFolder] = useState(false)
+  const [isOpeningFeedbackForm, setIsOpeningFeedbackForm] = useState(false)
   const [, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
     requestId: null,
     loadedRemoteCount: 0,
@@ -472,6 +486,77 @@ function App() {
     setFocusedIssueId(issueId ?? null)
     setIsIssuesModalOpen(true)
     markIssuesRead(issueId ? [issueId] : undefined)
+  }
+
+  const exportDiagnostics = async () => {
+    if (isExportingDiagnostics) {
+      return null
+    }
+
+    setIsExportingDiagnostics(true)
+
+    try {
+      const result = await invoke<ExportDiagnosticsResult>('export_diagnostics')
+      showToast({
+        kind: 'success',
+        message: result.message,
+        source: 'feedback',
+      })
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not export diagnostics right now.'
+      showToast({
+        kind: 'error',
+        message,
+        source: 'feedback',
+      })
+      return null
+    } finally {
+      setIsExportingDiagnostics(false)
+    }
+  }
+
+  const openLogsFolder = async () => {
+    if (isOpeningLogsFolder) {
+      return
+    }
+
+    setIsOpeningLogsFolder(true)
+
+    try {
+      await openPath(APP_LOGS_DIRECTORY)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not open the logs folder.'
+      showToast({
+        kind: 'error',
+        message,
+        source: 'feedback',
+      })
+    } finally {
+      setIsOpeningLogsFolder(false)
+    }
+  }
+
+  const openFeedbackForm = async () => {
+    if (isOpeningFeedbackForm) {
+      return
+    }
+
+    setIsOpeningFeedbackForm(true)
+
+    try {
+      await openPath(BASIN_FEEDBACK_URL)
+      setIsFeedbackPromptOpen(false)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not open the feedback form.'
+      showToast({
+        kind: 'error',
+        message,
+        source: 'feedback',
+      })
+    } finally {
+      setIsOpeningFeedbackForm(false)
+    }
   }
 
   const recordIssueMessages = (messages: string[], source: string) => {
@@ -1907,9 +1992,32 @@ function App() {
         <IssuesModal
           issues={workspaceIssues}
           focusedIssueId={focusedIssueId}
+          isExportingDiagnostics={isExportingDiagnostics}
+          isOpeningLogsFolder={isOpeningLogsFolder}
+          onReportIssue={() => setIsFeedbackPromptOpen(true)}
+          onExportDiagnostics={() => {
+            void exportDiagnostics()
+          }}
+          onOpenLogsFolder={() => {
+            void openLogsFolder()
+          }}
           onClose={() => {
             setIsIssuesModalOpen(false)
             setFocusedIssueId(null)
+          }}
+        />
+      ) : null}
+
+      {isFeedbackPromptOpen ? (
+        <FeedbackPromptModal
+          isExportingDiagnostics={isExportingDiagnostics}
+          isOpeningFeedbackForm={isOpeningFeedbackForm}
+          onClose={() => setIsFeedbackPromptOpen(false)}
+          onExportDiagnostics={() => {
+            void exportDiagnostics()
+          }}
+          onOpenFeedbackForm={() => {
+            void openFeedbackForm()
           }}
         />
       ) : null}
@@ -2544,10 +2652,20 @@ function getUploadListStorage(item: PreparedUploadItem, state: UploadState): str
 function IssuesModal({
   issues,
   focusedIssueId,
+  isExportingDiagnostics,
+  isOpeningLogsFolder,
+  onReportIssue,
+  onExportDiagnostics,
+  onOpenLogsFolder,
   onClose,
 }: {
   issues: WorkspaceIssue[]
   focusedIssueId: string | null
+  isExportingDiagnostics: boolean
+  isOpeningLogsFolder: boolean
+  onReportIssue: () => void
+  onExportDiagnostics: () => void
+  onOpenLogsFolder: () => void
   onClose: () => void
 }) {
   return (
@@ -2561,6 +2679,18 @@ function IssuesModal({
 
           <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close issues modal">
             ×
+          </Button>
+        </div>
+
+        <div className="issues-feedback-actions">
+          <Button family="secondary" size="sm" type="button" onClick={onReportIssue}>
+            Report issue
+          </Button>
+          <Button family="quiet" size="sm" type="button" onClick={onExportDiagnostics} disabled={isExportingDiagnostics}>
+            {isExportingDiagnostics ? 'Exporting...' : 'Export diagnostics'}
+          </Button>
+          <Button family="quiet" size="sm" type="button" onClick={onOpenLogsFolder} disabled={isOpeningLogsFolder}>
+            {isOpeningLogsFolder ? 'Opening...' : 'Open logs folder'}
           </Button>
         </div>
 
@@ -2591,6 +2721,55 @@ function IssuesModal({
             ))}
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+function FeedbackPromptModal({
+  isExportingDiagnostics,
+  isOpeningFeedbackForm,
+  onClose,
+  onExportDiagnostics,
+  onOpenFeedbackForm,
+}: {
+  isExportingDiagnostics: boolean
+  isOpeningFeedbackForm: boolean
+  onClose: () => void
+  onExportDiagnostics: () => void
+  onOpenFeedbackForm: () => void
+}) {
+  return (
+    <div className="modal-overlay" role="presentation" onClick={onClose}>
+      <div className="confirm-modal feedback-prompt-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-prompt-title" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">Feedback</p>
+            <h2 id="feedback-prompt-title">Send feedback</h2>
+          </div>
+
+          <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close feedback prompt">
+            ×
+          </Button>
+        </div>
+
+        <div className="feedback-prompt-copy">
+          <p>Describe the issue briefly.</p>
+          <p>Attach diagnostics.zip if you want help debugging.</p>
+          <p>Do not include personal or sensitive information.</p>
+        </div>
+
+        <div className="modal-actions">
+          <Button family="quiet" type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button family="secondary" type="button" onClick={onExportDiagnostics} disabled={isExportingDiagnostics}>
+            {isExportingDiagnostics ? 'Exporting...' : 'Export diagnostics'}
+          </Button>
+          <Button family="primary" type="button" onClick={onOpenFeedbackForm} disabled={isOpeningFeedbackForm}>
+            {isOpeningFeedbackForm ? 'Opening...' : 'Open feedback form'}
+          </Button>
+        </div>
       </div>
     </div>
   )

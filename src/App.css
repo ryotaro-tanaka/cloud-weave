@@ -1406,6 +1406,12 @@ summary:focus-visible {
   gap: 12px;
 }
 
+.issues-feedback-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .issue-item {
   display: flex;
   flex-direction: column;
@@ -1449,6 +1455,23 @@ summary:focus-visible {
 .issues-empty-state {
   width: 100%;
   box-sizing: border-box;
+}
+
+.feedback-prompt-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.feedback-prompt-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--text-secondary);
+}
+
+.feedback-prompt-copy p {
+  margin: 0;
 }
 
 .transfers-modal {
