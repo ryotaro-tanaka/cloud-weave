@@ -97,6 +97,26 @@ type ActionResult = {
   message: string
 }
 
+type ExportDiagnosticsResult = {
+  status: 'success'
+  diagnosticsDir: string
+  summaryPath: string
+  zipPath: string
+  message: string
+}
+
+type DiagnosticsIssueSummary = {
+  level: IssueLevel
+  source: string
+  timestamp: number
+  message: string
+}
+
+type ExportDiagnosticsInput = {
+  currentLogicalView: LogicalView
+  recentIssuesSummary: DiagnosticsIssueSummary[]
+}
+
 type UnifiedLibraryResult = {
   items: UnifiedItem[]
   notices: string[]
@@ -123,6 +143,7 @@ type ToastKind = 'info' | 'warning' | 'error' | 'success'
 type ToastAction =
   | { type: 'open-upload' }
   | { type: 'open-issues'; issueId?: string }
+  | { type: 'open-path'; path: string }
 type ToastNotice = {
   id: string
   kind: ToastKind
@@ -192,6 +213,7 @@ const CONNECT_SYNC_DELAY_MS = 500
 const TOAST_DURATION_MS = 5000
 const STARTUP_SPLASH_VISIBLE_MS = 3000
 const STARTUP_SPLASH_FADE_MS = 260
+const BASIN_FEEDBACK_URL = 'https://usebasin.com/form/37c12519bb6c/hosted/46b7f138fca3'
 const SORT_OPTIONS: Array<{ value: UnifiedItemSortKey; label: string }> = [
   { value: 'updated-desc', label: 'Newest' },
   { value: 'updated-asc', label: 'Oldest' },
@@ -248,6 +270,28 @@ function formatIssueTimestamp(timestamp: number): string {
   return `${year}/${month}/${day} ${hour}:${minute}`
 }
 
+function getParentDirectory(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, '')
+  const lastSeparatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+
+  if (lastSeparatorIndex <= 0) {
+    return path
+  }
+
+  return normalized.slice(0, lastSeparatorIndex)
+}
+
+function getFileName(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, '')
+  const lastSeparatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+
+  if (lastSeparatorIndex < 0) {
+    return normalized
+  }
+
+  return normalized.slice(lastSeparatorIndex + 1)
+}
+
 function describeIssueSource(source: string): string {
   if (source.startsWith('storage:')) {
     return source.replace('storage:', '')
@@ -258,6 +302,26 @@ function describeIssueSource(source: string): string {
   }
 
   return 'Workspace'
+}
+
+function inferFeedbackTypeFromIssue(issue: WorkspaceIssue | null): string | null {
+  if (!issue) {
+    return null
+  }
+
+  return issue.level === 'error' || issue.level === 'warning' ? 'Bug' : 'Other'
+}
+
+function buildDiagnosticsInput(activeView: LogicalView, workspaceIssues: WorkspaceIssue[]): ExportDiagnosticsInput {
+  return {
+    currentLogicalView: activeView,
+    recentIssuesSummary: workspaceIssues.slice(0, 10).map((issue) => ({
+      level: issue.level,
+      source: issue.source,
+      timestamp: issue.timestamp,
+      message: issue.message,
+    })),
+  }
 }
 
 function describeIssueLocation(source: string): string {
@@ -348,11 +412,14 @@ function App() {
   const [uploadBatch, setUploadBatch] = useState<PreparedUploadBatch | null>(null)
   const [preparingUploadItems, setPreparingUploadItems] = useState<PreparingUploadItem[]>([])
   const [previewPayload, setPreviewPayload] = useState<PreviewPayload | null>(null)
+  const [isFeedbackPromptOpen, setIsFeedbackPromptOpen] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [isPreparingUpload, setIsPreparingUpload] = useState(false)
   const [isStartingUpload, setIsStartingUpload] = useState(false)
   const [isUploadDragActive, setIsUploadDragActive] = useState(false)
   const [hasPendingUploadRefresh, setHasPendingUploadRefresh] = useState(false)
+  const [isExportingDiagnostics, setIsExportingDiagnostics] = useState(false)
+  const [isOpeningFeedbackForm, setIsOpeningFeedbackForm] = useState(false)
   const [, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
     requestId: null,
     loadedRemoteCount: 0,
@@ -383,6 +450,10 @@ function App() {
   )
   const unreadIssueCount = useMemo(() => workspaceIssues.filter((issue) => !issue.read).length, [workspaceIssues])
   const visibleToasts = toastNotices
+  const focusedIssue = useMemo(
+    () => (focusedIssueId ? workspaceIssues.find((issue) => issue.id === focusedIssueId) ?? null : null),
+    [focusedIssueId, workspaceIssues],
+  )
 
   const groupedRecentItems = useMemo(() => {
     if (activeView !== 'recent' || sortKey !== 'updated-desc') {
@@ -472,6 +543,74 @@ function App() {
     setFocusedIssueId(issueId ?? null)
     setIsIssuesModalOpen(true)
     markIssuesRead(issueId ? [issueId] : undefined)
+  }
+
+  const exportDiagnostics = async () => {
+    if (isExportingDiagnostics) {
+      return null
+    }
+
+    setIsExportingDiagnostics(true)
+
+    try {
+      return await invoke<ExportDiagnosticsResult>('export_diagnostics', {
+        input: buildDiagnosticsInput(activeView, workspaceIssues),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not export diagnostics right now.'
+      showToast({
+        kind: 'error',
+        message,
+        source: 'feedback',
+      })
+      return null
+    } finally {
+      setIsExportingDiagnostics(false)
+    }
+  }
+
+  const startFeedbackFlow = async () => {
+    if (isExportingDiagnostics || isOpeningFeedbackForm) {
+      return
+    }
+
+    const diagnosticsResult = await exportDiagnostics()
+    if (!diagnosticsResult) {
+      return
+    }
+
+    setIsOpeningFeedbackForm(true)
+
+    try {
+      const feedbackUrl = new URL(BASIN_FEEDBACK_URL)
+      const appVersion = '0.2.0'
+      const feedbackType = inferFeedbackTypeFromIssue(focusedIssue)
+
+      feedbackUrl.searchParams.set('app_version', appVersion)
+      if (feedbackType) {
+        feedbackUrl.searchParams.set('feedback_type', feedbackType)
+      }
+
+      await openPath(feedbackUrl.toString())
+      setIsFeedbackPromptOpen(false)
+      const zipFileName = getFileName(diagnosticsResult.zipPath)
+      showToast({
+        kind: 'success',
+        message: `Feedback form opened. Attach ${zipFileName} from Downloads.`,
+        source: 'feedback',
+        actionLabel: 'Open Downloads',
+        action: { type: 'open-path', path: getParentDirectory(diagnosticsResult.zipPath) },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not open the feedback form.'
+      showToast({
+        kind: 'error',
+        message,
+        source: 'feedback',
+      })
+    } finally {
+      setIsOpeningFeedbackForm(false)
+    }
   }
 
   const recordIssueMessages = (messages: string[], source: string) => {
@@ -1885,6 +2024,11 @@ function App() {
                       return
                     }
 
+                    if (action.type === 'open-path') {
+                      void openPath(action.path)
+                      return
+                    }
+
                     openIssuesModal(action.issueId)
                   }}
                 >
@@ -1907,9 +2051,21 @@ function App() {
         <IssuesModal
           issues={workspaceIssues}
           focusedIssueId={focusedIssueId}
+          onReportIssue={() => setIsFeedbackPromptOpen(true)}
           onClose={() => {
             setIsIssuesModalOpen(false)
             setFocusedIssueId(null)
+          }}
+        />
+      ) : null}
+
+      {isFeedbackPromptOpen ? (
+        <FeedbackPromptModal
+          isExportingDiagnostics={isExportingDiagnostics}
+          isOpeningFeedbackForm={isOpeningFeedbackForm}
+          onClose={() => setIsFeedbackPromptOpen(false)}
+          onContinue={() => {
+            void startFeedbackFlow()
           }}
         />
       ) : null}
@@ -2544,10 +2700,12 @@ function getUploadListStorage(item: PreparedUploadItem, state: UploadState): str
 function IssuesModal({
   issues,
   focusedIssueId,
+  onReportIssue,
   onClose,
 }: {
   issues: WorkspaceIssue[]
   focusedIssueId: string | null
+  onReportIssue: () => void
   onClose: () => void
 }) {
   return (
@@ -2561,6 +2719,12 @@ function IssuesModal({
 
           <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close issues modal">
             ×
+          </Button>
+        </div>
+
+        <div className="issues-feedback-actions">
+          <Button family="secondary" size="sm" type="button" onClick={onReportIssue}>
+            Report issue
           </Button>
         </div>
 
@@ -2591,6 +2755,58 @@ function IssuesModal({
             ))}
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+function FeedbackPromptModal({
+  isExportingDiagnostics,
+  isOpeningFeedbackForm,
+  onClose,
+  onContinue,
+}: {
+  isExportingDiagnostics: boolean
+  isOpeningFeedbackForm: boolean
+  onClose: () => void
+  onContinue: () => void
+}) {
+  const isContinuing = isExportingDiagnostics || isOpeningFeedbackForm
+  const continueLabel = isExportingDiagnostics
+    ? 'Preparing diagnostics...'
+    : isOpeningFeedbackForm
+      ? 'Opening form...'
+      : 'Continue'
+
+  return (
+    <div className="modal-overlay" role="presentation" onClick={onClose}>
+      <div className="confirm-modal feedback-prompt-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-prompt-title" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">Feedback</p>
+            <h2 id="feedback-prompt-title">Send feedback</h2>
+          </div>
+
+          <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close feedback prompt">
+            ×
+          </Button>
+        </div>
+
+        <div className="feedback-prompt-copy">
+          <p>Cloud Weave will save a diagnostics ZIP to your Downloads folder.</p>
+          <p>You will attach that ZIP in the feedback form next.</p>
+          <p>The feedback form will open in your browser after the ZIP is prepared.</p>
+          <p>Do not include personal or sensitive information.</p>
+        </div>
+
+        <div className="modal-actions">
+          <Button family="quiet" type="button" onClick={onClose} disabled={isContinuing}>
+            Cancel
+          </Button>
+          <Button family="primary" type="button" onClick={onContinue} disabled={isContinuing}>
+            {continueLabel}
+          </Button>
+        </div>
       </div>
     </div>
   )
