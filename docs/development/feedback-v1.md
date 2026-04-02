@@ -23,9 +23,13 @@ For the Basin form field contract, see [feedback-basin-v1.md](./feedback-basin-v
 
 Cloud Weave writes a `summary.json` file with these fields:
 
-- `appVersion`
+- `appVersion` (the Cloud Weave version)
 - `platform`
+- `currentLogicalView`
 - `connectedStorageCount`
+- `connectedStorageNames`
+- `storageStateSummary`
+- `recentIssuesSummary`
 - `exportedAt`
 
 ### `diagnostics.zip`

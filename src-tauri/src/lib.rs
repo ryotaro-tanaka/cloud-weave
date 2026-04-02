@@ -96,12 +96,40 @@ struct ExportDiagnosticsResult {
     message: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportDiagnosticsInput {
+    current_logical_view: String,
+    recent_issues_summary: Vec<DiagnosticsIssueSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticsIssueSummary {
+    level: String,
+    source: String,
+    timestamp: i64,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticsStorageSummary {
+    name: String,
+    provider: String,
+    status: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DiagnosticsSummary {
     app_version: String,
     platform: String,
+    current_logical_view: String,
     connected_storage_count: usize,
+    connected_storage_names: Vec<String>,
+    storage_state_summary: Vec<DiagnosticsStorageSummary>,
+    recent_issues_summary: Vec<DiagnosticsIssueSummary>,
     exported_at: String,
 }
 
@@ -400,8 +428,11 @@ async fn delete_remote(app: AppHandle, name: String) -> Result<ActionResult, Str
 }
 
 #[tauri::command]
-async fn export_diagnostics(app: AppHandle) -> Result<ExportDiagnosticsResult, String> {
-    tauri::async_runtime::spawn_blocking(move || export_diagnostics_impl(app))
+async fn export_diagnostics(
+    app: AppHandle,
+    input: ExportDiagnosticsInput,
+) -> Result<ExportDiagnosticsResult, String> {
+    tauri::async_runtime::spawn_blocking(move || export_diagnostics_impl(app, input))
         .await
         .map_err(|error| format!("failed to join diagnostics export task: {error}"))?
 }
@@ -1195,7 +1226,10 @@ fn delete_remote_impl(app: AppHandle, name: String) -> Result<ActionResult, Stri
     }
 }
 
-fn export_diagnostics_impl(app: AppHandle) -> Result<ExportDiagnosticsResult, String> {
+fn export_diagnostics_impl(
+    app: AppHandle,
+    input: ExportDiagnosticsInput,
+) -> Result<ExportDiagnosticsResult, String> {
     let exported_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let export_id = Utc::now().format("export-%Y%m%dT%H%M%SZ-%f").to_string();
     let diagnostics_dir = resolve_diagnostics_dir(&app)?.join(&export_id);
@@ -1204,12 +1238,29 @@ fn export_diagnostics_impl(app: AppHandle) -> Result<ExportDiagnosticsResult, St
         .map_err(|error| format!("failed to create diagnostics export directory: {error}"))?;
 
     let config_path = ensure_rclone_config(&app)?;
-    let connected_storage_count = list_connected_remote_targets(&app, &config_path)?.len();
+    let connected_targets = list_connected_remote_targets(&app, &config_path)?;
+    let connected_storage_names = connected_targets
+        .iter()
+        .map(|target| target.name.clone())
+        .collect::<Vec<_>>();
+    let connected_storage_count = connected_storage_names.len();
+    let storage_state_summary = list_storage_remotes_impl(app.clone())?
+        .into_iter()
+        .map(|remote| DiagnosticsStorageSummary {
+            name: remote.name,
+            provider: remote.provider,
+            status: remote.status,
+        })
+        .collect::<Vec<_>>();
     let summary_path = diagnostics_dir.join("summary.json");
     let summary = DiagnosticsSummary {
         app_version: app.package_info().version.to_string(),
         platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        current_logical_view: input.current_logical_view,
         connected_storage_count,
+        connected_storage_names,
+        storage_state_summary,
+        recent_issues_summary: input.recent_issues_summary,
         exported_at,
     };
 

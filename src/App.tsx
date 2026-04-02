@@ -105,6 +105,18 @@ type ExportDiagnosticsResult = {
   message: string
 }
 
+type DiagnosticsIssueSummary = {
+  level: IssueLevel
+  source: string
+  timestamp: number
+  message: string
+}
+
+type ExportDiagnosticsInput = {
+  currentLogicalView: LogicalView
+  recentIssuesSummary: DiagnosticsIssueSummary[]
+}
+
 type UnifiedLibraryResult = {
   items: UnifiedItem[]
   notices: string[]
@@ -298,6 +310,18 @@ function inferFeedbackTypeFromIssue(issue: WorkspaceIssue | null): string | null
   }
 
   return issue.level === 'error' || issue.level === 'warning' ? 'Bug' : 'Other'
+}
+
+function buildDiagnosticsInput(activeView: LogicalView, workspaceIssues: WorkspaceIssue[]): ExportDiagnosticsInput {
+  return {
+    currentLogicalView: activeView,
+    recentIssuesSummary: workspaceIssues.slice(0, 10).map((issue) => ({
+      level: issue.level,
+      source: issue.source,
+      timestamp: issue.timestamp,
+      message: issue.message,
+    })),
+  }
 }
 
 function describeIssueLocation(source: string): string {
@@ -529,7 +553,9 @@ function App() {
     setIsExportingDiagnostics(true)
 
     try {
-      return await invoke<ExportDiagnosticsResult>('export_diagnostics')
+      return await invoke<ExportDiagnosticsResult>('export_diagnostics', {
+        input: buildDiagnosticsInput(activeView, workspaceIssues),
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not export diagnostics right now.'
       showToast({
