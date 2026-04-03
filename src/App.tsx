@@ -29,6 +29,7 @@ import {
   type UnifiedItemSortKey,
   type UnifiedItem,
 } from './features/storage/unifiedItems'
+import { getDemoLibraryState, type DemoLibraryState } from './features/storage/demoLibrary'
 import {
   applyDownloadProgressEvent,
   IDLE_DOWNLOAD_STATE,
@@ -223,6 +224,18 @@ const SORT_OPTIONS: Array<{ value: UnifiedItemSortKey; label: string }> = [
   { value: 'size-asc', label: 'Size ↑' },
 ]
 
+function isScreenshotDemoEnabled(): boolean {
+  if (import.meta.env.VITE_SCREENSHOT_DEMO === '1') {
+    return true
+  }
+
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  return new URLSearchParams(window.location.search).get('demo') === '1'
+}
+
 function getDefaultSortKey(view: LogicalView): UnifiedItemSortKey {
   return view === 'recent' ? 'updated-desc' : 'name-asc'
 }
@@ -373,14 +386,16 @@ function getListItemStatusLabel(item: UnifiedItem, downloadState: DownloadState,
 }
 
 function App() {
+  const [demoState] = useState<DemoLibraryState | null>(() => (isScreenshotDemoEnabled() ? getDemoLibraryState() : null))
+  const isDemoMode = demoState !== null
   const [activeModal, setActiveModal] = useState<ModalName>('none')
   const [addFlowStep, setAddFlowStep] = useState<AddFlowStep>('providers')
   const [selectedProvider, setSelectedProvider] = useState<StorageProvider>('onedrive')
   const [activeView, setActiveView] = useState<LogicalView>('recent')
   const [searchQuery, setSearchQuery] = useState('')
   const [sortKey, setSortKey] = useState<UnifiedItemSortKey>(getDefaultSortKey('recent'))
-  const [remotes, setRemotes] = useState<RemoteSummary[]>([])
-  const [unifiedItems, setUnifiedItems] = useState<UnifiedItem[]>([])
+  const [remotes, setRemotes] = useState<RemoteSummary[]>(() => demoState?.remotes ?? [])
+  const [unifiedItems, setUnifiedItems] = useState<UnifiedItem[]>(() => demoState?.items ?? [])
   const [workspaceIssues, setWorkspaceIssues] = useState<WorkspaceIssue[]>([])
   const [toastNotices, setToastNotices] = useState<ToastNotice[]>([])
   const [isIssuesModalOpen, setIsIssuesModalOpen] = useState(false)
@@ -392,8 +407,8 @@ function App() {
   const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
   const [selectedDriveId, setSelectedDriveId] = useState('')
-  const [isLoadingRemotes, setIsLoadingRemotes] = useState(true)
-  const [isLoadingItems, setIsLoadingItems] = useState(true)
+  const [isLoadingRemotes, setIsLoadingRemotes] = useState(!isDemoMode)
+  const [isLoadingItems, setIsLoadingItems] = useState(!isDemoMode)
   const [isLibraryStreaming, setIsLibraryStreaming] = useState(false)
   const [isRefreshingItems, setIsRefreshingItems] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -765,6 +780,13 @@ function App() {
   }, [reconnectRequiredRemotes])
 
   const fetchRemotes = async (options?: { silent?: boolean }) => {
+    if (isDemoMode && demoState) {
+      setRemotes(demoState.remotes)
+      setListError('')
+      setIsLoadingRemotes(false)
+      return demoState.remotes
+    }
+
     const silent = options?.silent ?? false
 
     if (!silent) {
@@ -789,6 +811,15 @@ function App() {
   }
 
   const fetchUnifiedItems = async (nextRemotes?: RemoteSummary[] | null, options?: { silent?: boolean }) => {
+    if (isDemoMode && demoState) {
+      setUnifiedItems(demoState.items)
+      setItemsError('')
+      setIsLoadingItems(false)
+      setIsLibraryStreaming(false)
+      setIsRefreshingItems(false)
+      return demoState.items
+    }
+
     const silent = options?.silent ?? false
     const resolvedRemotes = nextRemotes === undefined ? remotes : nextRemotes
 
@@ -841,10 +872,18 @@ function App() {
   }
 
   useEffect(() => {
+    if (isDemoMode) {
+      return
+    }
+
     void initializeLibrary()
-  }, [])
+  }, [isDemoMode])
 
   useEffect(() => {
+    if (isDemoMode) {
+      return
+    }
+
     let isSubscribed = true
 
     const unlistenPromise = listen<DownloadProgressEvent>('download://progress', (event) => {
@@ -859,9 +898,13 @@ function App() {
       isSubscribed = false
       void unlistenPromise.then((unlisten) => unlisten())
     }
-  }, [])
+  }, [isDemoMode])
 
   useEffect(() => {
+    if (isDemoMode) {
+      return
+    }
+
     let isSubscribed = true
 
     const unlistenPromise = listen<UploadProgressEvent>('upload://progress', (event) => {
@@ -880,9 +923,13 @@ function App() {
       isSubscribed = false
       void unlistenPromise.then((unlisten) => unlisten())
     }
-  }, [])
+  }, [isDemoMode])
 
   useEffect(() => {
+    if (isDemoMode) {
+      return
+    }
+
     let isSubscribed = true
 
     const unlistenPromise = listen<UnifiedLibraryLoadEvent>('library://progress', (event) => {
@@ -931,9 +978,13 @@ function App() {
       isSubscribed = false
       void unlistenPromise.then((unlisten) => unlisten())
     }
-  }, [])
+  }, [isDemoMode])
 
   useEffect(() => {
+    if (isDemoMode) {
+      return
+    }
+
     if (activeModal !== 'upload') {
       setIsUploadDragActive(false)
       return
@@ -966,9 +1017,27 @@ function App() {
       isSubscribed = false
       void unlistenPromise.then((unlisten) => unlisten())
     }
-  }, [activeModal])
+  }, [activeModal, isDemoMode])
 
   const initializeLibrary = async () => {
+    if (isDemoMode && demoState) {
+      setRemotes(demoState.remotes)
+      setUnifiedItems(demoState.items)
+      setListError('')
+      setItemsError('')
+      setIsLoadingRemotes(false)
+      setIsLoadingItems(false)
+      setIsLibraryStreaming(false)
+      setIsRefreshingItems(false)
+      setLibraryLoadProgress({
+        requestId: null,
+        loadedRemoteCount: 0,
+        totalRemoteCount: 0,
+      })
+      activeLibraryRequestIdRef.current = null
+      return
+    }
+
     setIsLoadingItems(true)
     setIsLibraryStreaming(false)
     setIsRefreshingItems(false)
@@ -1138,6 +1207,10 @@ function App() {
   }
 
   const fetchAuthSession = async (name: string) => {
+    if (isDemoMode) {
+      return null
+    }
+
     return invoke<AuthSessionRecord | null>('get_auth_session_status', { name })
   }
 
@@ -1285,6 +1358,10 @@ function App() {
   const handleCreateRemote = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
+    if (isDemoMode) {
+      return
+    }
+
     if (!remoteName.trim()) {
       setAddError('Remote name is required.')
       return
@@ -1336,6 +1413,10 @@ function App() {
   }
 
   const handleReconnect = async (remote: RemoteSummary) => {
+    if (isDemoMode) {
+      return
+    }
+
     try {
       const result = await invoke<CreateRemoteResult>('reconnect_remote', { name: remote.name })
 
@@ -1376,6 +1457,10 @@ function App() {
   }
 
   const handleDeleteRemote = async () => {
+    if (isDemoMode) {
+      return
+    }
+
     if (!removeTarget) {
       return
     }
@@ -1408,6 +1493,10 @@ function App() {
   }
 
   const handleFinalizeDriveSelection = async () => {
+    if (isDemoMode) {
+      return
+    }
+
     if (!pendingSession || pendingSession.status !== 'requires_drive_selection' || !selectedDriveId) {
       return
     }
@@ -1461,6 +1550,10 @@ function App() {
   }
 
   const handlePendingRemoveAndReconnect = async () => {
+    if (isDemoMode) {
+      return
+    }
+
     if (!pendingSession) {
       return
     }
@@ -1488,6 +1581,10 @@ function App() {
   }
 
   const handleDownload = async (item: UnifiedItem) => {
+    if (isDemoMode) {
+      return
+    }
+
     if (item.isDir) {
       return
     }
@@ -1545,6 +1642,10 @@ function App() {
   }
 
   const prepareUploadSelections = async (selections: UploadSelection[]) => {
+    if (isDemoMode) {
+      return
+    }
+
     if (selections.length === 0) {
       return
     }
@@ -1595,6 +1696,10 @@ function App() {
   }
 
   const handleChooseUploadFiles = async () => {
+    if (isDemoMode) {
+      return
+    }
+
     try {
       const selected = await openDialog({
         multiple: true,
@@ -1610,6 +1715,10 @@ function App() {
   }
 
   const handleChooseUploadFolder = async () => {
+    if (isDemoMode) {
+      return
+    }
+
     try {
       const selected = await openDialog({
         multiple: false,
@@ -1625,6 +1734,10 @@ function App() {
   }
 
   const handleStartUpload = async () => {
+    if (isDemoMode) {
+      return
+    }
+
     if (!uploadBatch || uploadBatch.items.length === 0) {
       setUploadError('Add files or folders before starting the upload.')
       return
@@ -1682,6 +1795,10 @@ function App() {
     !isStartingUpload
 
   const handleOpen = async (item: UnifiedItem) => {
+    if (isDemoMode) {
+      return
+    }
+
     if (item.isDir || (!canPreviewItem(item) && !canOpenInDefaultApp(item))) {
       return
     }

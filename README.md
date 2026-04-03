@@ -71,10 +71,21 @@ npm run pr:check
   Run the desktop app locally with the Vite frontend and Tauri backend in development mode.
 - `npm run build`
   Create a production build when you want to verify the app can be packaged successfully.
+- `npm run demo`
+  Launch the Tauri desktop app in screenshot demo mode with anonymized sample data.
 - `npm run setup:rclone`
   Download the bundled `rclone` binary for local development on Windows.
 - `npm run pr:check`
   Run the standard pre-PR checks: Rust formatting, formatting check, frontend tests, and UI build.
+
+### Screenshot Demo Mode
+
+For download-page screenshots, the frontend supports a demo-only library state that avoids showing personal file names.
+
+- Start the desktop app with `npm run demo` when you want the real app chrome and title bar
+- Or start normally with `npm run dev` and open the frontend with `?demo=1` appended to the URL, for example `http://localhost:1420/?demo=1`
+- The demo view loads anonymized sample storages and files instead of your real library
+- Recommended screenshots: `Recent`, `Documents`, and `Photos`
 
 ## GitHub Automation
 

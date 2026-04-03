@@ -16,6 +16,7 @@
     "rust:test:logic": "cargo test --manifest-path src-tauri/crates/rclone_logic/Cargo.toml",
     "pr:check": "npm run rust:fmt && npm run rust:fmt:check && npm run rust:test:logic && npm run test:run && npm run ui:build",
     "dev": "tauri dev",
+    "demo": "node ./scripts/run-demo.mjs",
     "build": "tauri build",
     "setup:rclone": "powershell -ExecutionPolicy Bypass -File .\\scripts\\download-rclone.ps1"
   },
