@@ -16,6 +16,7 @@
     "rust:test:logic": "cargo test --manifest-path src-tauri/crates/rclone_logic/Cargo.toml",
     "pr:check": "npm run rust:fmt && npm run rust:fmt:check && npm run rust:test:logic && npm run test:run && npm run ui:build",
     "dev": "tauri dev",
+    "demo": "cross-env VITE_SCREENSHOT_DEMO=1 tauri dev",
     "build": "tauri build",
     "setup:rclone": "powershell -ExecutionPolicy Bypass -File .\\scripts\\download-rclone.ps1"
   },
@@ -32,6 +33,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "cross-env": "^10.1.0",
     "typescript": "~5.9.3",
     "vite": "^8.0.1",
     "vitest": "^4.1.0"
