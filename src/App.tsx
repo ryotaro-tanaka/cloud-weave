@@ -225,15 +225,7 @@ const SORT_OPTIONS: Array<{ value: UnifiedItemSortKey; label: string }> = [
 ]
 
 function isScreenshotDemoEnabled(): boolean {
-  if (import.meta.env.VITE_SCREENSHOT_DEMO === '1') {
-    return true
-  }
-
-  if (typeof window === 'undefined') {
-    return false
-  }
-
-  return new URLSearchParams(window.location.search).get('demo') === '1'
+  return import.meta.env.VITE_SCREENSHOT_DEMO === '1'
 }
 
 function getDefaultSortKey(view: LogicalView): UnifiedItemSortKey {

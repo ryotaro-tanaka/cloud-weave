@@ -83,8 +83,8 @@ npm run pr:check
 For download-page screenshots, the frontend supports a demo-only library state that avoids showing personal file names.
 
 - Start the desktop app with `npm run demo` when you want the real app chrome and title bar
-- Or start normally with `npm run dev` and open the frontend with `?demo=1` appended to the URL, for example `http://localhost:1420/?demo=1`
 - The demo view loads anonymized sample storages and files instead of your real library
+- Normal `npm run dev` and `npm run build` do not enable demo mode
 - Recommended screenshots: `Recent`, `Documents`, and `Photos`
 
 ## GitHub Automation
