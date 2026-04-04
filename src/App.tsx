@@ -590,7 +590,7 @@ function App() {
 
     try {
       const feedbackUrl = new URL(BASIN_FEEDBACK_URL)
-      const appVersion = '0.2.0'
+      const appVersion = '0.3.0'
       const feedbackType = inferFeedbackTypeFromIssue(focusedIssue)
 
       feedbackUrl.searchParams.set('app_version', appVersion)
