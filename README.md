@@ -1,121 +1,56 @@
 # Cloud Weave
 
+[![CI](https://github.com/ryotaro-tanaka/cloud-weave/actions/workflows/ci.yml/badge.svg)](https://github.com/ryotaro-tanaka/cloud-weave/actions/workflows/ci.yml)
+
+## Overview
+
 Cloud Weave is a Windows desktop app for browsing files across multiple cloud storages in one place.
 
-It uses `rclone` under the hood, but the product focus is not on exposing storage internals. Cloud Weave aims to make connected storages feel easier to understand by giving users a single, readable workspace with clear source visibility.
+It uses `rclone` underneath, but the main product value is the UI layer: one readable workspace that lets you find files without constantly thinking about which storage they live in.
 
-## What Cloud Weave Does
+## Persona
 
-- Connect multiple cloud storages in one desktop app
-- Show files from connected storages in a unified library
-- Make it easy to browse by `Recent`, `Documents`, `Photos`, `Videos`, `Audio`, and `Other`
-- Keep the original storage visible through source badges and metadata
-- Reduce the need to think about provider-specific details during everyday browsing
+Cloud Weave is aimed at individual knowledge workers who use multiple cloud storages every day and do not want to think about the save location every time.
 
-## Current Status
+Typical users include solo developers, freelancers, one-person businesses, and other PC-heavy workers who upload files, then rely on search, `Recent`, and category views to get them back quickly while still seeing the real storage source.
 
-Cloud Weave is an early prototype, but the core desktop flow is already working.
+## Strengths
 
-Current capabilities in `v0.2`:
+- Multiple cloud storages in one workspace
+- Source-visible browsing that does not hide where a file actually lives
+- Faster day-to-day retrieval through `Recent`, search, and logical views like `Documents` and `Photos`
+- Natural desktop flows for upload, download, open, and preview
 
-- Tauri + React + TypeScript desktop app foundation
-- Connected storage management from the sidebar
-- Unified file browsing across connected storages
-- Search across file names, paths, storage names, and categories
-- Logical views for `Recent`, `Documents`, `Photos`, `Videos`, `Audio`, and `Other`
-- OneDrive-specific handling for drive selection and skipping protected or unsupported folders during unified listing
+## Setup
 
-Not implemented yet:
-
-- smart save routing across storages
-- duplicate management workflows
-- sensitive-file workflows
-- full physical folder-tree reconstruction
-
-## Direction
-
-Cloud Weave is designed as a thin desktop UI layer on top of `rclone`.
-
-That means:
-
-- `rclone` handles storage operations and provider integration
-- Cloud Weave focuses on unified browsing, visibility, and interaction design
-- the product aims to feel approachable to non-technical users
-
-## Roadmap
-
-Near-term direction:
-
-- make unified browsing more reliable and more readable
-- improve search and file discovery across connected storages
-- refine source visibility and cross-storage trust cues
-
-Longer-term direction:
-
-- smarter file placement guidance
-- better workflows for organizing files across clouds
-- richer unified views beyond simple file categories
-
-## Development
-
-Typical development commands:
+Required: Node.js `24.14.x`
 
 ```bash
-npm run dev
-npm run build
+npm install
 npm run setup:rclone
-npm run pr:check
+npm run dev
 ```
 
-- `npm run dev`
-  Run the desktop app locally with the Vite frontend and Tauri backend in development mode.
-- `npm run build`
-  Create a production build when you want to verify the app can be packaged successfully.
-- `npm run demo`
-  Launch the Tauri desktop app in screenshot demo mode with anonymized sample data.
-- `npm run setup:rclone`
-  Download the bundled `rclone` binary for local development on Windows.
-- `npm run pr:check`
-  Run the standard pre-PR checks: Rust formatting, formatting check, frontend tests, and UI build.
+Useful commands:
 
-### Screenshot Demo Mode
+- `npm run dev` starts the Tauri app in development mode
+- `npm run build` builds the desktop app
+- `npm run pr:check` runs the main checks
 
-For download-page screenshots, the frontend supports a demo-only library state that avoids showing personal file names.
+## Feature Map
 
-- Start the desktop app with `npm run demo` when you want the real app chrome and title bar
-- The demo view loads anonymized sample storages and files instead of your real library
-- Normal `npm run dev` and `npm run build` do not enable demo mode
-- Recommended screenshots: `Recent`, `Documents`, and `Photos`
+- Storage connection management from the sidebar
+- Unified library browsing across connected storages
+- Search by file name, path, storage, and category
+- Category views for `Recent`, `Documents`, `Photos`, `Videos`, `Audio`, and `Other`
+- Upload flow for sending files into connected storage
+- Provider-specific connection handling where needed, especially for OneDrive
 
-## GitHub Automation
+## Tech Stack
 
-Merged pull requests into `main` can auto-post a short bilingual update to Threads.
-
-- Add the following section to the PR body when you want a post after merge:
-
-```md
-## Threads
-Cloud Weave now supports file preview for downloads.
-
-Cloud Weave でダウンロードしたファイルのプレビューに対応しました。
-```
-
-- Repository secret required: `THREADS_LONG_LIVED_TOKEN`
-- Add the label `skip-threads` or `no-threads` to opt out even when the `## Threads` section exists
-- If the `## Threads` section is missing, or either the English or Japanese paragraph is empty, the workflow skips posting
-- For quick testing without a PR merge, run the `Threads Post Manual` workflow from the Actions tab and enter the English paragraph first and the Japanese paragraph second
-- Threads token setup and manual `curl` verification: [docs/development/threads.md](docs/development/threads.md)
-
-Node.js version:
-
-```bash
-24.14.0
-```
-
-The project pins this via `.nvmrc`, `.node-version`, and `package.json` `engines`.
-
-For OneDrive troubleshooting and deeper developer debugging, see [docs/troubleshooting/onedrive.md](docs/troubleshooting/onedrive.md).
-
-## License
-
-Cloud Weave bundles `rclone`. See `docs/legal/THIRD_PARTY_NOTICES.md` and `LICENSES/rclone-MIT.txt`.
+- React
+- TypeScript
+- Vite
+- Tauri
+- Rust
+- `rclone`
