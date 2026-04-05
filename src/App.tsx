@@ -1850,7 +1850,11 @@ function App() {
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
     hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
-  const shouldShowLoadingList = isLoadingItems && hasConnectedStorage && unifiedItems.length === 0 && !itemsError
+  const shouldShowLoadingList =
+    hasConnectedStorage &&
+    !itemsError &&
+    unifiedItems.length === 0 &&
+    (isLoadingItems || isLibraryStreaming || isRefreshingItems)
   const shouldShowStreamingTail = (isLibraryStreaming || isRefreshingItems) && unifiedItems.length > 0 && !itemsError
   const emptyListTitle = searchQuery ? `No files match "${searchQuery.trim()}".` : `No files in ${currentViewLabel} yet.`
   const emptyListDescription = searchQuery
