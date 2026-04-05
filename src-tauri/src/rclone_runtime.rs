@@ -10,6 +10,7 @@ use std::{
 use tauri::{AppHandle, Manager};
 
 pub(crate) const RCLONE_BINARY: &str = "rclone-x86_64-pc-windows-msvc.exe";
+pub(crate) const RCLONE_BUNDLED_BINARY: &str = "rclone.exe";
 pub(crate) const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const INVENTORY_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -22,13 +23,17 @@ pub(crate) fn resolve_rclone_binary(app: &AppHandle) -> Result<PathBuf, String> 
 
     if let Ok(resource_dir) = app.path().resource_dir() {
         candidates.push(resource_dir.join("binaries").join(RCLONE_BINARY));
+        candidates.push(resource_dir.join("binaries").join(RCLONE_BUNDLED_BINARY));
         candidates.push(resource_dir.join(RCLONE_BINARY));
+        candidates.push(resource_dir.join(RCLONE_BUNDLED_BINARY));
     }
 
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(exe_dir) = current_exe.parent() {
             candidates.push(exe_dir.join(RCLONE_BINARY));
+            candidates.push(exe_dir.join(RCLONE_BUNDLED_BINARY));
             candidates.push(exe_dir.join("binaries").join(RCLONE_BINARY));
+            candidates.push(exe_dir.join("binaries").join(RCLONE_BUNDLED_BINARY));
         }
     }
 
@@ -39,7 +44,16 @@ pub(crate) fn resolve_rclone_binary(app: &AppHandle) -> Result<PathBuf, String> 
                 .join("binaries")
                 .join(RCLONE_BINARY),
         );
+        candidates.push(
+            current_dir
+                .join("src-tauri")
+                .join("binaries")
+                .join(RCLONE_BUNDLED_BINARY),
+        );
         candidates.push(current_dir.join("binaries").join(RCLONE_BINARY));
+        candidates.push(current_dir.join("binaries").join(RCLONE_BUNDLED_BINARY));
+        candidates.push(current_dir.join(RCLONE_BINARY));
+        candidates.push(current_dir.join(RCLONE_BUNDLED_BINARY));
     }
 
     candidates

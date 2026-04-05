@@ -669,6 +669,11 @@ function App() {
     }
   }
 
+  const recordIssueError = (error: unknown, source: string) => {
+    const message = error instanceof Error ? error.message : String(error)
+    recordIssueMessages([message], source)
+  }
+
   useEffect(() => {
     setSortKey(getDefaultSortKey(activeView))
   }, [activeView])
@@ -793,6 +798,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setListError(message)
+      recordIssueError(error, 'storage')
       setRemotes([])
       return null
     } finally {
@@ -848,6 +854,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setItemsError(message)
+      recordIssueError(error, 'library')
       setUnifiedItems([])
       return null
     } finally {
@@ -1068,6 +1075,7 @@ function App() {
       }
     } catch (error) {
       setItemsError(error instanceof Error ? error.message : String(error))
+      recordIssueError(error, 'library')
       setIsLoadingItems(false)
       setIsLibraryStreaming(false)
       setIsRefreshingItems(false)
