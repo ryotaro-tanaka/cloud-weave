@@ -11,12 +11,24 @@ use tauri::{AppHandle, Manager};
 
 pub(crate) const RCLONE_BINARY: &str = "rclone-x86_64-pc-windows-msvc.exe";
 pub(crate) const RCLONE_BUNDLED_BINARY: &str = "rclone.exe";
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub(crate) const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const INVENTORY_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const AUTH_START_GRACE_PERIOD: Duration = Duration::from_millis(350);
 pub(crate) const GRAPH_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const AUTH_CALLBACK_BIND_ADDR: &str = "127.0.0.1:53682";
+
+#[cfg(target_os = "windows")]
+fn configure_background_command(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_background_command(_command: &mut Command) {}
 
 pub(crate) fn resolve_rclone_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
@@ -70,6 +82,7 @@ pub(crate) fn run_rclone(
 ) -> Result<String, String> {
     let binary = resolve_rclone_binary(app)?;
     let mut command = Command::new(binary);
+    configure_background_command(&mut command);
     command.args(static_args);
     command.args(path_args);
     execute_command(command, timeout)
@@ -82,6 +95,7 @@ pub(crate) fn run_rclone_owned(
 ) -> Result<String, String> {
     let binary = resolve_rclone_binary(app)?;
     let mut command = Command::new(binary);
+    configure_background_command(&mut command);
     command.args(args);
     execute_command(command, timeout)
 }
@@ -89,6 +103,7 @@ pub(crate) fn run_rclone_owned(
 pub(crate) fn spawn_rclone_owned(app: &AppHandle, args: &[String]) -> Result<Child, String> {
     let binary = resolve_rclone_binary(app)?;
     let mut command = Command::new(binary);
+    configure_background_command(&mut command);
     command.args(args);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     command
