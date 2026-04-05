@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "cloud-weave",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "identifier": "com.ryotaro.cloudweave",
   "build": {
     "frontendDist": "../dist",
@@ -38,6 +38,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "ryotaro-tanaka",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

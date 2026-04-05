@@ -590,7 +590,7 @@ function App() {
 
     try {
       const feedbackUrl = new URL(BASIN_FEEDBACK_URL)
-      const appVersion = '0.2.0'
+      const appVersion = '0.3.1'
       const feedbackType = inferFeedbackTypeFromIssue(focusedIssue)
 
       feedbackUrl.searchParams.set('app_version', appVersion)
@@ -667,6 +667,11 @@ function App() {
         action: { type: 'open-issues', issueId: issue.id },
       })
     }
+  }
+
+  const recordIssueError = (error: unknown, source: string) => {
+    const message = error instanceof Error ? error.message : String(error)
+    recordIssueMessages([message], source)
   }
 
   useEffect(() => {
@@ -793,6 +798,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setListError(message)
+      recordIssueError(error, 'storage')
       setRemotes([])
       return null
     } finally {
@@ -848,6 +854,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setItemsError(message)
+      recordIssueError(error, 'library')
       setUnifiedItems([])
       return null
     } finally {
@@ -1068,6 +1075,7 @@ function App() {
       }
     } catch (error) {
       setItemsError(error instanceof Error ? error.message : String(error))
+      recordIssueError(error, 'library')
       setIsLoadingItems(false)
       setIsLibraryStreaming(false)
       setIsRefreshingItems(false)
@@ -1842,7 +1850,11 @@ function App() {
   const shouldShowNoStorageState = !isLoadingRemotes && !listError && !hasConnectedStorage
   const shouldShowCategoryEmptyState =
     hasConnectedStorage && !isLoadingItems && !isLibraryStreaming && !itemsError && displayedItems.length === 0
-  const shouldShowLoadingList = isLoadingItems && hasConnectedStorage && unifiedItems.length === 0 && !itemsError
+  const shouldShowLoadingList =
+    hasConnectedStorage &&
+    !itemsError &&
+    unifiedItems.length === 0 &&
+    (isLoadingItems || isLibraryStreaming || isRefreshingItems)
   const shouldShowStreamingTail = (isLibraryStreaming || isRefreshingItems) && unifiedItems.length > 0 && !itemsError
   const emptyListTitle = searchQuery ? `No files match "${searchQuery.trim()}".` : `No files in ${currentViewLabel} yet.`
   const emptyListDescription = searchQuery
