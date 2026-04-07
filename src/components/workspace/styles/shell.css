@@ -1,0 +1,10 @@
+.workspace-shell {
+  --sidebar-panel-width: 248px;
+  flex: 1;
+  display: grid;
+  grid-template-columns: var(--sidebar-panel-width) minmax(0, 1fr);
+  min-height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+}
+

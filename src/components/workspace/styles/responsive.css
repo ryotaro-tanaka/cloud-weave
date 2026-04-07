@@ -1,0 +1,31 @@
+@media (max-width: 960px) {
+  .workspace-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .storage-sidebar {
+    min-height: 0;
+  }
+
+  .sidebar-panel {
+    width: 100%;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .library-toolbar {
+    flex-direction: column;
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .workspace-main,
+  .modal-overlay {
+    padding: 16px;
+  }
+
+  .library-topbar {
+    padding: 24px;
+  }
+}
+

@@ -1,20 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { open as openPath } from '@tauri-apps/plugin-shell'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   isCallbackStartupFailure,
   overlayPendingRemote,
-  resolvePendingSession,
   type AuthSessionRecord,
-  type AuthSessionStage,
-  type OneDriveDriveCandidate,
-  type PendingMode,
   type PendingSession,
   type RemoteSummary,
 } from './features/storage/pendingState'
-import { toPendingSession } from './features/storage/authFlow'
 import {
   filterItemsByView,
   getCategoryLabel,
@@ -59,14 +54,6 @@ import {
   type UploadSelection,
 } from './features/storage/uploads'
 import { Button } from './components/ui/Button'
-import { EmptyListState } from './components/ui/EmptyListState'
-import { InlineError } from './components/ui/InlineError'
-import { MainEmptyState } from './components/ui/MainEmptyState'
-import { ModalHeader } from './components/ui/ModalHeader'
-import { ModalOverlay } from './components/ui/ModalOverlay'
-import { ModalSurface } from './components/ui/ModalSurface'
-import { Spinner } from './components/ui/Spinner'
-import { StatusBadge } from './components/ui/StatusBadge'
 import { ToastNoticeRow } from './components/ui/ToastNoticeRow'
 import { ToastStack } from './components/ui/ToastStack'
 import { useDismissOnOutsideOrEscape } from './components/ui/useDismissOnOutsideOrEscape'
@@ -75,15 +62,7 @@ import { LibraryShell } from './components/workspace/LibraryShell'
 import { LibraryTopbar } from './components/workspace/LibraryTopbar'
 import { StorageSidebar } from './components/workspace/StorageSidebar'
 import { WorkspaceShell } from './components/workspace/WorkspaceShell'
-import {
-  ListHeader,
-  LoadingList,
-  PreparingUploadListItem,
-  StreamingLoadingTail,
-  UnifiedListItem,
-  UploadListItem,
-} from './components/library'
-import { AddStorageModal, type ProviderDefinition, type CreateRemoteInput } from './components/modals/AddStorageModal'
+import type { ProviderDefinition } from './components/modals/AddStorageModal'
 import { WorkspaceModals } from './components/modals/WorkspaceModals'
 import { useWorkspaceUI } from './state/workspaceUI/WorkspaceUIContext'
 import { useWorkspaceData, type IssueLevel, type WorkspaceIssue } from './state/workspaceData/WorkspaceDataContext'
@@ -92,19 +71,16 @@ import { useStartupSplash } from './features/storage/hooks/useStartupSplash'
 import { usePendingSessionPolling } from './features/storage/hooks/usePendingSessionPolling'
 import { useTransferProgressListeners } from './features/storage/hooks/useTransferProgressListeners'
 import { useLibraryProgressListener } from './features/storage/hooks/useLibraryProgressListener'
+import { useRemoteAuthFlow } from './features/storage/hooks/useRemoteAuthFlow'
 import splashLockup from '../assets/brand/cloud-weave-lockup.png'
 import './App.css'
-
-type CreateRemoteResult = {
-  remoteName: string
-  provider: string
-  status: 'connected' | 'pending' | 'requires_drive_selection' | 'error'
-  stage?: AuthSessionStage | null
-  nextStep: 'done' | 'open_browser' | 'retry' | 'rename' | 'select_drive'
-  message: string
-  errorCode?: string | null
-  driveCandidates?: OneDriveDriveCandidate[] | null
-}
+import './components/ui/toast.css'
+import './components/workspace/styles/shell.css'
+import './components/workspace/styles/sidebar.css'
+import './components/workspace/styles/topbar.css'
+import './components/workspace/styles/library-main.css'
+import './components/modals/styles/modals.css'
+import './components/workspace/styles/responsive.css'
 
 type ActionResult = {
   status: 'success' | 'error'
@@ -177,7 +153,6 @@ const PRIMARY_NAV_ITEMS: Array<{ id: LogicalView; label: string }> = [
   { id: 'other', label: 'Other' },
 ]
 const EMPTY_PENDING_MESSAGE = 'Complete authentication in your browser.'
-const PREVIEW_ASSET_PROTOCOL = 'asset'
 const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
 const CONNECT_SYNC_ATTEMPTS = 8
 const CONNECT_SYNC_DELAY_MS = 500
@@ -898,167 +873,34 @@ function App() {
     await refreshLibrary({ silent: true })
   }
 
-  const handlePendingConnected = async (session: PendingSession) => {
-    setPendingSession({
-      ...session,
-      status: 'connected',
-      nextStep: 'done',
-      message: session.message || CONNECT_SUCCESS_MESSAGE,
-      errorCode: undefined,
-      driveCandidates: undefined,
-    })
-    await synchronizeConnectedRemote(session.remoteName, session.provider)
-  }
-
-  const checkPendingSession = async () => {
-    if (!pendingSession) {
-      return null
-    }
-
-    try {
-      const [latestRemotes, session] = await Promise.all([
-        fetchRemotes({ silent: true }),
-        fetchAuthSession(pendingSession.remoteName),
-      ])
-
-      const nextPending = resolvePendingSession(pendingSession, latestRemotes, session, Date.now())
-
-      console.info('[pending-auth]', {
-        remoteName: pendingSession.remoteName,
-        previousStatus: pendingSession.status,
-        previousStage: pendingSession.stage,
-        remoteStatus: latestRemotes?.find((entry) => entry.name === pendingSession.remoteName)?.status ?? null,
-        resolvedStatus: nextPending.status,
-        resolvedStage: nextPending.stage,
-        operationAgeMs: Date.now() - pendingSession.operationStartedAtMs,
-        ...(session
-          ? {
-              sessionStatus: session.status,
-              sessionStage: session.stage ?? null,
-              sessionErrorCode: session.errorCode ?? null,
-            }
-          : {}),
-      })
-
-      setPendingSession(nextPending)
-
-      if (nextPending.status === 'connected') {
-        await handlePendingConnected(nextPending)
-      }
-
-      return nextPending
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      const failedPending = {
-        ...pendingSession,
-        status: 'error' as const,
-        stage: 'failed' as AuthSessionStage,
-        nextStep: 'retry',
-        message,
-        errorCode: undefined,
-        lastUpdatedAtMs: Date.now(),
-      }
-      setPendingSession(failedPending)
-      return failedPending
-    }
-  }
+  const {
+    createRemote,
+    handleReconnect,
+    checkPendingSession,
+    handlePendingDone,
+    handleFinalizeDriveSelection,
+    handlePendingRemoveAndReconnect,
+  } = useRemoteAuthFlow({
+    isDemoMode,
+    pendingSession,
+    selectedDriveId,
+    setPendingSession,
+    setActiveModal,
+    setSelectedDriveId,
+    setIsFinalizingDrive,
+    fetchRemotes,
+    fetchAuthSession,
+    refreshLibrary,
+    synchronizeConnectedRemote,
+    emptyPendingMessage: EMPTY_PENDING_MESSAGE,
+    connectSuccessMessage: CONNECT_SUCCESS_MESSAGE,
+  })
 
   usePendingSessionPolling({
     activeModal,
     pendingSession,
     onTick: checkPendingSession,
   })
-
-  const moveToPendingModal = (result: CreateRemoteResult, mode: PendingMode) => {
-    const nowMs = Date.now()
-    setPendingSession(toPendingSession({ ...result, message: result.message || EMPTY_PENDING_MESSAGE }, mode, nowMs))
-    setActiveModal('oauth-pending')
-  }
-
-  const createRemote = async (input: CreateRemoteInput) => {
-    if (isDemoMode) {
-      return
-    }
-
-    try {
-      if (input.provider !== 'onedrive') {
-        throw new Error('Only OneDrive is supported right now.')
-      }
-
-      const result = await invoke<CreateRemoteResult>('create_onedrive_remote', { input })
-
-      if (result.status === 'error' && result.nextStep !== 'retry') {
-        throw new Error(result.message)
-      }
-
-      if (result.status === 'connected') {
-        await handlePendingConnected({
-          remoteName: result.remoteName,
-          provider: result.provider,
-          mode: 'create',
-          status: result.status,
-          stage: 'connected',
-          nextStep: result.nextStep,
-          message: result.message || CONNECT_SUCCESS_MESSAGE,
-          errorCode: result.errorCode ?? undefined,
-          operationStartedAtMs: Date.now(),
-          lastUpdatedAtMs: Date.now(),
-          driveCandidates: result.driveCandidates ?? undefined,
-        })
-        setActiveModal('none')
-        return
-      }
-
-      moveToPendingModal(result, 'create')
-      await fetchRemotes({ silent: true })
-    } catch (error) {
-      throw error instanceof Error ? error : new Error(String(error))
-    }
-  }
-
-  const handleReconnect = async (remote: RemoteSummary) => {
-    if (isDemoMode) {
-      return
-    }
-
-    try {
-      const result = await invoke<CreateRemoteResult>('reconnect_remote', { name: remote.name })
-
-      if (result.status === 'connected') {
-        await handlePendingConnected({
-          remoteName: result.remoteName,
-          provider: result.provider,
-          mode: 'reconnect',
-          status: result.status,
-          stage: 'connected',
-          nextStep: result.nextStep,
-          message: result.message || CONNECT_SUCCESS_MESSAGE,
-          errorCode: result.errorCode ?? undefined,
-          operationStartedAtMs: Date.now(),
-          lastUpdatedAtMs: Date.now(),
-          driveCandidates: result.driveCandidates ?? undefined,
-        })
-        return
-      }
-
-      moveToPendingModal(result, 'reconnect')
-      await fetchRemotes({ silent: true })
-    } catch (error) {
-      setPendingSession({
-        remoteName: remote.name,
-        provider: remote.provider,
-        mode: 'reconnect',
-        status: 'error',
-        stage: 'failed',
-        nextStep: 'retry',
-        message: error instanceof Error ? error.message : String(error),
-        errorCode: undefined,
-        operationStartedAtMs: Date.now(),
-        lastUpdatedAtMs: Date.now(),
-      })
-      setActiveModal('oauth-pending')
-    }
-  }
 
   const handleDeleteRemote = async () => {
     if (isDemoMode) {
@@ -1090,87 +932,6 @@ function App() {
     }
   }
 
-  const handlePendingDone = async () => {
-    setActiveModal('none')
-    setPendingSession(null)
-    setSelectedDriveId('')
-  }
-
-  const handleFinalizeDriveSelection = async () => {
-    if (isDemoMode) {
-      return
-    }
-
-    if (!pendingSession || pendingSession.status !== 'requires_drive_selection' || !selectedDriveId) {
-      return
-    }
-
-    setIsFinalizingDrive(true)
-
-    try {
-      const result = await invoke<CreateRemoteResult>('finalize_onedrive_remote', {
-        name: pendingSession.remoteName,
-        driveId: selectedDriveId,
-      })
-
-      setPendingSession({
-        remoteName: result.remoteName,
-        provider: result.provider,
-        mode: pendingSession.mode,
-        status: result.status,
-        stage:
-          result.stage ??
-          (result.status === 'connected'
-            ? 'connected'
-            : result.status === 'requires_drive_selection'
-              ? 'requires_drive_selection'
-              : result.status === 'error'
-                ? 'failed'
-                : 'finalizing'),
-        nextStep: result.nextStep,
-        message: result.message,
-        errorCode: result.errorCode ?? undefined,
-        operationStartedAtMs: pendingSession.operationStartedAtMs,
-        lastUpdatedAtMs: Date.now(),
-        driveCandidates: result.driveCandidates ?? undefined,
-      })
-
-      if (result.status === 'connected') {
-        await refreshLibrary({ silent: true })
-      }
-    } catch (error) {
-      setPendingSession({
-        ...pendingSession,
-        status: 'error',
-        stage: 'failed',
-        nextStep: 'retry',
-        message: error instanceof Error ? error.message : String(error),
-        errorCode: undefined,
-        lastUpdatedAtMs: Date.now(),
-      })
-    } finally {
-      setIsFinalizingDrive(false)
-    }
-  }
-
-  const handlePendingRemoveAndReconnect = async () => {
-    if (isDemoMode) {
-      return
-    }
-
-    if (!pendingSession) {
-      return
-    }
-
-    try {
-      await invoke<ActionResult>('delete_remote', { name: pendingSession.remoteName })
-    } catch {
-      // Ignore delete failures here and still guide the user back into reconnect flow.
-    }
-
-    setActiveModal('add-storage')
-    await refreshLibrary({ silent: true })
-  }
 
   const openRemoveModal = (remote: RemoteSummary) => {
     setRemoveTarget(remote)
@@ -1498,96 +1259,25 @@ function App() {
             />
           }
         >
-          <LibraryMain>
-            {!isLoadingItems && itemsError ? <InlineError>{itemsError}</InlineError> : null}
-
-            {shouldShowNoStorageState ? (
-              <MainEmptyState
-                eyebrow="Unified Library"
-                title="Your files will appear here."
-                description="Connect a storage from the sidebar to start browsing everything in one place."
-              >
-                <Button family="secondary" type="button" onClick={openAddModal}>
-                  Connect storage
-                </Button>
-                <Button family="primary" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
-                  Upload
-                </Button>
-              </MainEmptyState>
-            ) : null}
-
-            {shouldShowLoadingList ? (
-              <>
-                <p className="loading-list-copy" role="status" aria-live="polite">
-                  Loading files...
-                </p>
-                <ListHeader />
-                <LoadingList />
-              </>
-            ) : null}
-
-            {((!isLoadingItems || unifiedItems.length > 0) && !itemsError && hasConnectedStorage && !shouldShowLoadingList) ? (
-              activeView === 'recent' ? (
-                shouldShowCategoryEmptyState ? (
-                  <>
-                    <ListHeader />
-                    <EmptyListState title={emptyListTitle} description={emptyListDescription} />
-                  </>
-                ) : (
-                  <>
-                    <div className="recent-groups">
-                      {groupedRecentItems.map((group) => (
-                        <section key={group.label} className="recent-group">
-                          <div className="section-heading">
-                            <h3>{group.label}</h3>
-                            <span>{group.items.length}</span>
-                          </div>
-
-                          <ListHeader />
-                          <div className="item-list">
-                            {group.items.map((item) => (
-                              <UnifiedListItem
-                                key={item.id}
-                                item={item}
-                                downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
-                                openState={openStates[item.id] ?? IDLE_OPEN_STATE}
-                                onOpen={handleOpen}
-                                onDownload={handleDownload}
-                              />
-                            ))}
-                          </div>
-                        </section>
-                      ))}
-                    </div>
-                    {shouldShowStreamingTail ? <StreamingLoadingTail /> : null}
-                  </>
-                )
-              ) : (
-                <>
-                  <ListHeader />
-                  {shouldShowCategoryEmptyState ? (
-                    <EmptyListState title={emptyListTitle} description={emptyListDescription} />
-                  ) : (
-                    <>
-                      <div className="item-list">
-                        {displayedItems.map((item) => (
-                          <UnifiedListItem
-                            key={item.id}
-                            item={item}
-                            downloadState={downloadStates[item.id] ?? IDLE_DOWNLOAD_STATE}
-                            openState={openStates[item.id] ?? IDLE_OPEN_STATE}
-                            onOpen={handleOpen}
-                            onDownload={handleDownload}
-                          />
-                        ))}
-                      </div>
-                      {shouldShowStreamingTail ? <StreamingLoadingTail /> : null}
-                    </>
-                  )}
-                </>
-              )
-            ) : null}
-          </LibraryMain>
+          <LibraryMain
+            activeView={activeView}
+            itemsError={itemsError}
+            shouldShowNoStorageState={shouldShowNoStorageState}
+            shouldShowLoadingList={shouldShowLoadingList}
+            shouldShowCategoryEmptyState={shouldShowCategoryEmptyState}
+            shouldShowStreamingTail={shouldShowStreamingTail}
+            emptyListTitle={emptyListTitle}
+            emptyListDescription={emptyListDescription}
+            hasConnectedStorage={hasConnectedStorage}
+            displayedItems={displayedItems}
+            groupedRecentItems={groupedRecentItems}
+            getDownloadState={(itemId) => downloadStates[itemId] ?? IDLE_DOWNLOAD_STATE}
+            getOpenState={(itemId) => openStates[itemId] ?? IDLE_OPEN_STATE}
+            onOpen={handleOpen}
+            onDownload={handleDownload}
+            onOpenAddStorage={openAddModal}
+            onOpenUpload={openUploadModal}
+          />
         </LibraryShell>
 
       {visibleToasts.length > 0 ? (
@@ -1635,497 +1325,65 @@ function App() {
       ) : null}
 
       <WorkspaceModals
-        previewModal={
-          previewPayload ? (
-            <PreviewModal
-              payload={previewPayload}
-              onClose={() => setPreviewPayload(null)}
-            />
-          ) : null
-        }
-        issuesModal={
-          isIssuesModalOpen ? (
-            <IssuesModal
-              issues={workspaceIssues}
-              focusedIssueId={focusedIssueId}
-              onReportIssue={() => setIsFeedbackPromptOpen(true)}
-              onClose={() => {
-                setIsIssuesModalOpen(false)
-                setFocusedIssueId(null)
-              }}
-            />
-          ) : null
-        }
-        feedbackModal={
-          isFeedbackPromptOpen ? (
-            <FeedbackPromptModal
-              isExportingDiagnostics={isExportingDiagnostics}
-              isOpeningFeedbackForm={isOpeningFeedbackForm}
-              onClose={() => setIsFeedbackPromptOpen(false)}
-              onContinue={() => {
-                void startFeedbackFlow()
-              }}
-            />
-          ) : null
-        }
-        addStorageModal={null}
-        oauthPendingModal={null}
-        removeConfirmModal={null}
-        uploadModal={null}
+        previewPayload={previewPayload}
+        onClosePreview={() => setPreviewPayload(null)}
+        isIssuesModalOpen={isIssuesModalOpen}
+        workspaceIssues={workspaceIssues}
+        focusedIssueId={focusedIssueId}
+        onReportIssue={() => setIsFeedbackPromptOpen(true)}
+        onCloseIssues={() => {
+          setIsIssuesModalOpen(false)
+          setFocusedIssueId(null)
+        }}
+        formatIssueTimestamp={formatIssueTimestamp}
+        describeIssueSource={describeIssueSource}
+        describeIssueLocation={describeIssueLocation}
+        isFeedbackPromptOpen={isFeedbackPromptOpen}
+        isExportingDiagnostics={isExportingDiagnostics}
+        isOpeningFeedbackForm={isOpeningFeedbackForm}
+        onCloseFeedback={() => setIsFeedbackPromptOpen(false)}
+        onContinueFeedback={() => {
+          void startFeedbackFlow()
+        }}
+        activeModal={activeModal}
+        providers={STORAGE_PROVIDERS}
+        onCloseAddStorage={closeAddModal}
+        onCreateRemote={createRemote}
+        pendingSession={pendingSession}
+        pendingHasCallbackStartupFailure={pendingHasCallbackStartupFailure}
+        pendingIsFinalizing={pendingIsFinalizing}
+        selectedDriveId={selectedDriveId}
+        isFinalizingDrive={isFinalizingDrive}
+        onSelectDrive={setSelectedDriveId}
+        onClosePending={closePendingModal}
+        onPendingRemoveAndReconnect={() => void handlePendingRemoveAndReconnect()}
+        onFinalizeDriveSelection={() => void handleFinalizeDriveSelection()}
+        onPendingDone={handlePendingDone}
+        emptyPendingMessage={EMPTY_PENDING_MESSAGE}
+        removeTarget={removeTarget}
+        removeError={removeError}
+        isRemoving={isRemoving}
+        getProviderLabel={getProviderLabel}
+        onCloseRemoveConfirm={() => setActiveModal('none')}
+        onDeleteRemote={() => void handleDeleteRemote()}
+        isUploadDragActive={isUploadDragActive}
+        isPreparingUpload={isPreparingUpload}
+        isStartingUpload={isStartingUpload}
+        uploadBatch={uploadBatch}
+        uploadError={uploadError}
+        shouldShowPreparingUploadList={shouldShowPreparingUploadList}
+        preparingUploadItems={preparingUploadItems}
+        uploadListItems={uploadListItems}
+        hasUploadItems={hasUploadItems}
+        canStartUpload={canStartUpload}
+        onCloseUpload={closeUploadModal}
+        onChooseUploadFiles={() => void handleChooseUploadFiles()}
+        onChooseUploadFolder={() => void handleChooseUploadFolder()}
+        onResetUploadBatch={resetUploadBatch}
+        onStartUpload={() => void handleStartUpload()}
       />
-
-      {activeModal === 'add-storage' ? (
-        <AddStorageModal providers={STORAGE_PROVIDERS} onClose={closeAddModal} onCreateRemote={createRemote} />
-      ) : null}
-
-      {activeModal === 'oauth-pending' && pendingSession ? (
-        <ModalOverlay onRequestClose={closePendingModal}>
-          <ModalSurface surfaceClassName="full-modal pending-modal" labelledBy="pending-title">
-            <ModalHeader
-              eyebrow={pendingSession.provider}
-              titleId="pending-title"
-              title={
-                pendingSession.status === 'connected'
-                  ? 'Storage connected'
-                  : pendingSession.status === 'requires_drive_selection'
-                    ? 'Choose your OneDrive'
-                    : pendingSession.status === 'error'
-                      ? pendingHasCallbackStartupFailure
-                        ? 'Sign-in could not start'
-                        : 'Reconnect failed'
-                      : pendingIsFinalizing
-                        ? 'Finishing your OneDrive connection'
-                        : 'Complete authentication in your browser'
-              }
-              onClose={closePendingModal}
-              closeAriaLabel="Close modal"
-            />
-
-            <div className="pending-body">
-              <p className="pending-remote">{pendingSession.remoteName}</p>
-              <p>{pendingSession.message || EMPTY_PENDING_MESSAGE}</p>
-
-              {pendingSession.status === 'pending' ? (
-                <div className="pending-indicator">
-                  <Spinner />
-                  <p>{pendingIsFinalizing ? 'Finishing setup...' : 'Checking for completion...'}</p>
-                </div>
-              ) : null}
-
-              {pendingSession.status === 'pending' ? (
-                <p className="pending-help">
-                  {pendingIsFinalizing
-                    ? 'Cloud Weave already has your sign-in token and is finishing the OneDrive setup. You do not need to return to the browser.'
-                    : 'Finish the Microsoft sign-in flow in your browser, then return here.'}
-                </p>
-              ) : null}
-
-              {pendingSession.status === 'requires_drive_selection' ? (
-                <div className="drive-picker">
-                  <p className="pending-help">
-                    Cloud Weave found more than one OneDrive library for this account. Choose the one you want to
-                    browse.
-                  </p>
-
-                  <div className="drive-candidate-list" role="list" aria-label="OneDrive libraries">
-                    {pendingSession.driveCandidates?.map((candidate) => {
-                      const isSelected = candidate.id === selectedDriveId
-
-                      return (
-                        <label
-                          key={`${candidate.id}-${candidate.label}`}
-                          className={`drive-candidate ${isSelected ? 'selected' : ''} ${candidate.isReachable ? '' : 'disabled'}`}
-                        >
-                          <input
-                            type="radio"
-                            name="drive-candidate"
-                            value={candidate.id}
-                            checked={isSelected}
-                            disabled={!candidate.isReachable}
-                            onChange={() => setSelectedDriveId(candidate.id)}
-                          />
-
-                          <div className="drive-candidate-copy">
-                            <div className="drive-candidate-title">
-                              <span>{candidate.label}</span>
-                              <div className="drive-candidate-badges">
-                                <span className="source-badge">{candidate.driveType}</span>
-                                {candidate.isSuggested ? <span className="source-badge suggested-badge">Recommended</span> : null}
-                              </div>
-                            </div>
-
-                            <p className="drive-candidate-id">{candidate.id}</p>
-                            <p className="drive-candidate-help">
-                              {candidate.isReachable
-                                ? candidate.isSystemLike
-                                  ? 'This looks like a system-style library. Choose it only if it is the one you expect.'
-                                  : 'This library is reachable and ready to use.'
-                                : candidate.message ?? 'This library could not be opened.'}
-                            </p>
-                          </div>
-                        </label>
-                      )
-                    })}
-                  </div>
-                </div>
-              ) : null}
-
-              {pendingSession.status === 'error' ? (
-                <>
-                  <p className="pending-help">
-                    {pendingHasCallbackStartupFailure
-                      ? 'Cloud Weave could not open its local sign-in callback. Another stalled sign-in may still be running. Close this message and try again.'
-                      : 'This storage could not be reconnected. Remove it and connect again to keep using it.'}
-                  </p>
-                </>
-              ) : null}
-
-              {pendingSession.status === 'connected' ? (
-                <p className="pending-help">This storage now appears in the connected list and unified library.</p>
-              ) : null}
-            </div>
-
-            <div className="modal-actions">
-              {pendingSession.status === 'error' ? (
-                <>
-                  {!pendingHasCallbackStartupFailure ? (
-                    <Button family="primary" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
-                      Remove and connect again
-                    </Button>
-                  ) : null}
-                </>
-              ) : pendingSession.status === 'requires_drive_selection' ? (
-                <>
-                  <Button family="secondary" type="button" onClick={closePendingModal}>
-                    Cancel
-                  </Button>
-                  <Button family="secondary" type="button" onClick={() => void handlePendingRemoveAndReconnect()}>
-                    Remove and start over
-                  </Button>
-                  <Button
-                    family="primary"
-                    type="button"
-                    onClick={() => void handleFinalizeDriveSelection()}
-                    disabled={!selectedDriveId || isFinalizingDrive}
-                  >
-                    {isFinalizingDrive ? 'Connecting...' : 'Use this drive'}
-                  </Button>
-                </>
-              ) : pendingSession.status === 'connected' ? (
-                <Button family="primary" type="button" onClick={handlePendingDone}>
-                  Done
-                </Button>
-              ) : null}
-            </div>
-          </ModalSurface>
-        </ModalOverlay>
-      ) : null}
-
-      {activeModal === 'remove-confirm' && removeTarget ? (
-        <ModalOverlay onRequestClose={() => setActiveModal('none')}>
-          <ModalSurface surfaceClassName="confirm-modal" labelledBy="remove-title">
-            <ModalHeader
-              eyebrow="Remove Storage"
-              titleId="remove-title"
-              title={`Remove ${removeTarget.name}?`}
-              onClose={() => setActiveModal('none')}
-              closeAriaLabel="Close modal"
-            />
-
-            <div className="confirm-copy">
-              <p>This removes the saved connection from Cloud Weave.</p>
-              <p className="confirm-provider">{getProviderLabel(removeTarget.provider)}</p>
-              {removeError ? <InlineError>{removeError}</InlineError> : null}
-            </div>
-
-            <div className="modal-actions">
-              <Button family="secondary" type="button" onClick={() => setActiveModal('none')}>
-                Cancel
-              </Button>
-              <Button family="primary" tone="danger" type="button" onClick={() => void handleDeleteRemote()} disabled={isRemoving}>
-                {isRemoving ? 'Removing...' : 'Remove'}
-              </Button>
-            </div>
-          </ModalSurface>
-        </ModalOverlay>
-      ) : null}
-
-      {activeModal === 'upload' ? (
-        <ModalOverlay onRequestClose={closeUploadModal}>
-          <ModalSurface surfaceClassName="full-modal upload-modal" labelledBy="upload-title">
-            <ModalHeader
-              eyebrow="Upload"
-              titleId="upload-title"
-              title="Send files to Cloud Weave"
-              onClose={closeUploadModal}
-              closeAriaLabel="Close upload modal"
-            />
-
-            <div className="upload-body">
-              <div className={`upload-dropzone ${isUploadDragActive ? 'active' : ''}`}>
-                <p className="upload-dropzone-title">Drop files or folders here</p>
-                <p className="upload-dropzone-copy">
-                  Browse from disk or drop files here to add them to the upload list.
-                </p>
-
-                <div className="upload-picker-actions">
-                  <Button family="primary" type="button" onClick={() => void handleChooseUploadFiles()} disabled={isPreparingUpload || isStartingUpload}>
-                    {isPreparingUpload ? 'Preparing...' : 'Browse files'}
-                  </Button>
-                  <Button family="secondary" type="button" onClick={() => void handleChooseUploadFolder()} disabled={isPreparingUpload || isStartingUpload}>
-                    {isPreparingUpload ? 'Preparing...' : 'Browse folder'}
-                  </Button>
-                </div>
-              </div>
-
-              {uploadBatch?.notices.map((notice) => (
-                <p key={notice} className="pending-help">
-                  {notice}
-                </p>
-              ))}
-              {uploadError ? <InlineError>{uploadError}</InlineError> : null}
-
-              {shouldShowPreparingUploadList ? (
-                <p className="upload-preparing-summary" role="status" aria-live="polite">
-                  {preparingUploadItems.length} file{preparingUploadItems.length === 1 ? '' : 's'} selected
-                </p>
-              ) : null}
-
-              {hasUploadItems || shouldShowPreparingUploadList ? (
-                <>
-                  <div className="upload-list-header" aria-hidden="true">
-                    <span>Name</span>
-                    <span>Status</span>
-                    <span>Path</span>
-                    <span>Storage</span>
-                  </div>
-                  <div className="upload-queue" role="list" aria-label="Upload list">
-                    {uploadListItems.map(({ item, state }) => (
-                      <UploadListItem key={item.itemId} item={item} state={state} />
-                    ))}
-                    {preparingUploadItems.map((item) => (
-                      <PreparingUploadListItem key={item.id} item={item} />
-                    ))}
-                  </div>
-                </>
-              ) : null}
-            </div>
-
-            {hasUploadItems ? (
-              <div className="modal-actions">
-                <Button family="secondary" type="button" onClick={resetUploadBatch} disabled={!hasUploadItems || isPreparingUpload}>
-                  Clear
-                </Button>
-                <Button family="primary" type="button" onClick={() => void handleStartUpload()} disabled={!canStartUpload}>
-                  {isPreparingUpload ? 'Preparing...' : isStartingUpload ? 'Uploading...' : 'Upload'}
-                </Button>
-              </div>
-            ) : null}
-          </ModalSurface>
-        </ModalOverlay>
-      ) : null}
       </WorkspaceShell>
     </>
-  )
-}
-
-function IssuesModal({
-  issues,
-  focusedIssueId,
-  onReportIssue,
-  onClose,
-}: {
-  issues: WorkspaceIssue[]
-  focusedIssueId: string | null
-  onReportIssue: () => void
-  onClose: () => void
-}) {
-  return (
-    <ModalOverlay onRequestClose={onClose}>
-      <ModalSurface surfaceClassName="issues-modal" labelledBy="issues-title">
-        <ModalHeader
-          eyebrow="Issues"
-          titleId="issues-title"
-          title="Workspace issues"
-          onClose={onClose}
-          closeAriaLabel="Close issues modal"
-        />
-
-        <div className="issues-feedback-actions">
-          <Button family="secondary" size="sm" type="button" onClick={onReportIssue}>
-            Report issue
-          </Button>
-        </div>
-
-        {issues.length === 0 ? (
-          <MainEmptyState
-            className="compact issues-empty-state"
-            eyebrow="Issues"
-            title="No issues right now."
-            description="Cloud Weave will show skipped folders, reconnect problems, and similar notices here."
-            titleLevel="h2"
-          />
-        ) : (
-          <div className="issues-list" role="list" aria-label="Workspace issues">
-            {issues.map((issue) => (
-              <article
-                key={issue.id}
-                className={`issue-item ${issue.level} ${focusedIssueId === issue.id ? 'focused' : ''}`}
-                role="listitem"
-              >
-                <div className="issue-item-header">
-                  <StatusBadge tone={issue.level === 'error' ? 'warning' : 'neutral'}>{issue.level}</StatusBadge>
-                  <span className="issue-item-time">{formatIssueTimestamp(issue.timestamp)}</span>
-                </div>
-                <p className="issue-item-message">{issue.message}</p>
-                <div className="issue-item-meta">
-                  <span>{describeIssueSource(issue.source)}</span>
-                  <span>{describeIssueLocation(issue.source)}</span>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </ModalSurface>
-    </ModalOverlay>
-  )
-}
-
-function FeedbackPromptModal({
-  isExportingDiagnostics,
-  isOpeningFeedbackForm,
-  onClose,
-  onContinue,
-}: {
-  isExportingDiagnostics: boolean
-  isOpeningFeedbackForm: boolean
-  onClose: () => void
-  onContinue: () => void
-}) {
-  const isContinuing = isExportingDiagnostics || isOpeningFeedbackForm
-  const continueLabel = isExportingDiagnostics
-    ? 'Preparing diagnostics...'
-    : isOpeningFeedbackForm
-      ? 'Opening form...'
-      : 'Continue'
-
-  return (
-    <ModalOverlay onRequestClose={onClose}>
-      <ModalSurface surfaceClassName="confirm-modal feedback-prompt-modal" labelledBy="feedback-prompt-title">
-        <ModalHeader
-          eyebrow="Feedback"
-          titleId="feedback-prompt-title"
-          title="Send feedback"
-          onClose={onClose}
-          closeAriaLabel="Close feedback prompt"
-        />
-
-        <div className="feedback-prompt-copy">
-          <p>Cloud Weave will save a diagnostics ZIP to your Downloads folder.</p>
-          <p>You will attach that ZIP in the feedback form next.</p>
-          <p>The feedback form will open in your browser after the ZIP is prepared.</p>
-          <p>Do not include personal or sensitive information.</p>
-        </div>
-
-        <div className="modal-actions">
-          <Button family="quiet" type="button" onClick={onClose} disabled={isContinuing}>
-            Cancel
-          </Button>
-          <Button family="primary" type="button" onClick={onContinue} disabled={isContinuing}>
-            {continueLabel}
-          </Button>
-        </div>
-      </ModalSurface>
-    </ModalOverlay>
-  )
-}
-
-function PreviewModal({
-  payload,
-  onClose,
-}: {
-  payload: PreviewPayload
-  onClose: () => void
-}) {
-  const assetUrl = convertFileSrc(payload.localPath, PREVIEW_ASSET_PROTOCOL)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(payload.previewKind === 'image' ? assetUrl : null)
-  const [previewError, setPreviewError] = useState('')
-
-  useEffect(() => {
-    if (payload.previewKind === 'image') {
-      setPreviewUrl(assetUrl)
-      setPreviewError('')
-      return
-    }
-
-    let isActive = true
-    let objectUrl: string | null = null
-
-    setPreviewUrl(null)
-    setPreviewError('')
-
-    void fetch(assetUrl)
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`Preview request failed with ${response.status}`)
-        }
-
-        const blob = await response.blob()
-        objectUrl = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }))
-
-        if (isActive) {
-          setPreviewUrl(objectUrl)
-        }
-      })
-      .catch((error: unknown) => {
-        if (!isActive) {
-          return
-        }
-
-        setPreviewError(error instanceof Error ? error.message : 'The preview could not be displayed here.')
-      })
-
-    return () => {
-      isActive = false
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl)
-      }
-    }
-  }, [assetUrl, payload.previewKind])
-
-  return (
-    <ModalOverlay onRequestClose={onClose}>
-      <ModalSurface surfaceClassName="preview-modal" labelledBy="preview-title">
-        <ModalHeader
-          eyebrow={payload.previewKind === 'image' ? 'Image Preview' : 'PDF Preview'}
-          titleId="preview-title"
-          title={payload.itemName}
-          onClose={onClose}
-          closeAriaLabel="Close preview"
-        />
-
-        <div className="preview-surface">
-          {previewError ? (
-            <div className="preview-fallback">
-              <p>The preview could not be displayed here.</p>
-              <p>{previewError}</p>
-            </div>
-          ) : payload.previewKind === 'image' && previewUrl ? (
-            <img className="preview-image" src={assetUrl} alt={payload.itemName} />
-          ) : payload.previewKind === 'pdf' && previewUrl ? (
-            <object className="preview-frame" data={previewUrl} type="application/pdf" aria-label={payload.itemName}>
-              <div className="preview-fallback">
-                <p>PDF preview is unavailable in this view.</p>
-              </div>
-            </object>
-          ) : (
-            <div className="preview-fallback">
-              <p>Loading preview...</p>
-            </div>
-          )}
-        </div>
-      </ModalSurface>
-    </ModalOverlay>
   )
 }
 
