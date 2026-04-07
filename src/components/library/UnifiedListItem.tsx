@@ -8,6 +8,7 @@ import {
 import type { DownloadState } from '../../features/storage/downloads'
 import { formatFileSize, formatModifiedTime, getCategoryMonogram, type UnifiedItem } from '../../features/storage/unifiedItems'
 import { formatListPath, getListItemStatusLabel } from './listItemFormat'
+import { useWorkspaceUI } from '../../state/workspaceUI/WorkspaceUIContext'
 
 export type UnifiedListItemProps = {
   item: UnifiedItem
@@ -15,9 +16,6 @@ export type UnifiedListItemProps = {
   openState: OpenState
   onOpen: (item: UnifiedItem) => Promise<void>
   onDownload: (item: UnifiedItem) => Promise<void>
-  isRowMenuOpen: boolean
-  onToggleRowMenu: () => void
-  onCloseRowMenu: () => void
 }
 
 export function UnifiedListItem({
@@ -26,10 +24,18 @@ export function UnifiedListItem({
   openState,
   onOpen,
   onDownload,
-  isRowMenuOpen,
-  onToggleRowMenu,
-  onCloseRowMenu,
 }: UnifiedListItemProps) {
+  const { state: ui, dispatch: uiDispatch } = useWorkspaceUI()
+  const isRowMenuOpen = ui.openRowMenuItemId === item.id
+
+  const toggleRowMenu = () => {
+    uiDispatch({ type: 'ui/setOpenRowMenuItemId', itemId: isRowMenuOpen ? null : item.id })
+  }
+
+  const closeRowMenu = () => {
+    uiDispatch({ type: 'ui/setOpenRowMenuItemId', itemId: null })
+  }
+
   const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
   const canPreview = canPreviewItem(item)
   const canOpen = canOpenInDefaultApp(item)
@@ -110,7 +116,7 @@ export function UnifiedListItem({
             aria-label={`More actions for ${item.name}`}
             aria-haspopup="menu"
             aria-expanded={isRowMenuOpen}
-            onClick={onToggleRowMenu}
+            onClick={toggleRowMenu}
           >
             …
           </Button>
@@ -121,7 +127,7 @@ export function UnifiedListItem({
                 <RowMenuItem
                   disabled={isPreparingOpen}
                   onClick={() => {
-                    onCloseRowMenu()
+                    closeRowMenu()
                     void onOpen(item)
                   }}
                 >
@@ -131,7 +137,7 @@ export function UnifiedListItem({
               <RowMenuItem
                 disabled={isBusy}
                 onClick={() => {
-                  onCloseRowMenu()
+                  closeRowMenu()
                   void onDownload(item)
                 }}
               >

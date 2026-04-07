@@ -2,42 +2,35 @@ import type { RefObject } from 'react'
 import type { UnifiedItemSortKey } from '../../features/storage/unifiedItems'
 import { Button } from '../ui/Button'
 import { SortMenuOptionButton } from '../ui/SortMenuOptionButton'
+import { useWorkspaceData } from '../../state/workspaceData/WorkspaceDataContext'
+import { useWorkspaceUI } from '../../state/workspaceUI/WorkspaceUIContext'
 
 export type SortMenuOption = { value: UnifiedItemSortKey; label: string }
 
 type LibraryTopbarProps = {
-  searchQuery: string
-  onSearchQueryChange: (value: string) => void
   sortMenuRef: RefObject<HTMLDivElement | null>
-  isSortMenuOpen: boolean
-  onToggleSortMenu: () => void
   sortOptions: SortMenuOption[]
-  sortKey: UnifiedItemSortKey
   sortLabel: string
   onSelectSortKey: (key: UnifiedItemSortKey) => void
-  workspaceIssueCount: number
-  unreadIssueCount: number
   onOpenIssues: () => void
   onOpenUpload: () => void
   hasConnectedStorage: boolean
 }
 
 export function LibraryTopbar({
-  searchQuery,
-  onSearchQueryChange,
   sortMenuRef,
-  isSortMenuOpen,
-  onToggleSortMenu,
   sortOptions,
-  sortKey,
   sortLabel,
   onSelectSortKey,
-  workspaceIssueCount,
-  unreadIssueCount,
   onOpenIssues,
   onOpenUpload,
   hasConnectedStorage,
 }: LibraryTopbarProps) {
+  const { state: ui, dispatch: uiDispatch } = useWorkspaceUI()
+  const { state: data } = useWorkspaceData()
+
+  const unreadIssueCount = data.workspaceIssues.filter((issue) => !issue.read).length
+
   return (
     <header className="library-topbar">
       <div className="library-toolbar">
@@ -47,14 +40,14 @@ export function LibraryTopbar({
           </span>
           <input
             type="search"
-            value={searchQuery}
-            onChange={(event) => onSearchQueryChange(event.target.value)}
+            value={ui.searchQuery}
+            onChange={(event) => uiDispatch({ type: 'ui/setSearchQuery', query: event.target.value })}
             placeholder="Search files, paths, or sources"
           />
         </label>
 
         <div className="library-actions">
-          <div className={`toolbar-select ${isSortMenuOpen ? 'open' : ''}`} ref={sortMenuRef}>
+          <div className={`toolbar-select ${ui.isSortMenuOpen ? 'open' : ''}`} ref={sortMenuRef}>
             <Button
               family="quiet"
               size="sm"
@@ -62,8 +55,8 @@ export function LibraryTopbar({
               type="button"
               aria-label="Sort files"
               aria-haspopup="menu"
-              aria-expanded={isSortMenuOpen}
-              onClick={onToggleSortMenu}
+              aria-expanded={ui.isSortMenuOpen}
+              onClick={() => uiDispatch({ type: 'ui/setSortMenuOpen', open: !ui.isSortMenuOpen })}
             >
               <span className="toolbar-select-value">{sortLabel}</span>
               <span className="toolbar-select-icon" aria-hidden="true">
@@ -71,12 +64,12 @@ export function LibraryTopbar({
               </span>
             </Button>
 
-            {isSortMenuOpen ? (
+            {ui.isSortMenuOpen ? (
               <div className="toolbar-select-menu" role="menu" aria-label="Sort files">
                 {sortOptions.map((option) => (
                   <SortMenuOptionButton
                     key={option.value}
-                    active={sortKey === option.value}
+                    active={ui.sortKey === option.value}
                     label={option.label}
                     onSelect={() => onSelectSortKey(option.value)}
                   />
@@ -87,8 +80,8 @@ export function LibraryTopbar({
 
           <Button family="icon" size="md" className="issues-entry-button utility-icon-button" type="button" onClick={onOpenIssues} aria-label="Open issues">
             <span aria-hidden="true">!</span>
-            {workspaceIssueCount > 0 ? (
-              <span className="issues-entry-badge">{unreadIssueCount > 0 ? unreadIssueCount : workspaceIssueCount}</span>
+            {data.workspaceIssues.length > 0 ? (
+              <span className="issues-entry-badge">{unreadIssueCount > 0 ? unreadIssueCount : data.workspaceIssues.length}</span>
             ) : null}
           </Button>
           <Button family="primary" type="button" onClick={onOpenUpload} disabled={!hasConnectedStorage}>

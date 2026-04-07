@@ -4,17 +4,14 @@ import { Button } from '../ui/Button'
 import { EmptyStateLine } from '../ui/EmptyStateLine'
 import { InlineError } from '../ui/InlineError'
 import { StatusBadge } from '../ui/StatusBadge'
+import { useWorkspaceData } from '../../state/workspaceData/WorkspaceDataContext'
+import { useWorkspaceUI } from '../../state/workspaceUI/WorkspaceUIContext'
 
 export type StorageSidebarNavItem = { id: LogicalView; label: string }
 
 type StorageSidebarProps = {
   navItems: StorageSidebarNavItem[]
-  activeView: LogicalView
-  onSelectView: (view: LogicalView) => void
   onAddStorage: () => void
-  isLoadingRemotes: boolean
-  listError: string
-  shouldShowNoStorageState: boolean
   displayedRemotes: RemoteSummary[]
   getProviderLabel: (provider: string) => string
   onReconnect: (remote: RemoteSummary) => void
@@ -23,17 +20,17 @@ type StorageSidebarProps = {
 
 export function StorageSidebar({
   navItems,
-  activeView,
-  onSelectView,
   onAddStorage,
-  isLoadingRemotes,
-  listError,
-  shouldShowNoStorageState,
   displayedRemotes,
   getProviderLabel,
   onReconnect,
   onRemove,
 }: StorageSidebarProps) {
+  const { state: ui, dispatch: uiDispatch } = useWorkspaceUI()
+  const { state: data } = useWorkspaceData()
+
+  const shouldShowNoStorageState = !data.isLoadingRemotes && !data.listError && displayedRemotes.length === 0
+
   return (
     <aside className="storage-sidebar">
       <div className="sidebar-panel">
@@ -42,9 +39,9 @@ export function StorageSidebar({
             {navItems.map((item) => (
               <button
                 key={item.id}
-                className={`sidebar-nav-item ${activeView === item.id ? 'active' : ''}`}
+                className={`sidebar-nav-item ${ui.activeView === item.id ? 'active' : ''}`}
                 type="button"
-                onClick={() => onSelectView(item.id)}
+                onClick={() => uiDispatch({ type: 'ui/setActiveView', view: item.id })}
               >
                 <span className="sidebar-nav-label">{item.label}</span>
               </button>
@@ -59,11 +56,11 @@ export function StorageSidebar({
               </Button>
             </div>
 
-            {isLoadingRemotes ? <EmptyStateLine>Loading storage...</EmptyStateLine> : null}
-            {!isLoadingRemotes && listError ? <InlineError>{listError}</InlineError> : null}
+            {data.isLoadingRemotes ? <EmptyStateLine>Loading storage...</EmptyStateLine> : null}
+            {!data.isLoadingRemotes && data.listError ? <InlineError>{data.listError}</InlineError> : null}
             {shouldShowNoStorageState ? <EmptyStateLine>No storage connected yet.</EmptyStateLine> : null}
 
-            {!isLoadingRemotes && !listError && displayedRemotes.length > 0 ? (
+            {!data.isLoadingRemotes && !data.listError && displayedRemotes.length > 0 ? (
               <ul className="storage-nav-list">
                 {displayedRemotes.map((remote) => {
                   const needsReconnect = remote.status === 'reconnect_required'

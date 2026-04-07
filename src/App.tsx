@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
@@ -33,7 +32,6 @@ import {
   type DownloadAcceptedResult,
   type DownloadProgressEvent,
   type DownloadRequest,
-  type DownloadState,
 } from './features/storage/downloads'
 import {
   canOpenInDefaultApp,
@@ -45,11 +43,9 @@ import {
   toReadyOpenState,
   type OpenRequest,
   type OpenResult,
-  type OpenState,
   type PreviewPayload,
 } from './features/storage/openFiles'
 import {
-  mergeUnifiedItems,
   type StartUnifiedLibraryLoadResult,
   type UnifiedLibraryLoadEvent,
 } from './features/storage/libraryLoad'
@@ -61,7 +57,6 @@ import {
   type UploadAcceptedResult,
   type UploadProgressEvent,
   type UploadSelection,
-  type UploadState,
 } from './features/storage/uploads'
 import { Button } from './components/ui/Button'
 import { EmptyListState } from './components/ui/EmptyListState'
@@ -88,19 +83,12 @@ import {
   UnifiedListItem,
   UploadListItem,
 } from './components/library'
+import { AddStorageModal, type ProviderDefinition, type CreateRemoteInput } from './components/modals/AddStorageModal'
+import { useWorkspaceUI } from './state/workspaceUI/WorkspaceUIContext'
+import { useWorkspaceData, type IssueLevel, type WorkspaceIssue } from './state/workspaceData/WorkspaceDataContext'
+import { useTransfers } from './state/transfers/TransfersContext'
 import splashLockup from '../assets/brand/cloud-weave-lockup.png'
 import './App.css'
-
-type StorageProvider = 'onedrive' | 'gdrive' | 'dropbox' | 'icloud'
-type AuthType = 'oauth' | 'form'
-type ModalName = 'none' | 'add-storage' | 'oauth-pending' | 'remove-confirm' | 'upload'
-type AddFlowStep = 'providers' | 'form'
-
-type CreateOneDriveRemoteInput = {
-  remoteName: string
-  clientId?: string
-  clientSecret?: string
-}
 
 type CreateRemoteResult = {
   remoteName: string
@@ -138,53 +126,10 @@ type ExportDiagnosticsInput = {
   recentIssuesSummary: DiagnosticsIssueSummary[]
 }
 
-type UnifiedLibraryResult = {
-  items: UnifiedItem[]
-  notices: string[]
-}
-
-type DownloadStateMap = Record<string, DownloadState>
-type OpenStateMap = Record<string, OpenState>
-type UploadStateMap = Record<string, UploadState>
 type LibraryLoadProgress = {
   requestId: string | null
   loadedRemoteCount: number
   totalRemoteCount: number
-}
-type IssueLevel = 'info' | 'warning' | 'error'
-type WorkspaceIssue = {
-  id: string
-  message: string
-  level: IssueLevel
-  timestamp: number
-  source: string
-  read: boolean
-}
-type ToastKind = 'info' | 'warning' | 'error' | 'success'
-type ToastAction =
-  | { type: 'open-upload' }
-  | { type: 'open-issues'; issueId?: string }
-  | { type: 'open-path'; path: string }
-type ToastNotice = {
-  id: string
-  kind: ToastKind
-  message: string
-  timestamp: number
-  source: string
-  actionLabel?: string
-  action?: ToastAction
-}
-type PreparingUploadItem = {
-  id: string
-  displayName: string
-}
-
-type ProviderDefinition = {
-  id: StorageProvider
-  label: string
-  authType: AuthType
-  enabled: boolean
-  description: string
 }
 
 const STORAGE_PROVIDERS: ProviderDefinition[] = [
@@ -231,7 +176,6 @@ const PREVIEW_ASSET_PROTOCOL = 'asset'
 const CONNECT_SUCCESS_MESSAGE = 'Your storage is connected and ready to use.'
 const CONNECT_SYNC_ATTEMPTS = 8
 const CONNECT_SYNC_DELAY_MS = 500
-const TOAST_DURATION_MS = 5000
 const STARTUP_SPLASH_VISIBLE_MS = 3000
 const STARTUP_SPLASH_FADE_MS = 260
 const BASIN_FEEDBACK_URL = 'https://usebasin.com/form/37c12519bb6c/hosted/46b7f138fca3'
@@ -256,28 +200,7 @@ function getSortLabel(sortKey: UnifiedItemSortKey): string {
   return SORT_OPTIONS.find((option) => option.value === sortKey)?.label ?? 'Newest'
 }
 
-function inferIssueLevel(message: string): IssueLevel {
-  const normalized = message.toLowerCase()
-
-  if (
-    normalized.includes('failed') ||
-    normalized.includes('error') ||
-    normalized.includes('could not') ||
-    normalized.includes('cannot')
-  ) {
-    return 'error'
-  }
-
-  if (normalized.includes('reconnect') || normalized.includes('skipped') || normalized.includes('unsupported')) {
-    return 'warning'
-  }
-
-  return 'info'
-}
-
-function toIssueId(message: string, source: string): string {
-  return `${source}:${message.trim().toLowerCase()}`
-}
+// issue severity/id logic moved to WorkspaceDataContext
 
 function formatIssueTimestamp(timestamp: number): string {
   const parsed = new Date(timestamp)
@@ -360,51 +283,112 @@ function describeIssueLocation(source: string): string {
 function App() {
   const [demoState] = useState<DemoLibraryState | null>(() => (isScreenshotDemoEnabled() ? getDemoLibraryState() : null))
   const isDemoMode = demoState !== null
-  const [activeModal, setActiveModal] = useState<ModalName>('none')
-  const [addFlowStep, setAddFlowStep] = useState<AddFlowStep>('providers')
-  const [selectedProvider, setSelectedProvider] = useState<StorageProvider>('onedrive')
-  const [activeView, setActiveView] = useState<LogicalView>('recent')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [sortKey, setSortKey] = useState<UnifiedItemSortKey>(getDefaultSortKey('recent'))
-  const [remotes, setRemotes] = useState<RemoteSummary[]>(() => demoState?.remotes ?? [])
-  const [unifiedItems, setUnifiedItems] = useState<UnifiedItem[]>(() => demoState?.items ?? [])
-  const [workspaceIssues, setWorkspaceIssues] = useState<WorkspaceIssue[]>([])
-  const [toastNotices, setToastNotices] = useState<ToastNotice[]>([])
-  const [isIssuesModalOpen, setIsIssuesModalOpen] = useState(false)
-  const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null)
-  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false)
-  const [openRowMenuItemId, setOpenRowMenuItemId] = useState<string | null>(null)
-  const [isStartupSplashVisible, setIsStartupSplashVisible] = useState(true)
-  const [isStartupSplashExiting, setIsStartupSplashExiting] = useState(false)
-  const [removeTarget, setRemoveTarget] = useState<RemoteSummary | null>(null)
-  const [pendingSession, setPendingSession] = useState<PendingSession | null>(null)
-  const [selectedDriveId, setSelectedDriveId] = useState('')
-  const [isLoadingRemotes, setIsLoadingRemotes] = useState(!isDemoMode)
-  const [isLoadingItems, setIsLoadingItems] = useState(!isDemoMode)
-  const [isLibraryStreaming, setIsLibraryStreaming] = useState(false)
-  const [isRefreshingItems, setIsRefreshingItems] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isFinalizingDrive, setIsFinalizingDrive] = useState(false)
-  const [isRemoving, setIsRemoving] = useState(false)
-  const [remoteName, setRemoteName] = useState('')
-  const [clientId, setClientId] = useState('')
-  const [clientSecret, setClientSecret] = useState('')
-  const [listError, setListError] = useState('')
-  const [itemsError, setItemsError] = useState('')
-  const [addError, setAddError] = useState('')
-  const [removeError, setRemoveError] = useState('')
-  const [downloadStates, setDownloadStates] = useState<DownloadStateMap>({})
-  const [openStates, setOpenStates] = useState<OpenStateMap>({})
-  const [uploadStates, setUploadStates] = useState<UploadStateMap>({})
-  const [uploadBatch, setUploadBatch] = useState<PreparedUploadBatch | null>(null)
-  const [preparingUploadItems, setPreparingUploadItems] = useState<PreparingUploadItem[]>([])
-  const [previewPayload, setPreviewPayload] = useState<PreviewPayload | null>(null)
-  const [isFeedbackPromptOpen, setIsFeedbackPromptOpen] = useState(false)
-  const [uploadError, setUploadError] = useState('')
-  const [isPreparingUpload, setIsPreparingUpload] = useState(false)
-  const [isStartingUpload, setIsStartingUpload] = useState(false)
-  const [isUploadDragActive, setIsUploadDragActive] = useState(false)
-  const [hasPendingUploadRefresh, setHasPendingUploadRefresh] = useState(false)
+  const { state: ui, dispatch: uiDispatch } = useWorkspaceUI()
+  const { state: data, dispatch: dataDispatch, actions: dataActions } = useWorkspaceData()
+  const { state: transfers, dispatch: transfersDispatch } = useTransfers()
+
+  const activeView = ui.activeView
+  const searchQuery = ui.searchQuery
+  const sortKey = ui.sortKey
+  const isSortMenuOpen = ui.isSortMenuOpen
+  const openRowMenuItemId = ui.openRowMenuItemId
+  const isStartupSplashVisible = ui.isStartupSplashVisible
+  const isStartupSplashExiting = ui.isStartupSplashExiting
+  const activeModal = ui.activeModal
+  const previewPayload = ui.previewPayload
+  const isIssuesModalOpen = ui.isIssuesModalOpen
+  const focusedIssueId = ui.focusedIssueId
+  const isFeedbackPromptOpen = ui.isFeedbackPromptOpen
+
+  const remotes = data.remotes
+  const unifiedItems = data.unifiedItems
+  const workspaceIssues = data.workspaceIssues
+  const toastNotices = data.toastNotices
+  const listError = data.listError
+  const itemsError = data.itemsError
+  const isLoadingRemotes = data.isLoadingRemotes
+  const isLoadingItems = data.isLoadingItems
+  const isLibraryStreaming = data.isLibraryStreaming
+  const isRefreshingItems = data.isRefreshingItems
+  const pendingSession = data.pendingSession
+  const selectedDriveId = data.selectedDriveId
+  const isFinalizingDrive = data.isFinalizingDrive
+  const removeTarget = data.removeTarget
+  const removeError = data.removeError
+  const isRemoving = data.isRemoving
+
+  const downloadStates = transfers.downloadStates
+  const openStates = transfers.openStates
+  const uploadStates = transfers.uploadStates
+  const uploadBatch = transfers.uploadBatch
+  const preparingUploadItems = transfers.preparingUploadItems
+  const uploadError = transfers.uploadError
+  const isPreparingUpload = transfers.isPreparingUpload
+  const isStartingUpload = transfers.isStartingUpload
+  const isUploadDragActive = transfers.isUploadDragActive
+  const hasPendingUploadRefresh = transfers.hasPendingUploadRefresh
+
+  const setSortKey = (nextSortKey: UnifiedItemSortKey) => uiDispatch({ type: 'ui/setSortKey', sortKey: nextSortKey })
+  const setIsSortMenuOpen = (open: boolean) => uiDispatch({ type: 'ui/setSortMenuOpen', open })
+  const setOpenRowMenuItemId = (itemId: string | null) => uiDispatch({ type: 'ui/setOpenRowMenuItemId', itemId })
+  const setIsStartupSplashVisible = (visible: boolean) =>
+    uiDispatch({ type: 'ui/setStartupSplash', visible, exiting: ui.isStartupSplashExiting })
+  const setIsStartupSplashExiting = (exiting: boolean) =>
+    uiDispatch({ type: 'ui/setStartupSplash', visible: ui.isStartupSplashVisible, exiting })
+  const setActiveModal = (modal: 'none' | 'add-storage' | 'oauth-pending' | 'remove-confirm' | 'upload') =>
+    uiDispatch({ type: 'ui/setActiveModal', modal })
+  const setPreviewPayload = (payload: PreviewPayload | null) => uiDispatch({ type: 'ui/setPreviewPayload', payload })
+  const setIsIssuesModalOpen = (open: boolean) => uiDispatch({ type: 'ui/setIssuesModal', open })
+  const setFocusedIssueId = (issueId: string | null) => uiDispatch({ type: 'ui/setIssuesModal', open: true, focusedIssueId: issueId })
+  const setIsFeedbackPromptOpen = (open: boolean) => uiDispatch({ type: 'ui/setFeedbackPromptOpen', open })
+
+  const setRemotes = (next: RemoteSummary[] | ((current: RemoteSummary[]) => RemoteSummary[])) => {
+    const resolved = typeof next === 'function' ? next(remotes) : next
+    dataDispatch({ type: 'data/setRemotes', remotes: resolved })
+  }
+  const setUnifiedItems = (next: UnifiedItem[] | ((current: UnifiedItem[]) => UnifiedItem[])) => {
+    const resolved = typeof next === 'function' ? next(unifiedItems) : next
+    dataDispatch({ type: 'data/setUnifiedItems', items: resolved })
+  }
+  // issues/toasts are managed via WorkspaceDataContext actions
+  const setListError = (error: string) => dataDispatch({ type: 'data/setListError', error })
+  const setItemsError = (error: string) => dataDispatch({ type: 'data/setItemsError', error })
+  const setIsLoadingRemotes = (loading: boolean) => dataDispatch({ type: 'data/setLoadingRemotes', loading })
+  const setIsLoadingItems = (loading: boolean) => dataDispatch({ type: 'data/setLoadingItems', loading })
+  const setIsLibraryStreaming = (streaming: boolean) => dataDispatch({ type: 'data/setLibraryStreaming', streaming })
+  const setIsRefreshingItems = (refreshing: boolean) => dataDispatch({ type: 'data/setRefreshingItems', refreshing })
+  const setPendingSession = (pending: PendingSession | null) => dataDispatch({ type: 'data/setPendingSession', pending })
+  const setSelectedDriveId = (driveId: string) => dataDispatch({ type: 'data/setSelectedDriveId', driveId })
+  const setIsFinalizingDrive = (finalizing: boolean) => dataDispatch({ type: 'data/setFinalizingDrive', finalizing })
+  const setRemoveTarget = (target: RemoteSummary | null) => dataDispatch({ type: 'data/setRemoveTarget', target })
+  const setRemoveError = (error: string) => dataDispatch({ type: 'data/setRemoveError', error })
+  const setIsRemoving = (removing: boolean) => dataDispatch({ type: 'data/setRemoving', removing })
+
+  const setDownloadStates = (next: typeof downloadStates | ((current: typeof downloadStates) => typeof downloadStates)) => {
+    const resolved = typeof next === 'function' ? next(downloadStates) : next
+    transfersDispatch({ type: 'transfers/setDownloadStates', states: resolved })
+  }
+  const setOpenStates = (next: typeof openStates | ((current: typeof openStates) => typeof openStates)) => {
+    const resolved = typeof next === 'function' ? next(openStates) : next
+    transfersDispatch({ type: 'transfers/setOpenStates', states: resolved })
+  }
+  const setUploadStates = (next: typeof uploadStates | ((current: typeof uploadStates) => typeof uploadStates)) => {
+    const resolved = typeof next === 'function' ? next(uploadStates) : next
+    transfersDispatch({ type: 'transfers/setUploadStates', states: resolved })
+  }
+  const setUploadBatch = (next: PreparedUploadBatch | null | ((current: PreparedUploadBatch | null) => PreparedUploadBatch | null)) => {
+    const resolved = typeof next === 'function' ? next(uploadBatch) : next
+    transfersDispatch({ type: 'transfers/setUploadBatch', batch: resolved })
+  }
+  const setPreparingUploadItems = (items: Array<{ id: string; displayName: string }>) =>
+    transfersDispatch({ type: 'transfers/setPreparingUploadItems', items })
+  const setUploadError = (error: string) => transfersDispatch({ type: 'transfers/setUploadError', error })
+  const setIsPreparingUpload = (preparing: boolean) => transfersDispatch({ type: 'transfers/setPreparingUpload', preparing })
+  const setIsStartingUpload = (starting: boolean) => transfersDispatch({ type: 'transfers/setStartingUpload', starting })
+  const setIsUploadDragActive = (active: boolean) => transfersDispatch({ type: 'transfers/setUploadDragActive', active })
+  const setHasPendingUploadRefresh = (pending: boolean) => transfersDispatch({ type: 'transfers/setHasPendingUploadRefresh', pending })
+
+  // Kept in App for now; will be moved to data context in effects-placement.
   const [isExportingDiagnostics, setIsExportingDiagnostics] = useState(false)
   const [isOpeningFeedbackForm, setIsOpeningFeedbackForm] = useState(false)
   const [, setLibraryLoadProgress] = useState<LibraryLoadProgress>({
@@ -413,14 +397,8 @@ function App() {
     totalRemoteCount: 0,
   })
   const activeLibraryRequestIdRef = useRef<string | null>(null)
-  const toastTimeoutsRef = useRef<Record<string, number>>({})
   const sortMenuRef = useRef<HTMLDivElement | null>(null)
   const lastUploadOutcomeRef = useRef<{ completed: number; failed: number } | null>(null)
-
-  const selectedProviderConfig = useMemo(
-    () => STORAGE_PROVIDERS.find((provider) => provider.id === selectedProvider) ?? STORAGE_PROVIDERS[0],
-    [selectedProvider],
-  )
 
   const displayedItems = useMemo(() => {
     const viewItems = filterItemsByView(unifiedItems, activeView)
@@ -435,7 +413,6 @@ function App() {
     () => remotes.filter((remote) => remote.status === 'reconnect_required'),
     [remotes],
   )
-  const unreadIssueCount = useMemo(() => workspaceIssues.filter((issue) => !issue.read).length, [workspaceIssues])
   const visibleToasts = toastNotices
   const focusedIssue = useMemo(
     () => (focusedIssueId ? workspaceIssues.find((issue) => issue.id === focusedIssueId) ?? null : null),
@@ -469,62 +446,7 @@ function App() {
   const shouldShowPreparingUploadList = isPreparingUpload && preparingUploadItems.length > 0
   const currentViewLabel = getCategoryLabel(activeView)
 
-  const dismissToast = (toastId: string) => {
-    const timeoutId = toastTimeoutsRef.current[toastId]
-    if (timeoutId) {
-      window.clearTimeout(timeoutId)
-      delete toastTimeoutsRef.current[toastId]
-    }
-
-    setToastNotices((current) => current.filter((toast) => toast.id !== toastId))
-  }
-
-  const showToast = ({
-    kind,
-    message,
-    source,
-    actionLabel,
-    action,
-  }: {
-    kind: ToastKind
-    message: string
-    source: string
-    actionLabel?: string
-    action?: ToastAction
-  }) => {
-    const timestamp = Date.now()
-    const toastId = `toast:${source}:${timestamp}:${Math.random().toString(36).slice(2, 8)}`
-
-    toastTimeoutsRef.current[toastId] = window.setTimeout(() => {
-      dismissToast(toastId)
-    }, TOAST_DURATION_MS)
-
-    setToastNotices((current) => [
-      {
-        id: toastId,
-        kind,
-        message,
-        timestamp,
-        source,
-        actionLabel,
-        action,
-      },
-      ...current,
-    ])
-  }
-
-  const markIssuesRead = (issueIds?: string[]) => {
-    setWorkspaceIssues((current) =>
-      current.map((issue) =>
-        !issueIds || issueIds.includes(issue.id)
-          ? {
-              ...issue,
-              read: true,
-            }
-          : issue,
-      ),
-    )
-  }
+  const { showToast, markIssuesRead, recordIssueMessages, recordIssueError } = dataActions
 
   const openIssuesModal = (issueId?: string) => {
     setFocusedIssueId(issueId ?? null)
@@ -600,59 +522,7 @@ function App() {
     }
   }
 
-  const recordIssueMessages = (messages: string[], source: string) => {
-    const normalizedMessages = messages.map((message) => message.trim()).filter(Boolean)
-
-    if (normalizedMessages.length === 0) {
-      return
-    }
-
-    const createdIssues: WorkspaceIssue[] = []
-
-    setWorkspaceIssues((current) => {
-      const next = [...current]
-
-      for (const message of normalizedMessages) {
-        const issueId = toIssueId(message, source)
-        if (next.some((issue) => issue.id === issueId)) {
-          continue
-        }
-
-        const issue: WorkspaceIssue = {
-          id: issueId,
-          message,
-          level: inferIssueLevel(message),
-          timestamp: Date.now(),
-          source,
-          read: false,
-        }
-
-        createdIssues.push(issue)
-        next.unshift(issue)
-      }
-
-      return next
-    })
-
-    if (createdIssues.length === 0) {
-      return
-    }
-
-    for (const issue of createdIssues) {
-      showToast({
-        kind: issue.level === 'error' ? 'error' : issue.level === 'warning' ? 'warning' : 'info',
-        message: issue.message,
-        source: issue.source,
-        actionLabel: 'View details',
-        action: { type: 'open-issues', issueId: issue.id },
-      })
-    }
-  }
-
-  const recordIssueError = (error: unknown, source: string) => {
-    const message = error instanceof Error ? error.message : String(error)
-    recordIssueMessages([message], source)
-  }
+  // issue/toast logic lives in WorkspaceDataContext
 
   useEffect(() => {
     setSortKey(getDefaultSortKey(activeView))
@@ -687,107 +557,20 @@ function App() {
   useDismissOnOutsideOrEscape(openRowMenuItemId !== null, () => setOpenRowMenuItemId(null), isInsideRowMenu)
 
   useEffect(() => {
-    return () => {
-      for (const timeoutId of Object.values(toastTimeoutsRef.current)) {
-        window.clearTimeout(timeoutId)
-      }
-    }
-  }, [])
-
-  useEffect(() => {
     for (const remote of reconnectRequiredRemotes) {
       recordIssueMessages([remote.message || `${remote.name} needs reconnect.`], `storage:${remote.name}`)
     }
   }, [reconnectRequiredRemotes])
 
-  const fetchRemotes = async (options?: { silent?: boolean }) => {
-    if (isDemoMode && demoState) {
-      setRemotes(demoState.remotes)
-      setListError('')
-      setIsLoadingRemotes(false)
-      return demoState.remotes
-    }
+  const fetchRemotes = (options?: { silent?: boolean }) =>
+    dataActions.fetchRemotes({ silent: options?.silent, demoRemotes: isDemoMode && demoState ? demoState.remotes : undefined })
 
-    const silent = options?.silent ?? false
-
-    if (!silent) {
-      setIsLoadingRemotes(true)
-    }
-
-    try {
-      const result = await invoke<RemoteSummary[]>('list_storage_remotes')
-      setRemotes(result)
-      setListError('')
-      return result
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setListError(message)
-      recordIssueError(error, 'storage')
-      setRemotes([])
-      return null
-    } finally {
-      if (!silent) {
-        setIsLoadingRemotes(false)
-      }
-    }
-  }
-
-  const fetchUnifiedItems = async (nextRemotes?: RemoteSummary[] | null, options?: { silent?: boolean }) => {
-    if (isDemoMode && demoState) {
-      setUnifiedItems(demoState.items)
-      setItemsError('')
-      setIsLoadingItems(false)
-      setIsLibraryStreaming(false)
-      setIsRefreshingItems(false)
-      return demoState.items
-    }
-
-    const silent = options?.silent ?? false
-    const resolvedRemotes = nextRemotes === undefined ? remotes : nextRemotes
-
-    if (!silent) {
-      setIsLoadingItems(true)
-      setIsRefreshingItems(false)
-    } else {
-      setIsRefreshingItems(true)
-    }
-
-    if (!resolvedRemotes || resolvedRemotes.length === 0) {
-      setUnifiedItems([])
-      setItemsError('')
-      setIsRefreshingItems(false)
-      if (!silent) {
-        setIsLoadingItems(false)
-      }
-      return []
-    }
-
-    try {
-      const result = await invoke<UnifiedLibraryResult>('list_unified_items')
-      setUnifiedItems(sortUnifiedItems(result.items))
-      recordIssueMessages(result.notices, 'library')
-      setItemsError('')
-      setIsLibraryStreaming(false)
-      activeLibraryRequestIdRef.current = null
-      setLibraryLoadProgress({
-        requestId: null,
-        loadedRemoteCount: 0,
-        totalRemoteCount: 0,
-      })
-      return result.items
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setItemsError(message)
-      recordIssueError(error, 'library')
-      setUnifiedItems([])
-      return null
-    } finally {
-      setIsRefreshingItems(false)
-      if (!silent) {
-        setIsLoadingItems(false)
-      }
-    }
-  }
+  const fetchUnifiedItems = (nextRemotes?: RemoteSummary[] | null, options?: { silent?: boolean }) =>
+    dataActions.fetchUnifiedItems({
+      silent: options?.silent,
+      demoItems: isDemoMode && demoState ? demoState.items : undefined,
+      remotesOverride: nextRemotes === undefined ? undefined : nextRemotes,
+    })
 
   const refreshLibrary = async (options?: { silent?: boolean }) => {
     const nextRemotes = await fetchRemotes(options)
@@ -874,7 +657,7 @@ function App() {
       })
 
       if (payload.status === 'remote_loaded') {
-        setUnifiedItems((current) => mergeUnifiedItems(current, payload.items ?? []))
+        dataDispatch({ type: 'data/mergeUnifiedItems', items: payload.items ?? [] })
         recordIssueMessages(payload.notices ?? [], payload.remoteName ? `storage:${payload.remoteName}` : 'library')
         setIsLoadingItems(false)
         return
@@ -1091,18 +874,7 @@ function App() {
     void refreshLibrary({ silent: true })
   }, [hasPendingUploadRefresh, isStartingUpload, refreshLibrary, showToast, uploadSummary.active, uploadSummary.completed, uploadSummary.failed])
 
-  const resetAddFlow = () => {
-    setAddFlowStep('providers')
-    setSelectedProvider('onedrive')
-    setRemoteName('')
-    setClientId('')
-    setClientSecret('')
-    setAddError('')
-    setSelectedDriveId('')
-  }
-
   const openAddModal = () => {
-    resetAddFlow()
     setActiveModal('add-storage')
   }
 
@@ -1121,13 +893,6 @@ function App() {
 
   const closeAddModal = () => {
     setActiveModal('none')
-    resetAddFlow()
-  }
-
-  const openProviderForm = (providerId: StorageProvider) => {
-    setSelectedProvider(providerId)
-    setAddFlowStep('form')
-    setAddError('')
   }
 
   const fetchAuthSession = async (name: string) => {
@@ -1279,33 +1044,20 @@ function App() {
     setActiveModal('oauth-pending')
   }
 
-  const handleCreateRemote = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-
+  const createRemote = async (input: CreateRemoteInput) => {
     if (isDemoMode) {
       return
     }
 
-    if (!remoteName.trim()) {
-      setAddError('Remote name is required.')
-      return
-    }
-
-    setIsSubmitting(true)
-    setAddError('')
-
     try {
-      const result = await invoke<CreateRemoteResult>('create_onedrive_remote', {
-        input: {
-          remoteName: remoteName.trim(),
-          clientId: clientId.trim() || undefined,
-          clientSecret: clientSecret.trim() || undefined,
-        } satisfies CreateOneDriveRemoteInput,
-      })
+      if (input.provider !== 'onedrive') {
+        throw new Error('Only OneDrive is supported right now.')
+      }
+
+      const result = await invoke<CreateRemoteResult>('create_onedrive_remote', { input })
 
       if (result.status === 'error' && result.nextStep !== 'retry') {
-        setAddError(result.message)
-        return
+        throw new Error(result.message)
       }
 
       if (result.status === 'connected') {
@@ -1323,16 +1075,13 @@ function App() {
           driveCandidates: result.driveCandidates ?? undefined,
         })
         setActiveModal('none')
-        resetAddFlow()
         return
       }
 
       moveToPendingModal(result, 'create')
       await fetchRemotes({ silent: true })
     } catch (error) {
-      setAddError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setIsSubmitting(false)
+      throw error instanceof Error ? error : new Error(String(error))
     }
   }
 
@@ -1413,7 +1162,7 @@ function App() {
   const handlePendingDone = async () => {
     setActiveModal('none')
     setPendingSession(null)
-    resetAddFlow()
+    setSelectedDriveId('')
   }
 
   const handleFinalizeDriveSelection = async () => {
@@ -1488,12 +1237,6 @@ function App() {
       // Ignore delete failures here and still guide the user back into reconnect flow.
     }
 
-    setSelectedProvider((pendingSession.provider as StorageProvider) || 'onedrive')
-    setAddFlowStep('form')
-    setRemoteName(pendingSession.remoteName)
-    setClientId('')
-    setClientSecret('')
-    setAddError('')
     setActiveModal('add-storage')
     await refreshLibrary({ silent: true })
   }
@@ -1801,12 +1544,7 @@ function App() {
       <WorkspaceShell>
         <StorageSidebar
           navItems={PRIMARY_NAV_ITEMS}
-          activeView={activeView}
-          onSelectView={setActiveView}
           onAddStorage={openAddModal}
-          isLoadingRemotes={isLoadingRemotes}
-          listError={listError}
-          shouldShowNoStorageState={shouldShowNoStorageState}
           displayedRemotes={displayedRemotes}
           getProviderLabel={getProviderLabel}
           onReconnect={handleReconnect}
@@ -1816,20 +1554,13 @@ function App() {
         <LibraryShell
           topbar={
             <LibraryTopbar
-              searchQuery={searchQuery}
-              onSearchQueryChange={setSearchQuery}
               sortMenuRef={sortMenuRef}
-              isSortMenuOpen={isSortMenuOpen}
-              onToggleSortMenu={() => setIsSortMenuOpen((current) => !current)}
               sortOptions={SORT_OPTIONS}
-              sortKey={sortKey}
               sortLabel={getSortLabel(sortKey)}
               onSelectSortKey={(key) => {
                 setSortKey(key)
                 setIsSortMenuOpen(false)
               }}
-              workspaceIssueCount={workspaceIssues.length}
-              unreadIssueCount={unreadIssueCount}
               onOpenIssues={() => openIssuesModal()}
               onOpenUpload={openUploadModal}
               hasConnectedStorage={hasConnectedStorage}
@@ -1891,9 +1622,6 @@ function App() {
                                 openState={openStates[item.id] ?? IDLE_OPEN_STATE}
                                 onOpen={handleOpen}
                                 onDownload={handleDownload}
-                                isRowMenuOpen={openRowMenuItemId === item.id}
-                                onToggleRowMenu={() => setOpenRowMenuItemId((current) => (current === item.id ? null : item.id))}
-                                onCloseRowMenu={() => setOpenRowMenuItemId(null)}
                               />
                             ))}
                           </div>
@@ -1919,9 +1647,6 @@ function App() {
                             openState={openStates[item.id] ?? IDLE_OPEN_STATE}
                             onOpen={handleOpen}
                             onDownload={handleDownload}
-                            isRowMenuOpen={openRowMenuItemId === item.id}
-                            onToggleRowMenu={() => setOpenRowMenuItemId((current) => (current === item.id ? null : item.id))}
-                            onCloseRowMenu={() => setOpenRowMenuItemId(null)}
                           />
                         ))}
                       </div>
@@ -2009,82 +1734,7 @@ function App() {
       ) : null}
 
       {activeModal === 'add-storage' ? (
-        <ModalOverlay onRequestClose={closeAddModal}>
-          <ModalSurface surfaceClassName="full-modal" labelledBy="add-storage-title">
-            <ModalHeader
-              eyebrow="Add Storage"
-              titleId="add-storage-title"
-              title={
-                addFlowStep === 'providers' ? 'Choose a provider' : `Connect ${selectedProviderConfig.label}`
-              }
-              onClose={closeAddModal}
-              closeAriaLabel="Close modal"
-            />
-
-            {addFlowStep === 'providers' ? (
-              <div className="provider-grid">
-                {STORAGE_PROVIDERS.map((provider) => (
-                  <button
-                    key={provider.id}
-                    className={`provider-option ${provider.enabled ? '' : 'disabled'}`}
-                    type="button"
-                    disabled={!provider.enabled}
-                    onClick={() => openProviderForm(provider.id)}
-                  >
-                    <span>{provider.label}</span>
-                    <small>{provider.description}</small>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <form className="connect-form" onSubmit={handleCreateRemote}>
-                <div className="form-copy">
-                  <p>Authentication opens in your default browser. When you finish there, this app will keep checking for completion.</p>
-                </div>
-
-                <label className="field">
-                  <span>Remote name</span>
-                  <input
-                    value={remoteName}
-                    onChange={(event) => setRemoteName(event.target.value)}
-                    placeholder="onedrive-main"
-                    autoComplete="off"
-                  />
-                </label>
-
-                <details className="advanced-options">
-                  <summary>Advanced options</summary>
-
-                  <label className="field">
-                    <span>Client ID</span>
-                    <input value={clientId} onChange={(event) => setClientId(event.target.value)} autoComplete="off" />
-                  </label>
-
-                  <label className="field">
-                    <span>Client Secret</span>
-                    <input
-                      value={clientSecret}
-                      onChange={(event) => setClientSecret(event.target.value)}
-                      autoComplete="off"
-                      type="password"
-                    />
-                  </label>
-                </details>
-
-                {addError ? <InlineError>{addError}</InlineError> : null}
-
-                <div className="modal-actions">
-                  <Button family="secondary" type="button" onClick={() => setAddFlowStep('providers')}>
-                    Back
-                  </Button>
-                  <Button family="primary" type="submit" disabled={isSubmitting}>
-                    {isSubmitting ? 'Starting...' : `Connect ${selectedProviderConfig.label}`}
-                  </Button>
-                </div>
-              </form>
-            )}
-          </ModalSurface>
-        </ModalOverlay>
+        <AddStorageModal providers={STORAGE_PROVIDERS} onClose={closeAddModal} onCreateRemote={createRemote} />
       ) : null}
 
       {activeModal === 'oauth-pending' && pendingSession ? (
