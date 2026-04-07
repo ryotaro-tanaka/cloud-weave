@@ -97,7 +97,7 @@ Placement rules:
 
 - UI-only hook -> near component (`src/components/`**)
 - Domain hook/usecase -> `src/features/`** or `src/state/`**
-- Reusable utility -> `src/features/**` (domain) or `src/lib/**` (cross-domain)
+- Reusable utility -> `src/features/`** (domain) or `src/lib/`** (cross-domain)
 
 ## File Ownership Model
 
@@ -117,7 +117,7 @@ Recommended ownership boundaries:
   - Shared domain data state and reducer
 - `src/state/transfers/`
   - High-frequency transfer/open/download state
-- `src/features/**`
+- `src/features/`**
   - Domain logic, formatting, and non-React helpers
 
 ## Anti-Patterns to Avoid

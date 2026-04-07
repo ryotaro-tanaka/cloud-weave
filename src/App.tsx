@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { open as openPath } from '@tauri-apps/plugin-shell'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -15,6 +14,7 @@ import {
   type PendingSession,
   type RemoteSummary,
 } from './features/storage/pendingState'
+import { toPendingSession } from './features/storage/authFlow'
 import {
   filterItemsByView,
   getCategoryLabel,
@@ -84,9 +84,14 @@ import {
   UploadListItem,
 } from './components/library'
 import { AddStorageModal, type ProviderDefinition, type CreateRemoteInput } from './components/modals/AddStorageModal'
+import { WorkspaceModals } from './components/modals/WorkspaceModals'
 import { useWorkspaceUI } from './state/workspaceUI/WorkspaceUIContext'
 import { useWorkspaceData, type IssueLevel, type WorkspaceIssue } from './state/workspaceData/WorkspaceDataContext'
 import { useTransfers } from './state/transfers/TransfersContext'
+import { useStartupSplash } from './features/storage/hooks/useStartupSplash'
+import { usePendingSessionPolling } from './features/storage/hooks/usePendingSessionPolling'
+import { useTransferProgressListeners } from './features/storage/hooks/useTransferProgressListeners'
+import { useLibraryProgressListener } from './features/storage/hooks/useLibraryProgressListener'
 import splashLockup from '../assets/brand/cloud-weave-lockup.png'
 import './App.css'
 
@@ -532,22 +537,12 @@ function App() {
 
   useDismissOnOutsideOrEscape(isSortMenuOpen, () => setIsSortMenuOpen(false), isInsideSortMenu)
 
-  useEffect(() => {
-    document.getElementById('startup-static-splash')?.classList.add('is-hidden')
-
-    const exitTimer = window.setTimeout(() => {
-      setIsStartupSplashExiting(true)
-    }, STARTUP_SPLASH_VISIBLE_MS)
-
-    const hideTimer = window.setTimeout(() => {
-      setIsStartupSplashVisible(false)
-    }, STARTUP_SPLASH_VISIBLE_MS + STARTUP_SPLASH_FADE_MS)
-
-    return () => {
-      window.clearTimeout(exitTimer)
-      window.clearTimeout(hideTimer)
-    }
-  }, [])
+  useStartupSplash({
+    visibleMs: STARTUP_SPLASH_VISIBLE_MS,
+    fadeMs: STARTUP_SPLASH_FADE_MS,
+    onStartExit: () => setIsStartupSplashExiting(true),
+    onHide: () => setIsStartupSplashVisible(false),
+  })
 
   const isInsideRowMenu = useCallback((target: Node) => {
     const element = target instanceof Element ? target : target.parentElement
@@ -585,71 +580,25 @@ function App() {
     void initializeLibrary()
   }, [isDemoMode])
 
-  useEffect(() => {
-    if (isDemoMode) {
-      return
-    }
+  const handleDownloadProgress = useCallback(
+    (payload: DownloadProgressEvent) => {
+      setDownloadStates((current) => applyDownloadProgressEvent(current, payload))
+    },
+    [],
+  )
 
-    let isSubscribed = true
-
-    const unlistenPromise = listen<DownloadProgressEvent>('download://progress', (event) => {
-      if (!isSubscribed) {
-        return
-      }
-
-      setDownloadStates((current) => applyDownloadProgressEvent(current, event.payload))
-    })
-
-    return () => {
-      isSubscribed = false
-      void unlistenPromise.then((unlisten) => unlisten())
-    }
-  }, [isDemoMode])
-
-  useEffect(() => {
-    if (isDemoMode) {
-      return
-    }
-
-    let isSubscribed = true
-
-    const unlistenPromise = listen<UploadProgressEvent>('upload://progress', (event) => {
-      if (!isSubscribed) {
-        return
-      }
-
-      setUploadStates((current) => applyUploadProgressEvent(current, event.payload))
-
-      if (event.payload.status === 'failed' && event.payload.remoteName) {
+  const handleUploadProgress = useCallback(
+    (payload: UploadProgressEvent) => {
+      setUploadStates((current) => applyUploadProgressEvent(current, payload))
+      if (payload.status === 'failed' && payload.remoteName) {
         void fetchRemotes({ silent: true })
       }
-    })
+    },
+    [fetchRemotes],
+  )
 
-    return () => {
-      isSubscribed = false
-      void unlistenPromise.then((unlisten) => unlisten())
-    }
-  }, [isDemoMode])
-
-  useEffect(() => {
-    if (isDemoMode) {
-      return
-    }
-
-    let isSubscribed = true
-
-    const unlistenPromise = listen<UnifiedLibraryLoadEvent>('library://progress', (event) => {
-      if (!isSubscribed) {
-        return
-      }
-
-      const payload = event.payload
-      const activeRequestId = activeLibraryRequestIdRef.current
-
-      if (activeRequestId && payload.requestId !== activeRequestId) {
-        return
-      }
-
+  const handleLibraryProgress = useCallback(
+    (payload: UnifiedLibraryLoadEvent) => {
       setLibraryLoadProgress({
         requestId: payload.requestId,
         loadedRemoteCount: payload.loadedRemoteCount,
@@ -678,13 +627,21 @@ function App() {
         setIsLoadingItems(false)
         activeLibraryRequestIdRef.current = null
       }
-    })
+    },
+    [dataDispatch, fetchRemotes, recordIssueMessages],
+  )
 
-    return () => {
-      isSubscribed = false
-      void unlistenPromise.then((unlisten) => unlisten())
-    }
-  }, [isDemoMode])
+  useTransferProgressListeners({
+    isDemoMode,
+    onDownloadProgress: handleDownloadProgress,
+    onUploadProgress: handleUploadProgress,
+  })
+
+  useLibraryProgressListener({
+    isDemoMode,
+    getActiveRequestId: () => activeLibraryRequestIdRef.current,
+    onProgress: handleLibraryProgress,
+  })
 
   useEffect(() => {
     if (isDemoMode) {
@@ -789,18 +746,6 @@ function App() {
       activeLibraryRequestIdRef.current = null
     }
   }
-
-  useEffect(() => {
-    if (activeModal !== 'oauth-pending' || !pendingSession || pendingSession.status !== 'pending') {
-      return
-    }
-
-    const intervalId = window.setInterval(() => {
-      void checkPendingSession()
-    }, 1500)
-
-    return () => window.clearInterval(intervalId)
-  }, [activeModal, pendingSession?.remoteName, pendingSession?.status])
 
   useEffect(() => {
     if (pendingSession?.status !== 'requires_drive_selection') {
@@ -1018,29 +963,15 @@ function App() {
     }
   }
 
+  usePendingSessionPolling({
+    activeModal,
+    pendingSession,
+    onTick: checkPendingSession,
+  })
+
   const moveToPendingModal = (result: CreateRemoteResult, mode: PendingMode) => {
     const nowMs = Date.now()
-    setPendingSession({
-      remoteName: result.remoteName,
-      provider: result.provider,
-      mode,
-      status: result.status,
-      stage:
-        result.stage ??
-        (result.status === 'connected'
-          ? 'connected'
-          : result.status === 'requires_drive_selection'
-            ? 'requires_drive_selection'
-            : result.status === 'error'
-              ? 'failed'
-              : 'pending_auth'),
-      nextStep: result.nextStep,
-      message: result.message || EMPTY_PENDING_MESSAGE,
-      errorCode: result.errorCode ?? undefined,
-      operationStartedAtMs: nowMs,
-      lastUpdatedAtMs: nowMs,
-      driveCandidates: result.driveCandidates ?? undefined,
-    })
+    setPendingSession(toPendingSession({ ...result, message: result.message || EMPTY_PENDING_MESSAGE }, mode, nowMs))
     setActiveModal('oauth-pending')
   }
 
@@ -1703,35 +1634,45 @@ function App() {
         </ToastStack>
       ) : null}
 
-      {previewPayload ? (
-        <PreviewModal
-          payload={previewPayload}
-          onClose={() => setPreviewPayload(null)}
-        />
-      ) : null}
-
-      {isIssuesModalOpen ? (
-        <IssuesModal
-          issues={workspaceIssues}
-          focusedIssueId={focusedIssueId}
-          onReportIssue={() => setIsFeedbackPromptOpen(true)}
-          onClose={() => {
-            setIsIssuesModalOpen(false)
-            setFocusedIssueId(null)
-          }}
-        />
-      ) : null}
-
-      {isFeedbackPromptOpen ? (
-        <FeedbackPromptModal
-          isExportingDiagnostics={isExportingDiagnostics}
-          isOpeningFeedbackForm={isOpeningFeedbackForm}
-          onClose={() => setIsFeedbackPromptOpen(false)}
-          onContinue={() => {
-            void startFeedbackFlow()
-          }}
-        />
-      ) : null}
+      <WorkspaceModals
+        previewModal={
+          previewPayload ? (
+            <PreviewModal
+              payload={previewPayload}
+              onClose={() => setPreviewPayload(null)}
+            />
+          ) : null
+        }
+        issuesModal={
+          isIssuesModalOpen ? (
+            <IssuesModal
+              issues={workspaceIssues}
+              focusedIssueId={focusedIssueId}
+              onReportIssue={() => setIsFeedbackPromptOpen(true)}
+              onClose={() => {
+                setIsIssuesModalOpen(false)
+                setFocusedIssueId(null)
+              }}
+            />
+          ) : null
+        }
+        feedbackModal={
+          isFeedbackPromptOpen ? (
+            <FeedbackPromptModal
+              isExportingDiagnostics={isExportingDiagnostics}
+              isOpeningFeedbackForm={isOpeningFeedbackForm}
+              onClose={() => setIsFeedbackPromptOpen(false)}
+              onContinue={() => {
+                void startFeedbackFlow()
+              }}
+            />
+          ) : null
+        }
+        addStorageModal={null}
+        oauthPendingModal={null}
+        removeConfirmModal={null}
+        uploadModal={null}
+      />
 
       {activeModal === 'add-storage' ? (
         <AddStorageModal providers={STORAGE_PROVIDERS} onClose={closeAddModal} onCreateRemote={createRemote} />
