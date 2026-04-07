@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -18,10 +18,7 @@ import {
 } from './features/storage/pendingState'
 import {
   filterItemsByView,
-  formatFileSize,
-  formatModifiedTime,
   getCategoryLabel,
-  getCategoryMonogram,
   groupRecentItems,
   searchUnifiedItems,
   sortUnifiedItems,
@@ -61,13 +58,36 @@ import {
   getUploadBatchSummary,
   IDLE_UPLOAD_STATE,
   type PreparedUploadBatch,
-  type PreparedUploadItem,
   type UploadAcceptedResult,
   type UploadProgressEvent,
   type UploadSelection,
   type UploadState,
 } from './features/storage/uploads'
 import { Button } from './components/ui/Button'
+import { EmptyListState } from './components/ui/EmptyListState'
+import { InlineError } from './components/ui/InlineError'
+import { MainEmptyState } from './components/ui/MainEmptyState'
+import { ModalHeader } from './components/ui/ModalHeader'
+import { ModalOverlay } from './components/ui/ModalOverlay'
+import { ModalSurface } from './components/ui/ModalSurface'
+import { Spinner } from './components/ui/Spinner'
+import { StatusBadge } from './components/ui/StatusBadge'
+import { ToastNoticeRow } from './components/ui/ToastNoticeRow'
+import { ToastStack } from './components/ui/ToastStack'
+import { useDismissOnOutsideOrEscape } from './components/ui/useDismissOnOutsideOrEscape'
+import { LibraryMain } from './components/workspace/LibraryMain'
+import { LibraryShell } from './components/workspace/LibraryShell'
+import { LibraryTopbar } from './components/workspace/LibraryTopbar'
+import { StorageSidebar } from './components/workspace/StorageSidebar'
+import { WorkspaceShell } from './components/workspace/WorkspaceShell'
+import {
+  ListHeader,
+  LoadingList,
+  PreparingUploadListItem,
+  StreamingLoadingTail,
+  UnifiedListItem,
+  UploadListItem,
+} from './components/library'
 import splashLockup from '../assets/brand/cloud-weave-lockup.png'
 import './App.css'
 
@@ -335,46 +355,6 @@ function describeIssueLocation(source: string): string {
   }
 
   return 'Relevant place: Issues'
-}
-
-function getListItemStatusLabel(item: UnifiedItem, downloadState: DownloadState, openState: OpenState): string {
-  if (downloadState.status === 'failed') {
-    return 'Download failed'
-  }
-
-  if (openState.status === 'failed') {
-    return 'Open failed'
-  }
-
-  if (downloadState.status === 'queued' || downloadState.status === 'running') {
-    return 'Downloading'
-  }
-
-  if (downloadState.status === 'succeeded') {
-    return 'Downloaded'
-  }
-
-  if (openState.status === 'preparing') {
-    return canPreviewItem(item) ? 'Preparing preview' : 'Opening'
-  }
-
-  if (openState.status === 'ready') {
-    return openState.openMode === 'system-default' ? 'Opened' : 'Ready to preview'
-  }
-
-  if (item.isDir) {
-    return 'Folder'
-  }
-
-  if (canPreviewItem(item)) {
-    return 'Preview'
-  }
-
-  if (canOpenInDefaultApp(item)) {
-    return 'Ready'
-  }
-
-  return 'Ready'
 }
 
 function App() {
@@ -678,38 +658,9 @@ function App() {
     setSortKey(getDefaultSortKey(activeView))
   }, [activeView])
 
-  useEffect(() => {
-    if (!isSortMenuOpen) {
-      return
-    }
+  const isInsideSortMenu = useCallback((target: Node) => sortMenuRef.current?.contains(target) ?? false, [])
 
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target
-      if (!(target instanceof Node)) {
-        return
-      }
-
-      if (sortMenuRef.current?.contains(target)) {
-        return
-      }
-
-      setIsSortMenuOpen(false)
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setIsSortMenuOpen(false)
-      }
-    }
-
-    window.addEventListener('pointerdown', handlePointerDown)
-    window.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      window.removeEventListener('pointerdown', handlePointerDown)
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [isSortMenuOpen])
+  useDismissOnOutsideOrEscape(isSortMenuOpen, () => setIsSortMenuOpen(false), isInsideSortMenu)
 
   useEffect(() => {
     document.getElementById('startup-static-splash')?.classList.add('is-hidden')
@@ -728,39 +679,12 @@ function App() {
     }
   }, [])
 
-  useEffect(() => {
-    if (!openRowMenuItemId) {
-      return
-    }
+  const isInsideRowMenu = useCallback((target: Node) => {
+    const element = target instanceof Element ? target : target.parentElement
+    return Boolean(element?.closest('[data-row-menu-container="true"]'))
+  }, [])
 
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target
-      if (!(target instanceof Node)) {
-        return
-      }
-
-      const element = target instanceof Element ? target : target.parentElement
-      if (element?.closest('[data-row-menu-container="true"]')) {
-        return
-      }
-
-      setOpenRowMenuItemId(null)
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpenRowMenuItemId(null)
-      }
-    }
-
-    window.addEventListener('pointerdown', handlePointerDown)
-    window.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      window.removeEventListener('pointerdown', handlePointerDown)
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [openRowMenuItemId])
+  useDismissOnOutsideOrEscape(openRowMenuItemId !== null, () => setOpenRowMenuItemId(null), isInsideRowMenu)
 
   useEffect(() => {
     return () => {
@@ -1874,158 +1798,60 @@ function App() {
         </div>
       ) : null}
 
-      <main className="workspace-shell">
-        <aside className="storage-sidebar">
-        <div className="sidebar-panel">
-          <div className="sidebar-list">
-            <nav className="sidebar-nav" aria-label="Workspace views">
-              {PRIMARY_NAV_ITEMS.map((item) => (
-                <button
-                  key={item.id}
-                  className={`sidebar-nav-item ${activeView === item.id ? 'active' : ''}`}
-                  type="button"
-                  onClick={() => setActiveView(item.id)}
-                >
-                  <span className="sidebar-nav-label">{item.label}</span>
-                </button>
-              ))}
-            </nav>
+      <WorkspaceShell>
+        <StorageSidebar
+          navItems={PRIMARY_NAV_ITEMS}
+          activeView={activeView}
+          onSelectView={setActiveView}
+          onAddStorage={openAddModal}
+          isLoadingRemotes={isLoadingRemotes}
+          listError={listError}
+          shouldShowNoStorageState={shouldShowNoStorageState}
+          displayedRemotes={displayedRemotes}
+          getProviderLabel={getProviderLabel}
+          onReconnect={handleReconnect}
+          onRemove={openRemoveModal}
+        />
 
-            <section className="sidebar-section sidebar-section-storage">
-              <div className="sidebar-section-heading">
-                <p className="sidebar-section-label">Storages</p>
-                <Button family="quiet" size="sm" type="button" onClick={openAddModal}>
-                  + Add storage
-                </Button>
-              </div>
+        <LibraryShell
+          topbar={
+            <LibraryTopbar
+              searchQuery={searchQuery}
+              onSearchQueryChange={setSearchQuery}
+              sortMenuRef={sortMenuRef}
+              isSortMenuOpen={isSortMenuOpen}
+              onToggleSortMenu={() => setIsSortMenuOpen((current) => !current)}
+              sortOptions={SORT_OPTIONS}
+              sortKey={sortKey}
+              sortLabel={getSortLabel(sortKey)}
+              onSelectSortKey={(key) => {
+                setSortKey(key)
+                setIsSortMenuOpen(false)
+              }}
+              workspaceIssueCount={workspaceIssues.length}
+              unreadIssueCount={unreadIssueCount}
+              onOpenIssues={() => openIssuesModal()}
+              onOpenUpload={openUploadModal}
+              hasConnectedStorage={hasConnectedStorage}
+            />
+          }
+        >
+          <LibraryMain>
+            {!isLoadingItems && itemsError ? <InlineError>{itemsError}</InlineError> : null}
 
-              {isLoadingRemotes ? <p className="empty-state">Loading storage...</p> : null}
-              {!isLoadingRemotes && listError ? <p className="error-text">{listError}</p> : null}
-              {shouldShowNoStorageState ? <p className="empty-state">No storage connected yet.</p> : null}
-
-              {!isLoadingRemotes && !listError && displayedRemotes.length > 0 ? (
-                <ul className="storage-nav-list">
-                  {displayedRemotes.map((remote) => {
-                    const needsReconnect = remote.status === 'reconnect_required'
-
-                    return (
-                      <li key={remote.name} className="storage-nav-item">
-                        <div className="storage-nav-copy">
-                          <p className="remote-name">{remote.name}</p>
-                          <p className="remote-provider">{getProviderLabel(remote.provider)}</p>
-                        </div>
-
-                        <div className="storage-nav-side">
-                          <span className={`storage-status-badge ${needsReconnect ? 'warning' : 'neutral'}`}>
-                            {needsReconnect ? 'Needs reconnect' : 'Connected'}
-                          </span>
-
-                          <div className="storage-nav-actions">
-                            {needsReconnect ? (
-                              <Button family="quiet" size="sm" tone="warning" type="button" onClick={() => void handleReconnect(remote)}>
-                                Reconnect
-                              </Button>
-                            ) : null}
-                            <Button family="quiet" size="sm" tone="danger" type="button" onClick={() => openRemoveModal(remote)}>
-                              Remove
-                            </Button>
-                          </div>
-                        </div>
-                      </li>
-                    )
-                  })}
-                </ul>
-              ) : null}
-            </section>
-          </div>
-        </div>
-        </aside>
-
-        <section className="workspace-main">
-        <div className="library-shell">
-          <header className="library-topbar">
-            <div className="library-toolbar">
-              <label className="search-field" aria-label="Search files">
-                <span className="search-icon" aria-hidden="true">
-                  /
-                </span>
-                <input
-                  type="search"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search files, paths, or sources"
-                />
-              </label>
-
-              <div className="library-actions">
-                <div className={`toolbar-select ${isSortMenuOpen ? 'open' : ''}`} ref={sortMenuRef}>
-                  <Button
-                    family="quiet"
-                    size="sm"
-                    className="toolbar-select-trigger"
-                    type="button"
-                    aria-label="Sort files"
-                    aria-haspopup="menu"
-                    aria-expanded={isSortMenuOpen}
-                    onClick={() => setIsSortMenuOpen((current) => !current)}
-                  >
-                    <span className="toolbar-select-value">{getSortLabel(sortKey)}</span>
-                    <span className="toolbar-select-icon" aria-hidden="true">v</span>
-                  </Button>
-
-                  {isSortMenuOpen ? (
-                    <div className="toolbar-select-menu" role="menu" aria-label="Sort files">
-                      {SORT_OPTIONS.map((option) => (
-                        <button
-                          key={option.value}
-                          className={`toolbar-select-option ${sortKey === option.value ? 'active' : ''}`}
-                          type="button"
-                          role="menuitemradio"
-                          aria-checked={sortKey === option.value}
-                          onClick={() => {
-                            setSortKey(option.value)
-                            setIsSortMenuOpen(false)
-                          }}
-                        >
-                          <span>{option.label}</span>
-                          {sortKey === option.value ? <span aria-hidden="true">•</span> : null}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-
-                <Button family="icon" size="md" className="issues-entry-button utility-icon-button" type="button" onClick={() => openIssuesModal()} aria-label="Open issues">
-                  <span aria-hidden="true">!</span>
-                  {workspaceIssues.length > 0 ? (
-                    <span className="issues-entry-badge">{unreadIssueCount > 0 ? unreadIssueCount : workspaceIssues.length}</span>
-                  ) : null}
+            {shouldShowNoStorageState ? (
+              <MainEmptyState
+                eyebrow="Unified Library"
+                title="Your files will appear here."
+                description="Connect a storage from the sidebar to start browsing everything in one place."
+              >
+                <Button family="secondary" type="button" onClick={openAddModal}>
+                  Connect storage
                 </Button>
                 <Button family="primary" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
                   Upload
                 </Button>
-              </div>
-            </div>
-
-          </header>
-
-          <div className="library-content">
-            {!isLoadingItems && itemsError ? <p className="error-text">{itemsError}</p> : null}
-
-            {shouldShowNoStorageState ? (
-              <div className="main-empty-state">
-                <p className="eyebrow">Unified Library</p>
-                <h1>Your files will appear here.</h1>
-                <p>Connect a storage from the sidebar to start browsing everything in one place.</p>
-                <div className="empty-state-actions">
-                  <Button family="secondary" type="button" onClick={openAddModal}>
-                    Connect storage
-                  </Button>
-                  <Button family="primary" type="button" onClick={openUploadModal} disabled={!hasConnectedStorage}>
-                    Upload
-                  </Button>
-                </div>
-              </div>
+              </MainEmptyState>
             ) : null}
 
             {shouldShowLoadingList ? (
@@ -2043,12 +1869,7 @@ function App() {
                 shouldShowCategoryEmptyState ? (
                   <>
                     <ListHeader />
-                    <div className="empty-list-state" role="status" aria-live="polite">
-                      <div className="empty-list-copy">
-                        <p className="empty-list-title">{emptyListTitle}</p>
-                        <p className="empty-list-description">{emptyListDescription}</p>
-                      </div>
-                    </div>
+                    <EmptyListState title={emptyListTitle} description={emptyListDescription} />
                   </>
                 ) : (
                   <>
@@ -2086,12 +1907,7 @@ function App() {
                 <>
                   <ListHeader />
                   {shouldShowCategoryEmptyState ? (
-                    <div className="empty-list-state" role="status" aria-live="polite">
-                      <div className="empty-list-copy">
-                        <p className="empty-list-title">{emptyListTitle}</p>
-                        <p className="empty-list-description">{emptyListDescription}</p>
-                      </div>
-                    </div>
+                    <EmptyListState title={emptyListTitle} description={emptyListDescription} />
                   ) : (
                     <>
                       <div className="item-list">
@@ -2115,50 +1931,51 @@ function App() {
                 </>
               )
             ) : null}
-          </div>
-        </div>
-      </section>
+          </LibraryMain>
+        </LibraryShell>
 
       {visibleToasts.length > 0 ? (
-        <div className="toast-stack" aria-live="polite" aria-label="Workspace notifications">
+        <ToastStack>
           {visibleToasts.map((toast) => (
-            <div key={toast.id} className={`toast-notice ${toast.kind}`}>
-              <div className="toast-copy">
-                <p>{toast.message}</p>
-                <span>{formatIssueTimestamp(toast.timestamp)}</span>
-              </div>
-              {toast.action ? (
-                <Button
-                  family="secondary"
-                  size="sm"
-                  className="toast-action"
-                  type="button"
-                  onClick={() => {
-                    const action = toast.action
+            <ToastNoticeRow
+              key={toast.id}
+              kind={toast.kind}
+              message={toast.message}
+              timestampLabel={formatIssueTimestamp(toast.timestamp)}
+              action={
+                toast.action ? (
+                  <Button
+                    family="secondary"
+                    size="sm"
+                    className="toast-action"
+                    type="button"
+                    onClick={() => {
+                      const action = toast.action
 
-                    if (!action) {
-                      return
-                    }
+                      if (!action) {
+                        return
+                      }
 
-                    if (action.type === 'open-upload') {
-                      openUploadModal()
-                      return
-                    }
+                      if (action.type === 'open-upload') {
+                        openUploadModal()
+                        return
+                      }
 
-                    if (action.type === 'open-path') {
-                      void openPath(action.path)
-                      return
-                    }
+                      if (action.type === 'open-path') {
+                        void openPath(action.path)
+                        return
+                      }
 
-                    openIssuesModal(action.issueId)
-                  }}
-                >
-                  {toast.actionLabel}
-                </Button>
-              ) : null}
-            </div>
+                      openIssuesModal(action.issueId)
+                    }}
+                  >
+                    {toast.actionLabel}
+                  </Button>
+                ) : null
+              }
+            />
           ))}
-        </div>
+        </ToastStack>
       ) : null}
 
       {previewPayload ? (
@@ -2192,20 +2009,17 @@ function App() {
       ) : null}
 
       {activeModal === 'add-storage' ? (
-        <div className="modal-overlay" role="presentation" onClick={closeAddModal}>
-          <div className="full-modal" role="dialog" aria-modal="true" aria-labelledby="add-storage-title" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <p className="eyebrow">Add Storage</p>
-                <h2 id="add-storage-title">
-                  {addFlowStep === 'providers' ? 'Choose a provider' : `Connect ${selectedProviderConfig.label}`}
-                </h2>
-              </div>
-
-              <Button family="icon" size="sm" className="modal-close" type="button" onClick={closeAddModal} aria-label="Close modal">
-                ×
-              </Button>
-            </div>
+        <ModalOverlay onRequestClose={closeAddModal}>
+          <ModalSurface surfaceClassName="full-modal" labelledBy="add-storage-title">
+            <ModalHeader
+              eyebrow="Add Storage"
+              titleId="add-storage-title"
+              title={
+                addFlowStep === 'providers' ? 'Choose a provider' : `Connect ${selectedProviderConfig.label}`
+              }
+              onClose={closeAddModal}
+              closeAriaLabel="Close modal"
+            />
 
             {addFlowStep === 'providers' ? (
               <div className="provider-grid">
@@ -2257,7 +2071,7 @@ function App() {
                   </label>
                 </details>
 
-                {addError ? <p className="error-text">{addError}</p> : null}
+                {addError ? <InlineError>{addError}</InlineError> : null}
 
                 <div className="modal-actions">
                   <Button family="secondary" type="button" onClick={() => setAddFlowStep('providers')}>
@@ -2269,35 +2083,32 @@ function App() {
                 </div>
               </form>
             )}
-          </div>
-        </div>
+          </ModalSurface>
+        </ModalOverlay>
       ) : null}
 
       {activeModal === 'oauth-pending' && pendingSession ? (
-        <div className="modal-overlay" role="presentation" onClick={closePendingModal}>
-          <div className="full-modal pending-modal" role="dialog" aria-modal="true" aria-labelledby="pending-title" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <p className="eyebrow">{pendingSession.provider}</p>
-                <h2 id="pending-title">
-                  {pendingSession.status === 'connected'
-                    ? 'Storage connected'
-                    : pendingSession.status === 'requires_drive_selection'
-                      ? 'Choose your OneDrive'
+        <ModalOverlay onRequestClose={closePendingModal}>
+          <ModalSurface surfaceClassName="full-modal pending-modal" labelledBy="pending-title">
+            <ModalHeader
+              eyebrow={pendingSession.provider}
+              titleId="pending-title"
+              title={
+                pendingSession.status === 'connected'
+                  ? 'Storage connected'
+                  : pendingSession.status === 'requires_drive_selection'
+                    ? 'Choose your OneDrive'
                     : pendingSession.status === 'error'
                       ? pendingHasCallbackStartupFailure
                         ? 'Sign-in could not start'
                         : 'Reconnect failed'
                       : pendingIsFinalizing
                         ? 'Finishing your OneDrive connection'
-                        : 'Complete authentication in your browser'}
-                </h2>
-              </div>
-
-              <Button family="icon" size="sm" className="modal-close" type="button" onClick={closePendingModal} aria-label="Close modal">
-                ×
-              </Button>
-            </div>
+                        : 'Complete authentication in your browser'
+              }
+              onClose={closePendingModal}
+              closeAriaLabel="Close modal"
+            />
 
             <div className="pending-body">
               <p className="pending-remote">{pendingSession.remoteName}</p>
@@ -2305,7 +2116,7 @@ function App() {
 
               {pendingSession.status === 'pending' ? (
                 <div className="pending-indicator">
-                  <span className="spinner" aria-hidden="true" />
+                  <Spinner />
                   <p>{pendingIsFinalizing ? 'Finishing setup...' : 'Checking for completion...'}</p>
                 </div>
               ) : null}
@@ -2415,35 +2226,25 @@ function App() {
                 </Button>
               ) : null}
             </div>
-          </div>
-        </div>
+          </ModalSurface>
+        </ModalOverlay>
       ) : null}
 
       {activeModal === 'remove-confirm' && removeTarget ? (
-        <div className="modal-overlay" role="presentation" onClick={() => setActiveModal('none')}>
-          <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="remove-title" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <p className="eyebrow">Remove Storage</p>
-                <h2 id="remove-title">Remove {removeTarget.name}?</h2>
-              </div>
-
-              <Button
-                family="icon"
-                size="sm"
-                className="modal-close"
-                type="button"
-                onClick={() => setActiveModal('none')}
-                aria-label="Close modal"
-              >
-                ×
-              </Button>
-            </div>
+        <ModalOverlay onRequestClose={() => setActiveModal('none')}>
+          <ModalSurface surfaceClassName="confirm-modal" labelledBy="remove-title">
+            <ModalHeader
+              eyebrow="Remove Storage"
+              titleId="remove-title"
+              title={`Remove ${removeTarget.name}?`}
+              onClose={() => setActiveModal('none')}
+              closeAriaLabel="Close modal"
+            />
 
             <div className="confirm-copy">
               <p>This removes the saved connection from Cloud Weave.</p>
               <p className="confirm-provider">{getProviderLabel(removeTarget.provider)}</p>
-              {removeError ? <p className="error-text">{removeError}</p> : null}
+              {removeError ? <InlineError>{removeError}</InlineError> : null}
             </div>
 
             <div className="modal-actions">
@@ -2454,23 +2255,20 @@ function App() {
                 {isRemoving ? 'Removing...' : 'Remove'}
               </Button>
             </div>
-          </div>
-        </div>
+          </ModalSurface>
+        </ModalOverlay>
       ) : null}
 
       {activeModal === 'upload' ? (
-        <div className="modal-overlay" role="presentation" onClick={closeUploadModal}>
-          <div className="full-modal upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <p className="eyebrow">Upload</p>
-                <h2 id="upload-title">Send files to Cloud Weave</h2>
-              </div>
-
-              <Button family="icon" size="sm" className="modal-close" type="button" onClick={closeUploadModal} aria-label="Close upload modal">
-                ×
-              </Button>
-            </div>
+        <ModalOverlay onRequestClose={closeUploadModal}>
+          <ModalSurface surfaceClassName="full-modal upload-modal" labelledBy="upload-title">
+            <ModalHeader
+              eyebrow="Upload"
+              titleId="upload-title"
+              title="Send files to Cloud Weave"
+              onClose={closeUploadModal}
+              closeAriaLabel="Close upload modal"
+            />
 
             <div className="upload-body">
               <div className={`upload-dropzone ${isUploadDragActive ? 'active' : ''}`}>
@@ -2494,7 +2292,7 @@ function App() {
                   {notice}
                 </p>
               ))}
-              {uploadError ? <p className="error-text">{uploadError}</p> : null}
+              {uploadError ? <InlineError>{uploadError}</InlineError> : null}
 
               {shouldShowPreparingUploadList ? (
                 <p className="upload-preparing-summary" role="status" aria-live="polite">
@@ -2532,290 +2330,12 @@ function App() {
                 </Button>
               </div>
             ) : null}
-          </div>
-        </div>
+          </ModalSurface>
+        </ModalOverlay>
       ) : null}
-      </main>
+      </WorkspaceShell>
     </>
   )
-}
-
-function UnifiedListItem({
-  item,
-  downloadState,
-  openState,
-  onOpen,
-  onDownload,
-  isRowMenuOpen,
-  onToggleRowMenu,
-  onCloseRowMenu,
-}: {
-  item: UnifiedItem
-  downloadState: DownloadState
-  openState: OpenState
-  onOpen: (item: UnifiedItem) => Promise<void>
-  onDownload: (item: UnifiedItem) => Promise<void>
-  isRowMenuOpen: boolean
-  onToggleRowMenu: () => void
-  onCloseRowMenu: () => void
-}) {
-  const isBusy = downloadState.status === 'queued' || downloadState.status === 'running'
-  const canPreview = canPreviewItem(item)
-  const canOpen = canOpenInDefaultApp(item)
-  const isPreparingOpen = openState.status === 'preparing'
-  const actionLabel =
-    downloadState.status === 'succeeded' ? 'Download again' : isBusy ? 'Downloading...' : 'Download'
-  const canPrimaryOpen = canPreview || canOpen
-  const hasOverflowActions = !item.isDir
-  const statusLabel = getListItemStatusLabel(item, downloadState, openState)
-  const listPath = formatListPath(item)
-  const primaryActionLabel = canPreview ? (isPreparingOpen ? 'Previewing...' : 'Preview') : (isPreparingOpen ? 'Opening...' : 'Open')
-
-  return (
-    <article
-      className={`unified-item list-item ${isRowMenuOpen ? 'row-menu-open' : ''}`}
-      data-row-id={item.id}
-      tabIndex={0}
-      onKeyDown={(event) => {
-        if (event.target !== event.currentTarget) {
-          return
-        }
-
-        if (event.key === 'Enter' && canPrimaryOpen) {
-          event.preventDefault()
-          void onOpen(item)
-        }
-      }}
-      onDoubleClick={() => {
-        if (canPrimaryOpen) {
-          void onOpen(item)
-        }
-      }}
-    >
-      <div className="item-primary">
-        <div className="item-leading">
-          <span className={`item-monogram ${item.category}`} aria-hidden="true">
-            {getCategoryMonogram(item.category)}
-          </span>
-        </div>
-
-        <div className="item-copy">
-          <div className="item-title-row">
-            <p className="item-name">{item.name}</p>
-          </div>
-        </div>
-      </div>
-
-      <p className="item-cell item-storage-cell">{item.sourceRemote}</p>
-      <div className="item-path-cell">
-        <div className="item-path-anchor">
-          <p className="item-path">{listPath}</p>
-          <span className="path-tooltip" role="tooltip">
-            {listPath}
-          </span>
-        </div>
-      </div>
-
-      <p className="item-cell item-modified-cell">{formatModifiedTime(item.modTime)}</p>
-      <p className="item-cell item-size-cell">{formatFileSize(item.size)}</p>
-
-      <div className="item-status-cell">
-        <p className={`item-status-label ${downloadState.status === 'failed' || openState.status === 'failed' ? 'danger' : ''}`}>{statusLabel}</p>
-      </div>
-
-      {hasOverflowActions ? (
-        <div
-          className="item-actions"
-          aria-label="Row actions"
-          data-row-menu-container="true"
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-        >
-          <Button
-            family="icon"
-            size="sm"
-            className="item-actions-trigger"
-            type="button"
-            aria-label={`More actions for ${item.name}`}
-            aria-haspopup="menu"
-            aria-expanded={isRowMenuOpen}
-            onClick={onToggleRowMenu}
-          >
-            …
-          </Button>
-
-          {isRowMenuOpen ? (
-            <div className="row-action-menu" role="menu" aria-label={`Actions for ${item.name}`}>
-              {canPrimaryOpen ? (
-                <button
-                  className="row-menu-item"
-                  type="button"
-                  role="menuitem"
-                  disabled={isPreparingOpen}
-                  onClick={() => {
-                    onCloseRowMenu()
-                    void onOpen(item)
-                  }}
-                >
-                  {primaryActionLabel}
-                </button>
-              ) : null}
-              <button
-                className="row-menu-item"
-                type="button"
-                role="menuitem"
-                disabled={isBusy}
-                onClick={() => {
-                  onCloseRowMenu()
-                  void onDownload(item)
-                }}
-              >
-                {actionLabel}
-              </button>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </article>
-  )
-}
-
-function UploadListItem({
-  item,
-  state,
-}: {
-  item: PreparedUploadItem
-  state: UploadState
-}) {
-  const pathLabel = getUploadListPath(item, state)
-  const storageLabel = getUploadListStorage(item, state)
-
-  return (
-    <article className="upload-queue-item" role="listitem">
-      <p className="upload-item-name">{item.displayName}</p>
-      <p className={`upload-item-status ${state.status === 'failed' ? 'danger' : ''}`}>{getUploadListStatusLabel(state)}</p>
-      <p className="upload-item-path">{pathLabel}</p>
-      <p className="upload-item-storage">{storageLabel}</p>
-    </article>
-  )
-}
-
-function PreparingUploadListItem({ item }: { item: PreparingUploadItem }) {
-  return (
-    <article className="upload-queue-item preparing" role="listitem" aria-hidden="true">
-      <p className="upload-item-name">{item.displayName}</p>
-      <p className="upload-item-status">Preparing...</p>
-      <p className="upload-item-path">
-        <span className="upload-skeleton path" />
-      </p>
-      <p className="upload-item-storage">
-        <span className="upload-skeleton storage" />
-      </p>
-    </article>
-  )
-}
-
-function ListHeader() {
-  return (
-    <div className="item-list-header" aria-hidden="true">
-      <span>Name</span>
-      <span>Storage</span>
-      <span>Path</span>
-      <span>Modified</span>
-      <span>Size</span>
-      <span>Status</span>
-    </div>
-  )
-}
-
-function LoadingList({ count = 6, className = '' }: { count?: number; className?: string }) {
-  const classes = className ? `loading-list ${className}` : 'loading-list'
-
-  return (
-    <div className={classes} aria-hidden="true">
-      {Array.from({ length: count }, (_, index) => (
-        <article key={`loading-row-${index}`} className="unified-item list-item loading-row">
-          <div className="item-primary">
-            <div className="item-leading">
-              <span className="item-monogram loading-monogram" />
-            </div>
-
-            <div className="item-copy">
-              <div className="item-title-row">
-                <span className="loading-placeholder name" />
-              </div>
-            </div>
-          </div>
-
-          <p className="item-cell item-storage-cell">
-            <span className="loading-placeholder storage" />
-          </p>
-
-          <div className="item-path-cell">
-            <span className="loading-placeholder path" />
-          </div>
-
-          <p className="item-cell item-modified-cell">
-            <span className="loading-placeholder modified" />
-          </p>
-
-          <p className="item-cell item-size-cell">
-            <span className="loading-placeholder size" />
-          </p>
-
-          <div className="item-status-cell">
-            <span className="loading-placeholder status" />
-          </div>
-        </article>
-      ))}
-    </div>
-  )
-}
-
-function StreamingLoadingTail() {
-  return (
-    <>
-      <p className="loading-list-copy streaming-tail" role="status" aria-live="polite">
-        Loading more files...
-      </p>
-      <LoadingList count={3} className="streaming-tail" />
-    </>
-  )
-}
-
-function getUploadListStatusLabel(state: UploadState): string {
-  switch (state.status) {
-    case 'queued':
-    case 'running':
-    case 'retrying':
-      return 'Uploading'
-    case 'succeeded':
-      return 'Completed'
-    case 'failed':
-      return 'Failed'
-    case 'idle':
-      return 'Ready'
-  }
-}
-
-function getUploadListPath(item: PreparedUploadItem, state: UploadState): string {
-  if (state.remotePath) {
-    return `/${state.remotePath.replace(/^\/+/, '')}`
-  }
-
-  const primaryCandidate = item.candidates[0]
-  const normalizedRelativePath = item.relativePath.replace(/\\/g, '/').replace(/^\/+/, '')
-  const basePath = primaryCandidate?.basePath?.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') ?? ''
-
-  if (!basePath) {
-    return normalizedRelativePath ? `/${normalizedRelativePath}` : '/'
-  }
-
-  return normalizedRelativePath ? `/${basePath}/${normalizedRelativePath}` : `/${basePath}`
-}
-
-function getUploadListStorage(item: PreparedUploadItem, state: UploadState): string {
-  return state.remoteName ?? item.candidates[0]?.remoteName ?? 'Pending'
 }
 
 function IssuesModal({
@@ -2830,18 +2350,15 @@ function IssuesModal({
   onClose: () => void
 }) {
   return (
-    <div className="modal-overlay" role="presentation" onClick={onClose}>
-      <div className="issues-modal" role="dialog" aria-modal="true" aria-labelledby="issues-title" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <div>
-            <p className="eyebrow">Issues</p>
-            <h2 id="issues-title">Workspace issues</h2>
-          </div>
-
-          <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close issues modal">
-            ×
-          </Button>
-        </div>
+    <ModalOverlay onRequestClose={onClose}>
+      <ModalSurface surfaceClassName="issues-modal" labelledBy="issues-title">
+        <ModalHeader
+          eyebrow="Issues"
+          titleId="issues-title"
+          title="Workspace issues"
+          onClose={onClose}
+          closeAriaLabel="Close issues modal"
+        />
 
         <div className="issues-feedback-actions">
           <Button family="secondary" size="sm" type="button" onClick={onReportIssue}>
@@ -2850,11 +2367,13 @@ function IssuesModal({
         </div>
 
         {issues.length === 0 ? (
-          <div className="main-empty-state compact issues-empty-state">
-            <p className="eyebrow">Issues</p>
-            <h2>No issues right now.</h2>
-            <p>Cloud Weave will show skipped folders, reconnect problems, and similar notices here.</p>
-          </div>
+          <MainEmptyState
+            className="compact issues-empty-state"
+            eyebrow="Issues"
+            title="No issues right now."
+            description="Cloud Weave will show skipped folders, reconnect problems, and similar notices here."
+            titleLevel="h2"
+          />
         ) : (
           <div className="issues-list" role="list" aria-label="Workspace issues">
             {issues.map((issue) => (
@@ -2864,7 +2383,7 @@ function IssuesModal({
                 role="listitem"
               >
                 <div className="issue-item-header">
-                  <span className={`storage-status-badge ${issue.level === 'error' ? 'warning' : 'neutral'}`}>{issue.level}</span>
+                  <StatusBadge tone={issue.level === 'error' ? 'warning' : 'neutral'}>{issue.level}</StatusBadge>
                   <span className="issue-item-time">{formatIssueTimestamp(issue.timestamp)}</span>
                 </div>
                 <p className="issue-item-message">{issue.message}</p>
@@ -2876,8 +2395,8 @@ function IssuesModal({
             ))}
           </div>
         )}
-      </div>
-    </div>
+      </ModalSurface>
+    </ModalOverlay>
   )
 }
 
@@ -2900,18 +2419,15 @@ function FeedbackPromptModal({
       : 'Continue'
 
   return (
-    <div className="modal-overlay" role="presentation" onClick={onClose}>
-      <div className="confirm-modal feedback-prompt-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-prompt-title" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <div>
-            <p className="eyebrow">Feedback</p>
-            <h2 id="feedback-prompt-title">Send feedback</h2>
-          </div>
-
-          <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close feedback prompt">
-            ×
-          </Button>
-        </div>
+    <ModalOverlay onRequestClose={onClose}>
+      <ModalSurface surfaceClassName="confirm-modal feedback-prompt-modal" labelledBy="feedback-prompt-title">
+        <ModalHeader
+          eyebrow="Feedback"
+          titleId="feedback-prompt-title"
+          title="Send feedback"
+          onClose={onClose}
+          closeAriaLabel="Close feedback prompt"
+        />
 
         <div className="feedback-prompt-copy">
           <p>Cloud Weave will save a diagnostics ZIP to your Downloads folder.</p>
@@ -2928,8 +2444,8 @@ function FeedbackPromptModal({
             {continueLabel}
           </Button>
         </div>
-      </div>
-    </div>
+      </ModalSurface>
+    </ModalOverlay>
   )
 }
 
@@ -2987,18 +2503,15 @@ function PreviewModal({
   }, [assetUrl, payload.previewKind])
 
   return (
-    <div className="modal-overlay" role="presentation" onClick={onClose}>
-      <div className="preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <div>
-            <p className="eyebrow">{payload.previewKind === 'image' ? 'Image Preview' : 'PDF Preview'}</p>
-            <h2 id="preview-title">{payload.itemName}</h2>
-          </div>
-
-          <Button family="icon" size="sm" className="modal-close" type="button" onClick={onClose} aria-label="Close preview">
-            ×
-          </Button>
-        </div>
+    <ModalOverlay onRequestClose={onClose}>
+      <ModalSurface surfaceClassName="preview-modal" labelledBy="preview-title">
+        <ModalHeader
+          eyebrow={payload.previewKind === 'image' ? 'Image Preview' : 'PDF Preview'}
+          titleId="preview-title"
+          title={payload.itemName}
+          onClose={onClose}
+          closeAriaLabel="Close preview"
+        />
 
         <div className="preview-surface">
           {previewError ? (
@@ -3020,8 +2533,8 @@ function PreviewModal({
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </ModalSurface>
+    </ModalOverlay>
   )
 }
 
@@ -3038,28 +2551,6 @@ function getProviderLabel(provider: string): string {
     default:
       return provider
   }
-}
-
-function formatListPath(item: UnifiedItem): string {
-  const normalizedPath = item.sourcePath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
-
-  if (!normalizedPath) {
-    return '/'
-  }
-
-  if (item.isDir) {
-    return `/${normalizedPath}`
-  }
-
-  const lastSeparatorIndex = normalizedPath.lastIndexOf('/')
-
-  if (lastSeparatorIndex < 0) {
-    return '/'
-  }
-
-  const parentPath = normalizedPath.slice(0, lastSeparatorIndex)
-
-  return parentPath ? `/${parentPath}` : '/'
 }
 
 function normalizeDialogSelection(selection: string | string[] | null): string[] {
