@@ -1331,10 +1331,7 @@ function App() {
         workspaceIssues={workspaceIssues}
         focusedIssueId={focusedIssueId}
         onReportIssue={() => setIsFeedbackPromptOpen(true)}
-        onCloseIssues={() => {
-          setIsIssuesModalOpen(false)
-          setFocusedIssueId(null)
-        }}
+        onCloseIssues={() => setIsIssuesModalOpen(false)}
         formatIssueTimestamp={formatIssueTimestamp}
         describeIssueSource={describeIssueSource}
         describeIssueLocation={describeIssueLocation}

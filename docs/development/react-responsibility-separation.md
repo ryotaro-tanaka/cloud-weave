@@ -139,7 +139,7 @@ When a file grows, split in this order:
 2. Move local-only form/input state into that component.
 3. Move event listeners/polling/timers into feature hooks.
 4. Move shared state transitions into reducer actions.
-5. Move utility functions to `features/`** or `lib/**`.
+5. Move utility functions to `features/`** or `lib/`**.
 6. Keep the root component as orchestrator/composer only.
 
 ## Decision Flow (before adding code)
