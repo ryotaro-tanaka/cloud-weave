@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import type { UnifiedLibraryLoadEvent } from '../libraryLoad'
 
@@ -13,6 +13,11 @@ export function useLibraryProgressListener({
   getActiveRequestId,
   onProgress,
 }: UseLibraryProgressListenerInput) {
+  const getActiveRequestIdRef = useRef(getActiveRequestId)
+  const onProgressRef = useRef(onProgress)
+  getActiveRequestIdRef.current = getActiveRequestId
+  onProgressRef.current = onProgress
+
   useEffect(() => {
     if (isDemoMode) {
       return
@@ -25,18 +30,18 @@ export function useLibraryProgressListener({
       }
 
       const payload = event.payload
-      const activeRequestId = getActiveRequestId()
+      const activeRequestId = getActiveRequestIdRef.current()
       if (activeRequestId && payload.requestId !== activeRequestId) {
         return
       }
 
-      onProgress(payload)
+      onProgressRef.current(payload)
     })
 
     return () => {
       isSubscribed = false
       void unlistenPromise.then((unlisten) => unlisten())
     }
-  }, [getActiveRequestId, isDemoMode, onProgress])
+  }, [isDemoMode])
 }
 
