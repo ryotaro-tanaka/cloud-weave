@@ -86,6 +86,7 @@
   flex-wrap: wrap;
   gap: 8px 14px;
   font-size: 13px;
+  color: var(--text-secondary);
 }
 
 .item-meta span:last-child {
@@ -175,6 +176,12 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.list-item .open-status,
+.list-item .download-status,
+.list-item .item-status-stack {
+  display: none;
 }
 
 .item-actions,

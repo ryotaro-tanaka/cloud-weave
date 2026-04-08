@@ -2,12 +2,6 @@
   display: grid;
   place-items: center;
 }
-.item-name {
-  margin: 0;
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
 .status-badge,
 .source-badge {
   display: inline-flex;
@@ -62,7 +56,6 @@ summary:focus-visible {
 .pending-help,
 .confirm-provider,
 .provider-option small,
-.item-meta,
 .grid-path,
 .grid-date {
   color: var(--text-secondary);
@@ -109,12 +102,6 @@ summary:focus-visible {
   color: var(--text-secondary);
   overflow-wrap: anywhere;
   word-break: break-word;
-}
-
-.list-item .open-status,
-.list-item .download-status,
-.list-item .item-status-stack {
-  display: none;
 }
 
 .open-status.failed .open-status-copy,

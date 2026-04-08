@@ -226,3 +226,16 @@ export function overlayPendingRemote(remotes: RemoteSummary[], pendingSession: P
   }
   return next
 }
+
+export function selectPreferredDriveId(pendingSession: PendingSession | null): string {
+  if (pendingSession?.status !== 'requires_drive_selection') {
+    return ''
+  }
+
+  const preferred =
+    pendingSession.driveCandidates?.find((candidate) => candidate.isSuggested && candidate.isReachable) ??
+    pendingSession.driveCandidates?.find((candidate) => candidate.isReachable) ??
+    pendingSession.driveCandidates?.[0]
+
+  return preferred?.id ?? ''
+}
