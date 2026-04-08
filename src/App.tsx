@@ -22,8 +22,6 @@ import {
 import { IDLE_OPEN_STATE } from './features/storage/openFiles'
 import {
   applyUploadProgressEvent,
-  getUploadBatchSummary,
-  IDLE_UPLOAD_STATE,
   type UploadProgressEvent,
 } from './features/storage/uploads'
 import { useDismissOnOutsideOrEscape } from './components/ui/useDismissOnOutsideOrEscape'
@@ -33,16 +31,14 @@ import { LibraryTopbar } from './components/workspace/LibraryTopbar'
 import { StorageSidebar } from './components/workspace/StorageSidebar'
 import { StartupSplashOverlay, WorkspaceToastDock } from './components/workspace/WorkspaceChrome'
 import { WorkspaceShell } from './components/workspace/WorkspaceShell'
-import { WorkspaceModals } from './components/modals/WorkspaceModals'
+import { WorkspaceModalsContainer } from './components/modals/WorkspaceModalsContainer'
 import { useStartupSplash } from './features/storage/hooks/useStartupSplash'
 import { usePendingSessionPolling } from './features/storage/hooks/usePendingSessionPolling'
 import { useTransferProgressListeners } from './features/storage/hooks/useTransferProgressListeners'
 import { useRemoteAuthFlow } from './features/storage/hooks/useRemoteAuthFlow'
 import { useWorkspaceAppBindings } from './features/storage/hooks/useWorkspaceAppBindings'
-import { useDiagnosticsFeedbackFlow } from './features/storage/hooks/useDiagnosticsFeedbackFlow'
 import { useRemoteConnectSync } from './features/storage/hooks/useRemoteConnectSync'
 import { useLibraryBootstrap } from './features/storage/hooks/useLibraryBootstrap'
-import { useUploadWorkspaceFlow } from './features/storage/hooks/useUploadWorkspaceFlow'
 import { useFileTransferActions } from './features/storage/hooks/useFileTransferActions'
 import {
   CONNECT_SUCCESS_MESSAGE,
@@ -51,11 +47,10 @@ import {
   SORT_OPTIONS,
   STARTUP_SPLASH_FADE_MS,
   STARTUP_SPLASH_VISIBLE_MS,
-  STORAGE_PROVIDERS,
 } from './features/storage/workspaceAppConstants'
 import { getDefaultSortKey, isScreenshotDemoEnabled } from './features/storage/demoEnv'
 import { getSortLabel } from './features/storage/sortLabels'
-import { describeIssueLocation, describeIssueSource, formatIssueTimestamp } from './features/storage/issuePresentation'
+import { formatIssueTimestamp } from './features/storage/issuePresentation'
 import { getProviderLabel } from './features/storage/providerLabels'
 import splashLockup from '../assets/brand/cloud-weave-lockup.png'
 import './App.css'
@@ -85,7 +80,6 @@ function App() {
     setPreviewPayload,
     setIsIssuesModalOpen,
     setFocusedIssueId,
-    setIsFeedbackPromptOpen,
     setRemotes,
     setUnifiedItems,
     setListError,
@@ -103,13 +97,7 @@ function App() {
     setDownloadStates,
     setOpenStates,
     setUploadStates,
-    setUploadBatch,
-    setPreparingUploadItems,
     setUploadError,
-    setIsPreparingUpload,
-    setIsStartingUpload,
-    setIsUploadDragActive,
-    setHasPendingUploadRefresh,
   } = useWorkspaceAppBindings()
 
   const activeView = ui.activeView
@@ -120,14 +108,9 @@ function App() {
   const isStartupSplashVisible = ui.isStartupSplashVisible
   const isStartupSplashExiting = ui.isStartupSplashExiting
   const activeModal = ui.activeModal
-  const previewPayload = ui.previewPayload
-  const isIssuesModalOpen = ui.isIssuesModalOpen
-  const focusedIssueId = ui.focusedIssueId
-  const isFeedbackPromptOpen = ui.isFeedbackPromptOpen
 
   const remotes = data.remotes
   const unifiedItems = data.unifiedItems
-  const workspaceIssues = data.workspaceIssues
   const toastNotices = data.toastNotices
   const listError = data.listError
   const itemsError = data.itemsError
@@ -137,22 +120,10 @@ function App() {
   const isRefreshingItems = data.isRefreshingItems
   const pendingSession = data.pendingSession
   const selectedDriveId = data.selectedDriveId
-  const isFinalizingDrive = data.isFinalizingDrive
   const removeTarget = data.removeTarget
-  const removeError = data.removeError
-  const isRemoving = data.isRemoving
 
   const downloadStates = transfers.downloadStates
   const openStates = transfers.openStates
-  const uploadStates = transfers.uploadStates
-  const uploadBatch = transfers.uploadBatch
-  const preparingUploadItems = transfers.preparingUploadItems
-  const uploadError = transfers.uploadError
-  const isPreparingUpload = transfers.isPreparingUpload
-  const isStartingUpload = transfers.isStartingUpload
-  const isUploadDragActive = transfers.isUploadDragActive
-  const hasPendingUploadRefresh = transfers.hasPendingUploadRefresh
-
   const sortMenuRef = useRef<HTMLDivElement | null>(null)
 
   const displayedItems = useMemo(() => {
@@ -169,20 +140,8 @@ function App() {
     [remotes],
   )
   const visibleToasts = toastNotices
-  const focusedIssue = useMemo(
-    () => (focusedIssueId ? workspaceIssues.find((issue) => issue.id === focusedIssueId) ?? null : null),
-    [focusedIssueId, workspaceIssues],
-  )
 
-  const { showToast, markIssuesRead, recordIssueMessages, recordIssueError } = dataActions
-
-  const { startFeedbackFlow, isExportingDiagnostics, isOpeningFeedbackForm } = useDiagnosticsFeedbackFlow({
-    activeView,
-    workspaceIssues,
-    focusedIssue,
-    showToast,
-    setIsFeedbackPromptOpen,
-  })
+  const { markIssuesRead, recordIssueMessages, recordIssueError } = dataActions
 
   const groupedRecentItems = useMemo(() => {
     if (activeView !== 'recent' || sortKey !== 'updated-desc') {
@@ -192,23 +151,6 @@ function App() {
     return groupRecentItems(displayedItems)
   }, [activeView, displayedItems, sortKey])
 
-  const uploadSummary = useMemo(
-    () => getUploadBatchSummary(uploadBatch?.items ?? [], uploadStates),
-    [uploadBatch, uploadStates],
-  )
-  const uploadListItems = useMemo(() => {
-    if (!uploadBatch) {
-      return []
-    }
-
-    return uploadBatch.items.map((item) => ({
-      item,
-      state: uploadStates[item.itemId] ?? IDLE_UPLOAD_STATE,
-    }))
-  }, [uploadBatch, uploadStates])
-  const hasUploadItems = uploadListItems.length > 0
-  const hasReadyUploads = uploadListItems.some(({ state }) => state.status === 'idle')
-  const shouldShowPreparingUploadList = isPreparingUpload && preparingUploadItems.length > 0
   const currentViewLabel = getCategoryLabel(activeView)
 
   const openIssuesModal = (issueId?: string) => {
@@ -309,27 +251,7 @@ function App() {
     onUploadProgress: handleUploadProgress,
   })
 
-  const { handleChooseUploadFiles, handleChooseUploadFolder, handleStartUpload, resetUploadBatch } = useUploadWorkspaceFlow({
-    isDemoMode,
-    activeModal,
-    uploadBatch,
-    uploadStates,
-    hasPendingUploadRefresh,
-    isStartingUpload,
-    showToast,
-    refreshLibrary,
-    setActiveModal,
-    setUploadError,
-    setIsUploadDragActive,
-    setPreparingUploadItems,
-    setIsPreparingUpload,
-    setUploadBatch,
-    setUploadStates,
-    setIsStartingUpload,
-    setHasPendingUploadRefresh,
-  })
-
-  const { handleDownload, handleOpen, handleDeleteRemote } = useFileTransferActions({
+  const { handleDownload, handleOpen } = useFileTransferActions({
     isDemoMode,
     removeTarget,
     setDownloadStates,
@@ -363,18 +285,6 @@ function App() {
   const openUploadModal = () => {
     setUploadError('')
     setActiveModal('upload')
-  }
-
-  const closeUploadModal = () => {
-    setActiveModal('none')
-    setIsUploadDragActive(false)
-    if (!isPreparingUpload) {
-      setPreparingUploadItems([])
-    }
-  }
-
-  const closeAddModal = () => {
-    setActiveModal('none')
   }
 
   const fetchAuthSession = async (name: string) => {
@@ -418,19 +328,6 @@ function App() {
     setRemoveTarget(remote)
     setRemoveError('')
     setActiveModal('remove-confirm')
-  }
-
-  const canStartUpload =
-    !!uploadBatch &&
-    uploadBatch.items.length > 0 &&
-    hasReadyUploads &&
-    uploadSummary.active === 0 &&
-    !isPreparingUpload &&
-    !isStartingUpload
-
-  const closePendingModal = () => {
-    setActiveModal('none')
-    setSelectedDriveId('')
   }
 
   const hasConnectedStorage = displayedRemotes.length > 0
@@ -510,60 +407,15 @@ function App() {
         onOpenIssuesModal={(issueId) => openIssuesModal(issueId)}
       />
 
-      <WorkspaceModals
-        previewPayload={previewPayload}
-        onClosePreview={() => setPreviewPayload(null)}
-        isIssuesModalOpen={isIssuesModalOpen}
-        workspaceIssues={workspaceIssues}
-        focusedIssueId={focusedIssueId}
-        onReportIssue={() => setIsFeedbackPromptOpen(true)}
-        onCloseIssues={() => setIsIssuesModalOpen(false)}
-        formatIssueTimestamp={formatIssueTimestamp}
-        describeIssueSource={describeIssueSource}
-        describeIssueLocation={describeIssueLocation}
-        isFeedbackPromptOpen={isFeedbackPromptOpen}
-        isExportingDiagnostics={isExportingDiagnostics}
-        isOpeningFeedbackForm={isOpeningFeedbackForm}
-        onCloseFeedback={() => setIsFeedbackPromptOpen(false)}
-        onContinueFeedback={() => {
-          void startFeedbackFlow()
-        }}
-        activeModal={activeModal}
-        providers={STORAGE_PROVIDERS}
-        onCloseAddStorage={closeAddModal}
+      <WorkspaceModalsContainer
+        isDemoMode={isDemoMode}
+        refreshLibrary={refreshLibrary}
         onCreateRemote={createRemote}
-        pendingSession={pendingSession}
-        pendingHasCallbackStartupFailure={pendingHasCallbackStartupFailure}
-        pendingIsFinalizing={pendingIsFinalizing}
-        selectedDriveId={selectedDriveId}
-        isFinalizingDrive={isFinalizingDrive}
-        onSelectDrive={setSelectedDriveId}
-        onClosePending={closePendingModal}
         onPendingRemoveAndReconnect={() => void handlePendingRemoveAndReconnect()}
         onFinalizeDriveSelection={() => void handleFinalizeDriveSelection()}
         onPendingDone={handlePendingDone}
-        emptyPendingMessage={EMPTY_PENDING_MESSAGE}
-        removeTarget={removeTarget}
-        removeError={removeError}
-        isRemoving={isRemoving}
-        getProviderLabel={getProviderLabel}
-        onCloseRemoveConfirm={() => setActiveModal('none')}
-        onDeleteRemote={() => void handleDeleteRemote()}
-        isUploadDragActive={isUploadDragActive}
-        isPreparingUpload={isPreparingUpload}
-        isStartingUpload={isStartingUpload}
-        uploadBatch={uploadBatch}
-        uploadError={uploadError}
-        shouldShowPreparingUploadList={shouldShowPreparingUploadList}
-        preparingUploadItems={preparingUploadItems}
-        uploadListItems={uploadListItems}
-        hasUploadItems={hasUploadItems}
-        canStartUpload={canStartUpload}
-        onCloseUpload={closeUploadModal}
-        onChooseUploadFiles={() => void handleChooseUploadFiles()}
-        onChooseUploadFolder={() => void handleChooseUploadFolder()}
-        onResetUploadBatch={resetUploadBatch}
-        onStartUpload={() => void handleStartUpload()}
+        pendingHasCallbackStartupFailure={pendingHasCallbackStartupFailure}
+        pendingIsFinalizing={pendingIsFinalizing}
       />
       </WorkspaceShell>
     </>
