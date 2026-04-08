@@ -1,3 +1,4 @@
+import './styles/upload-modal.css'
 import type { PreparedUploadBatch, UploadState } from '../../features/storage/uploads'
 import type { PreparingUploadItem } from '../../state/transfers/TransfersContext'
 import { PreparingUploadListItem, UploadListItem } from '../library'
