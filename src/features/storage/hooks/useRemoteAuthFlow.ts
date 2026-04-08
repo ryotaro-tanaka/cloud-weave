@@ -26,6 +26,7 @@ type UseRemoteAuthFlowInput = {
   setSelectedDriveId: (driveId: string) => void
   setIsFinalizingDrive: (finalizing: boolean) => void
   fetchRemotes: (options?: { silent?: boolean }) => Promise<RemoteSummary[] | null>
+  fetchAuthSession: (remoteName: string) => Promise<AuthSessionRecord | null>
   refreshLibrary: (options?: { silent?: boolean }) => Promise<void>
   synchronizeConnectedRemote: (remoteName: string, provider: string) => Promise<void>
   emptyPendingMessage: string
@@ -42,21 +43,12 @@ export function useRemoteAuthFlow(input: UseRemoteAuthFlowInput) {
     setSelectedDriveId,
     setIsFinalizingDrive,
     fetchRemotes,
+    fetchAuthSession,
     refreshLibrary,
     synchronizeConnectedRemote,
     emptyPendingMessage,
     connectSuccessMessage,
   } = input
-
-  const fetchAuthSession = useCallback(
-    async (remoteName: string) => {
-      if (isDemoMode) {
-        return null
-      }
-      return invoke<AuthSessionRecord | null>('get_auth_session_status', { name: remoteName })
-    },
-    [isDemoMode],
-  )
 
   const handlePendingConnected = useCallback(
     async (session: PendingSession) => {

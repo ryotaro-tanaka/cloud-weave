@@ -23,6 +23,10 @@
   box-shadow: var(--shadow-strong);
 }
 
+.upload-modal {
+  width: min(980px, 100%);
+}
+
 .full-modal,
 .confirm-modal {
   width: min(1120px, 100%);

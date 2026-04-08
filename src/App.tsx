@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import {
   isCallbackStartupFailure,
   overlayPendingRemote,
+  type AuthSessionRecord,
   type RemoteSummary,
 } from './features/storage/pendingState'
 import {
@@ -375,6 +377,14 @@ function App() {
     setActiveModal('none')
   }
 
+  const fetchAuthSession = async (name: string) => {
+    if (isDemoMode) {
+      return null
+    }
+
+    return invoke<AuthSessionRecord | null>('get_auth_session_status', { name })
+  }
+
   const {
     createRemote,
     handleReconnect,
@@ -391,6 +401,7 @@ function App() {
     setSelectedDriveId,
     setIsFinalizingDrive,
     fetchRemotes,
+    fetchAuthSession,
     refreshLibrary,
     synchronizeConnectedRemote,
     emptyPendingMessage: EMPTY_PENDING_MESSAGE,

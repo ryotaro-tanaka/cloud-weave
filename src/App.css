@@ -186,6 +186,7 @@ summary:focus-visible {
   color: var(--text-secondary);
 }
 
+
 .transfer-list {
   display: flex;
   flex-direction: column;
