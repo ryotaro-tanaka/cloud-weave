@@ -24,9 +24,8 @@ import { useStartupSplash } from './features/storage/hooks/useStartupSplash'
 import { usePendingSessionPolling } from './features/storage/hooks/usePendingSessionPolling'
 import { useTransferProgressListeners } from './features/storage/hooks/useTransferProgressListeners'
 import { useRemoteAuthFlow } from './features/storage/hooks/useRemoteAuthFlow'
+import { useWorkspaceLibrarySync } from './features/storage/hooks/useWorkspaceLibrarySync'
 import { useWorkspaceAppBindings } from './features/storage/hooks/useWorkspaceAppBindings'
-import { useRemoteConnectSync } from './features/storage/hooks/useRemoteConnectSync'
-import { useLibraryBootstrap } from './features/storage/hooks/useLibraryBootstrap'
 import { useFileTransferActions } from './features/storage/hooks/useFileTransferActions'
 import {
   CONNECT_SUCCESS_MESSAGE,
@@ -121,32 +120,10 @@ function App() {
     }
   }, [reconnectRequiredRemotes])
 
-  const fetchRemotes = (options?: { silent?: boolean }) =>
-    dataActions.fetchRemotes({ silent: options?.silent, demoRemotes: isDemoMode && demoState ? demoState.remotes : undefined })
-
-  const fetchUnifiedItems = (nextRemotes?: RemoteSummary[] | null, options?: { silent?: boolean }) =>
-    dataActions.fetchUnifiedItems({
-      silent: options?.silent,
-      demoItems: isDemoMode && demoState ? demoState.items : undefined,
-      remotesOverride: nextRemotes === undefined ? undefined : nextRemotes,
-    })
-
-  const refreshLibrary = async (options?: { silent?: boolean }) => {
-    const nextRemotes = await fetchRemotes(options)
-    await fetchUnifiedItems(nextRemotes, options)
-  }
-
-  const { synchronizeConnectedRemote } = useRemoteConnectSync({
-    setRemotes,
-    fetchRemotes,
-    fetchUnifiedItems,
-    refreshLibrary,
-  })
-
-  useLibraryBootstrap({
+  const { fetchRemotes, refreshLibrary, synchronizeConnectedRemote } = useWorkspaceLibrarySync({
     isDemoMode,
     demoState,
-    fetchRemotes,
+    dataActions,
     dataDispatch,
     recordIssueMessages,
     recordIssueError,
@@ -268,23 +245,23 @@ function App() {
         />
         <LibraryAreaContainer onOpenUpload={openUploadModal} onOpenAddStorage={openAddModal} onOpen={handleOpen} onDownload={handleDownload} />
 
-      <WorkspaceToastDock
-        toasts={visibleToasts}
-        formatIssueTimestamp={formatIssueTimestamp}
-        onOpenUploadModal={openUploadModal}
-        onOpenIssuesModal={(issueId) => openIssuesModal(issueId)}
-      />
+        <WorkspaceToastDock
+          toasts={visibleToasts}
+          formatIssueTimestamp={formatIssueTimestamp}
+          onOpenUploadModal={openUploadModal}
+          onOpenIssuesModal={(issueId) => openIssuesModal(issueId)}
+        />
 
-      <WorkspaceModalsContainer
-        isDemoMode={isDemoMode}
-        refreshLibrary={refreshLibrary}
-        onCreateRemote={createRemote}
-        onPendingRemoveAndReconnect={() => void handlePendingRemoveAndReconnect()}
-        onFinalizeDriveSelection={() => void handleFinalizeDriveSelection()}
-        onPendingDone={handlePendingDone}
-        pendingHasCallbackStartupFailure={pendingHasCallbackStartupFailure}
-        pendingIsFinalizing={pendingIsFinalizing}
-      />
+        <WorkspaceModalsContainer
+          isDemoMode={isDemoMode}
+          refreshLibrary={refreshLibrary}
+          onCreateRemote={createRemote}
+          onPendingRemoveAndReconnect={() => void handlePendingRemoveAndReconnect()}
+          onFinalizeDriveSelection={() => void handleFinalizeDriveSelection()}
+          onPendingDone={handlePendingDone}
+          pendingHasCallbackStartupFailure={pendingHasCallbackStartupFailure}
+          pendingIsFinalizing={pendingIsFinalizing}
+        />
       </WorkspaceShell>
     </>
   )
