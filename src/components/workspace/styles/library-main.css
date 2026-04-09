@@ -120,3 +120,145 @@
   border-color: var(--border-subtle);
 }
 
+.transfer-list-header {
+  grid-template-columns: 120px minmax(0, 1fr) minmax(140px, 220px);
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-heading span {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.download-status {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.open-status {
+  width: 100%;
+}
+
+.open-status-copy,
+.download-status-copy {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.open-status.failed .open-status-copy,
+.download-status.failed .download-status-copy {
+  color: var(--state-danger-text);
+}
+
+.open-status.ready .open-status-copy,
+.download-status.succeeded .download-status-copy {
+  color: var(--text-primary);
+}
+
+.download-progress {
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-accent-soft);
+}
+
+.download-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-primary);
+  transition: width 0.24s ease;
+}
+
+.grid-item {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.grid-preview {
+  min-height: 152px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--surface-muted);
+}
+
+.grid-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.grid-path,
+.grid-date {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.grid-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transfer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.transfer-item {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) minmax(140px, 220px);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--surface-elevated);
+}
+
+.transfer-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.transfer-path,
+.transfer-storage {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.transfer-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.transfer-status {
+  align-items: flex-start;
+  color: var(--text-secondary);
+}
+
