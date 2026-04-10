@@ -3,6 +3,7 @@ mod auth_session;
 mod backend_common;
 mod ipc;
 mod providers;
+mod remotes;
 mod rclone_runtime;
 
 use chrono::{SecondsFormat, Utc};
@@ -34,7 +35,7 @@ use crate::{
     auth_flow::start_auth_flow,
     auth_session::{
         callback_unavailable_message, get_auth_session_record, get_reconnect_request_record,
-        reconnect_request_record, remove_auth_session_record, remove_reconnect_request_record,
+        reconnect_request_record, remove_reconnect_request_record,
         set_reconnect_request_record, AuthSessionRecord, AuthSessionStore, CreateRemoteResult,
         ReconnectRequestStore,
     },
@@ -48,6 +49,7 @@ use crate::{
     },
     ipc::events::{DOWNLOAD_PROGRESS_EVENT, LIBRARY_PROGRESS_EVENT, UPLOAD_PROGRESS_EVENT},
     ipc::types::*,
+    remotes::{delete_remote, list_storage_remotes, list_storage_remotes_impl},
     rclone_runtime::{
         collect_child_output, load_remote_config_states, run_rclone, run_rclone_owned,
         spawn_rclone_owned, DEFAULT_COMMAND_TIMEOUT, INVENTORY_COMMAND_TIMEOUT,
@@ -97,13 +99,6 @@ enum LibraryLoadMessage {
         remote: RemoteLoadTarget,
         error: String,
     },
-}
-
-#[tauri::command]
-async fn list_storage_remotes(app: AppHandle) -> Result<Vec<RemoteSummary>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_storage_remotes_impl(app))
-        .await
-        .map_err(|error| format!("failed to join storage list task: {error}"))?
 }
 
 #[tauri::command]
@@ -159,13 +154,6 @@ async fn get_auth_session_status(
     tauri::async_runtime::spawn_blocking(move || Ok(get_auth_session_record(&app, &name)))
         .await
         .map_err(|error| format!("failed to join auth status task: {error}"))?
-}
-
-#[tauri::command]
-async fn delete_remote(app: AppHandle, name: String) -> Result<ActionResult, String> {
-    tauri::async_runtime::spawn_blocking(move || delete_remote_impl(app, name))
-        .await
-        .map_err(|error| format!("failed to join delete task: {error}"))?
 }
 
 #[tauri::command]
@@ -283,40 +271,6 @@ fn start_upload_batch_impl(
         status: "accepted".to_string(),
         total_items,
     })
-}
-
-fn list_storage_remotes_impl(app: AppHandle) -> Result<Vec<RemoteSummary>, String> {
-    let config_path = ensure_rclone_config(&app)?;
-    let stdout = run_rclone(
-        &app,
-        &["listremotes", "--json", "--config"],
-        &[config_path.as_os_str()],
-        DEFAULT_COMMAND_TIMEOUT,
-    )?;
-    let remotes = parse_listremotes(&stdout)?;
-    let remote_config_by_name = load_remote_config_states(&app, &config_path)?;
-
-    let mut summaries = remotes
-        .into_iter()
-        .map(|remote_name| {
-            let config_state = remote_config_by_name
-                .get(&remote_name)
-                .cloned()
-                .unwrap_or_else(default_remote_config_state);
-            let status = remote_status(&app, &remote_name, &config_state).to_string();
-            let message = remote_status_message(&app, &remote_name, &config_state);
-
-            RemoteSummary {
-                name: remote_name,
-                provider: config_state.provider.clone(),
-                status,
-                message,
-            }
-        })
-        .collect::<Vec<_>>();
-
-    summaries.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
-    Ok(summaries)
 }
 
 fn create_onedrive_remote_impl(
@@ -938,33 +892,6 @@ fn finalize_onedrive_remote_impl(
 ) -> Result<CreateRemoteResult, String> {
     validate_remote_name(&name)?;
     finalize_onedrive_remote_with_drive(&app, &name, &drive_id)
-}
-
-fn delete_remote_impl(app: AppHandle, name: String) -> Result<ActionResult, String> {
-    validate_remote_name(&name)?;
-
-    let config_path = ensure_rclone_config(&app)?;
-    let owned_args = vec![
-        "config".to_string(),
-        "delete".to_string(),
-        name.clone(),
-        "--config".to_string(),
-        config_path.to_string_lossy().into_owned(),
-    ];
-
-    match run_rclone_owned(&app, &owned_args, DEFAULT_COMMAND_TIMEOUT) {
-        Ok(_) => {
-            remove_auth_session_record(&app, &name);
-            Ok(ActionResult {
-                status: "success".to_string(),
-                message: format!("{name} was removed."),
-            })
-        }
-        Err(error) => Ok(ActionResult {
-            status: "error".to_string(),
-            message: user_facing_command_error(&error),
-        }),
-    }
 }
 
 fn export_diagnostics_impl(
@@ -2488,7 +2415,7 @@ fn completion_progress(bytes_transferred: Option<u64>, total_bytes: Option<u64>)
     }
 }
 
-fn remote_status(
+pub(crate) fn remote_status(
     app: &AppHandle,
     remote_name: &str,
     config_state: &RemoteConfigState,
@@ -2511,7 +2438,7 @@ fn remote_status(
     }
 }
 
-fn remote_status_message(
+pub(crate) fn remote_status_message(
     app: &AppHandle,
     remote_name: &str,
     config_state: &RemoteConfigState,
@@ -2538,7 +2465,7 @@ fn remote_status_message(
     }
 }
 
-fn validate_remote_name(remote_name: &str) -> Result<(), String> {
+pub(crate) fn validate_remote_name(remote_name: &str) -> Result<(), String> {
     let trimmed = remote_name.trim();
 
     if trimmed.is_empty() {
