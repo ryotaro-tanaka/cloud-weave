@@ -122,7 +122,7 @@ Commands are registered in one place (e.g. `invoke_handler` / `generate_handler!
 ## Plugins and configuration
 
 - `**tauri.conf.json`**: app identity, bundle, allowlists referenced at build/packaging time.
-- `**build.rs**`: build-time hooks (e.g. Tauri’s codegen). Keep **runtime** behavior in Rust modules, not in `build.rs`, unless it is truly compile-time.
+- `**build.rs`**: build-time hooks (e.g. Tauri’s codegen). Keep **runtime** behavior in Rust modules, not in `build.rs`, unless it is truly compile-time.
 - Adding a plugin requires **Rust registration**, **capabilities**, and often **frontend registration**; treat all three as one change set.
 
 ## Internal crates (`src-tauri/crates/*`)
@@ -141,7 +141,7 @@ Commands are registered in one place (e.g. `invoke_handler` / `generate_handler!
 - Letting `[lib.rs](../../src-tauri/src/lib.rs)` grow without bound as the only home for **all** commands, DTOs, and orchestration (new code should still prefer extraction).
 - Embedding **large business flows** inline in command attributes with minimal factoring.
 - Shipping **new sidecar args or shell powers** without updating `**[default.json](../../src-tauri/capabilities/default.json)`**.
-- Spawning `**rclone**` (or other tools) **outside** the centralized runtime helpers, bypassing timeouts and logging conventions.
+- Spawning `**rclone`** (or other tools) **outside** the centralized runtime helpers, bypassing timeouts and logging conventions.
 - JSON field naming that **does not match** the frontend (`camelCase`) without an explicit, documented exception.
 
 ## Review standard (native side)

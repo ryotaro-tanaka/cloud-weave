@@ -1,6 +1,7 @@
 mod auth_flow;
 mod auth_session;
 mod backend_common;
+mod ipc;
 mod providers;
 mod rclone_runtime;
 
@@ -46,15 +47,12 @@ use crate::{
         finalize_remote as finalize_onedrive_remote_with_drive,
         list_drive_candidates as list_onedrive_drive_candidates_for_remote,
     },
+    ipc::events::{DOWNLOAD_PROGRESS_EVENT, LIBRARY_PROGRESS_EVENT, UPLOAD_PROGRESS_EVENT},
     rclone_runtime::{
         collect_child_output, load_remote_config_states, run_rclone, run_rclone_owned,
         spawn_rclone_owned, DEFAULT_COMMAND_TIMEOUT, INVENTORY_COMMAND_TIMEOUT,
     },
 };
-
-const DOWNLOAD_PROGRESS_EVENT: &str = "download://progress";
-const UPLOAD_PROGRESS_EVENT: &str = "upload://progress";
-const LIBRARY_PROGRESS_EVENT: &str = "library://progress";
 const DOWNLOAD_POLL_INTERVAL: Duration = Duration::from_millis(400);
 const OPEN_TEMP_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 const UPLOAD_ROUTING_CONFIG_FILE: &str = "upload-routing.json";
@@ -1649,6 +1647,7 @@ pub fn run() {
 
             Ok(())
         })
+        // Keep command registration centralized in one generate_handler site.
         .invoke_handler(tauri::generate_handler![
             list_storage_remotes,
             create_onedrive_remote,
