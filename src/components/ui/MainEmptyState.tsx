@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import './shared-utilities.css'
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')

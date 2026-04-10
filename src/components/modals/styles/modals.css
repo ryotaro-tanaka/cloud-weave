@@ -132,6 +132,17 @@
   place-items: center;
 }
 
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  color: var(--text-primary);
+  background: var(--surface-muted);
+  font-size: 12px;
+}
+
 .eyebrow {
   font-size: 12px;
   font-weight: 600;

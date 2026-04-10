@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import './shared-utilities.css'
 
 export type StatusBadgeTone = 'warning' | 'neutral'
 

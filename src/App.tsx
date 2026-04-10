@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import {
   isCallbackStartupFailure,
@@ -24,6 +24,7 @@ import { useStartupSplash } from './features/storage/hooks/useStartupSplash'
 import { usePendingSessionPolling } from './features/storage/hooks/usePendingSessionPolling'
 import { useTransferProgressListeners } from './features/storage/hooks/useTransferProgressListeners'
 import { useRemoteAuthFlow } from './features/storage/hooks/useRemoteAuthFlow'
+import { useWorkspaceIssueActions } from './features/storage/hooks/useWorkspaceIssueActions'
 import { useWorkspaceLibrarySync } from './features/storage/hooks/useWorkspaceLibrarySync'
 import { useWorkspaceAppBindings } from './features/storage/hooks/useWorkspaceAppBindings'
 import { useFileTransferActions } from './features/storage/hooks/useFileTransferActions'
@@ -91,21 +92,19 @@ function App() {
 
   const pendingHasCallbackStartupFailure = pendingSession ? isCallbackStartupFailure(pendingSession.errorCode) : false
   const pendingIsFinalizing = pendingSession?.stage === 'finalizing'
-  const reconnectRequiredRemotes = useMemo(
-    () => remotes.filter((remote) => remote.status === 'reconnect_required'),
-    [remotes],
-  )
   const visibleToasts = toastNotices
 
-  const { markIssuesRead, recordIssueMessages, recordIssueError } = dataActions
-
-  const openIssuesModal = (issueId?: string) => {
-    setFocusedIssueId(issueId ?? null)
-    setIsIssuesModalOpen(true)
-    markIssuesRead(issueId ? [issueId] : undefined)
-  }
+  const { recordIssueMessages, recordIssueError } = dataActions
 
   // issue/toast logic lives in WorkspaceDataContext
+
+  const { openIssuesModal } = useWorkspaceIssueActions({
+    remotes,
+    markIssuesRead: dataActions.markIssuesRead,
+    recordIssueMessages,
+    setFocusedIssueId,
+    setIsIssuesModalOpen,
+  })
 
   useStartupSplash({
     visibleMs: STARTUP_SPLASH_VISIBLE_MS,
@@ -113,12 +112,6 @@ function App() {
     onStartExit: () => setIsStartupSplashExiting(true),
     onHide: () => setIsStartupSplashVisible(false),
   })
-
-  useEffect(() => {
-    for (const remote of reconnectRequiredRemotes) {
-      recordIssueMessages([remote.message || `${remote.name} needs reconnect.`], `storage:${remote.name}`)
-    }
-  }, [reconnectRequiredRemotes])
 
   const { fetchRemotes, refreshLibrary, synchronizeConnectedRemote } = useWorkspaceLibrarySync({
     isDemoMode,

@@ -1,3 +1,5 @@
+import './shared-utilities.css'
+
 type SpinnerProps = {
   /** When false, `aria-hidden` is omitted so the spinner can be announced. */
   decorative?: boolean
