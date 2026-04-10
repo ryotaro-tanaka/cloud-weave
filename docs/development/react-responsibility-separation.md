@@ -191,3 +191,7 @@ A refactor is acceptable when:
 - state boundaries are clearer than before
 - at least one concern cluster moved out of the God Component
 - new code follows context boundary and naming conventions in this document
+
+## Related documentation
+
+- `**[tauri-backend-design.md](tauri-backend-design.md)`** — Tauri / Rust side: commands, IPC payloads, events, capabilities, and `src-tauri` layering.
