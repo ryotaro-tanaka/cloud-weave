@@ -1,4 +1,5 @@
 mod auth_flow;
+mod auth_remotes;
 mod auth_session;
 mod backend_common;
 mod ipc;
@@ -9,8 +10,8 @@ mod rclone_runtime;
 use chrono::{SecondsFormat, Utc};
 use rclone_logic::{
     classify_item, classify_rclone_error, derive_extension, parse_listremotes, parse_lsjson_items,
-    parse_unified_items, prefix_unified_item_paths, LsjsonItem, OneDriveDriveCandidate,
-    RcloneErrorKind, RemoteConfigState, UnifiedItem, UnifiedLibraryResult,
+    parse_unified_items, prefix_unified_item_paths, LsjsonItem, RcloneErrorKind, RemoteConfigState,
+    UnifiedItem, UnifiedLibraryResult,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -32,20 +33,18 @@ use tauri_plugin_log::{Target, TargetKind};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 use crate::{
-    auth_flow::start_auth_flow,
+    auth_remotes::{
+        create_onedrive_remote, finalize_onedrive_remote, get_auth_session_status,
+        list_onedrive_drive_candidates, reconnect_remote,
+    },
     auth_session::{
-        callback_unavailable_message, get_auth_session_record, get_reconnect_request_record,
-        reconnect_request_record, remove_reconnect_request_record,
-        set_reconnect_request_record, AuthSessionRecord, AuthSessionStore, CreateRemoteResult,
+        callback_unavailable_message, get_reconnect_request_record, reconnect_request_record,
+        remove_reconnect_request_record, set_reconnect_request_record, AuthSessionStore,
         ReconnectRequestStore,
     },
     backend_common::{
         default_remote_config_state, ensure_rclone_config, resolve_app_local_data_dir,
         resolve_app_log_dir, resolve_diagnostics_dir, summarize_output, user_facing_command_error,
-    },
-    providers::onedrive::{
-        finalize_remote as finalize_onedrive_remote_with_drive,
-        list_drive_candidates as list_onedrive_drive_candidates_for_remote,
     },
     ipc::events::{DOWNLOAD_PROGRESS_EVENT, LIBRARY_PROGRESS_EVENT, UPLOAD_PROGRESS_EVENT},
     ipc::types::*,
@@ -102,58 +101,10 @@ enum LibraryLoadMessage {
 }
 
 #[tauri::command]
-async fn create_onedrive_remote(
-    app: AppHandle,
-    input: CreateOneDriveRemoteInput,
-) -> Result<CreateRemoteResult, String> {
-    tauri::async_runtime::spawn_blocking(move || create_onedrive_remote_impl(app, input))
-        .await
-        .map_err(|error| format!("failed to join OneDrive setup task: {error}"))?
-}
-
-#[tauri::command]
 async fn list_unified_items(app: AppHandle) -> Result<UnifiedLibraryResult, String> {
     tauri::async_runtime::spawn_blocking(move || list_unified_items_impl(app))
         .await
         .map_err(|error| format!("failed to join unified item task: {error}"))?
-}
-
-#[tauri::command]
-async fn reconnect_remote(app: AppHandle, name: String) -> Result<CreateRemoteResult, String> {
-    tauri::async_runtime::spawn_blocking(move || reconnect_remote_impl(app, name))
-        .await
-        .map_err(|error| format!("failed to join reconnect task: {error}"))?
-}
-
-#[tauri::command]
-async fn list_onedrive_drive_candidates(
-    app: AppHandle,
-    name: String,
-) -> Result<Vec<OneDriveDriveCandidate>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_onedrive_drive_candidates_impl(app, name))
-        .await
-        .map_err(|error| format!("failed to join drive candidate task: {error}"))?
-}
-
-#[tauri::command]
-async fn finalize_onedrive_remote(
-    app: AppHandle,
-    name: String,
-    drive_id: String,
-) -> Result<CreateRemoteResult, String> {
-    tauri::async_runtime::spawn_blocking(move || finalize_onedrive_remote_impl(app, name, drive_id))
-        .await
-        .map_err(|error| format!("failed to join drive finalization task: {error}"))?
-}
-
-#[tauri::command]
-async fn get_auth_session_status(
-    app: AppHandle,
-    name: String,
-) -> Result<Option<AuthSessionRecord>, String> {
-    tauri::async_runtime::spawn_blocking(move || Ok(get_auth_session_record(&app, &name)))
-        .await
-        .map_err(|error| format!("failed to join auth status task: {error}"))?
 }
 
 #[tauri::command]
@@ -271,35 +222,6 @@ fn start_upload_batch_impl(
         status: "accepted".to_string(),
         total_items,
     })
-}
-
-fn create_onedrive_remote_impl(
-    app: AppHandle,
-    input: CreateOneDriveRemoteInput,
-) -> Result<CreateRemoteResult, String> {
-    validate_remote_name(&input.remote_name)?;
-
-    let config_path = ensure_rclone_config(&app)?;
-    let mut owned_args = vec![
-        "config".to_string(),
-        "create".to_string(),
-        input.remote_name.clone(),
-        "onedrive".to_string(),
-        "config_is_local=true".to_string(),
-    ];
-
-    if let Some(client_id) = input.client_id.filter(|value| !value.trim().is_empty()) {
-        owned_args.push(format!("client_id={client_id}"));
-    }
-
-    if let Some(client_secret) = input.client_secret.filter(|value| !value.trim().is_empty()) {
-        owned_args.push(format!("client_secret={client_secret}"));
-    }
-
-    owned_args.push("--config".to_string());
-    owned_args.push(config_path.to_string_lossy().into_owned());
-
-    start_auth_flow(&app, &input.remote_name, "onedrive", "create", &owned_args)
 }
 
 fn list_unified_items_impl(app: AppHandle) -> Result<UnifiedLibraryResult, String> {
@@ -538,28 +460,6 @@ fn start_unified_library_load_impl(
         request_id,
         total_remotes,
     })
-}
-
-fn reconnect_remote_impl(app: AppHandle, name: String) -> Result<CreateRemoteResult, String> {
-    validate_remote_name(&name)?;
-
-    let config_path = ensure_rclone_config(&app)?;
-    let remote_target = format!("{name}:");
-    let owned_args = vec![
-        "config".to_string(),
-        "reconnect".to_string(),
-        remote_target,
-        "--config".to_string(),
-        config_path.to_string_lossy().into_owned(),
-    ];
-
-    let result = start_auth_flow(&app, &name, "onedrive", "reconnect", &owned_args)?;
-
-    if result.status == "connected" {
-        remove_reconnect_request_record(&app, &name);
-    }
-
-    Ok(result)
 }
 
 fn list_connected_remote_targets(
@@ -875,23 +775,6 @@ fn load_onedrive_folder_batch(
             })
         }
     }
-}
-
-fn list_onedrive_drive_candidates_impl(
-    app: AppHandle,
-    name: String,
-) -> Result<Vec<OneDriveDriveCandidate>, String> {
-    validate_remote_name(&name)?;
-    list_onedrive_drive_candidates_for_remote(&app, &name)
-}
-
-fn finalize_onedrive_remote_impl(
-    app: AppHandle,
-    name: String,
-    drive_id: String,
-) -> Result<CreateRemoteResult, String> {
-    validate_remote_name(&name)?;
-    finalize_onedrive_remote_with_drive(&app, &name, &drive_id)
 }
 
 fn export_diagnostics_impl(

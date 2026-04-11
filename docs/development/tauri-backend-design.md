@@ -60,7 +60,7 @@ flowchart TB
 | **Entry**          | OS entry only; no app logic                                                       | `[src-tauri/src/main.rs](../../src-tauri/src/main.rs)` delegates to `app_lib::run()`                         |
 | **Tauri shell**    | `run()`: plugins, `setup`, `.manage()`, `invoke_handler`                          | `[src-tauri/src/lib.rs](../../src-tauri/src/lib.rs)`                                                         |
 | **Orchestration**  | Command bodies, threading, progress polling, mapping to user-visible results      | Same crate, preferably **factored out** of the shell over time (functions / submodules)                      |
-| **Auth / session** | OAuth-style flows, persisted session records                                      | `[auth_flow.rs](../../src-tauri/src/auth_flow.rs)`, `[auth_session.rs](../../src-tauri/src/auth_session.rs)` |
+| **Auth / session** | OAuth-style flows, persisted session records                                      | `[auth_flow.rs](../../src-tauri/src/auth_flow.rs)`, `[auth_session.rs](../../src-tauri/src/auth_session.rs)`; OneDrive connect / reconnect / session status commands live in `[auth_remotes.rs](../../src-tauri/src/auth_remotes.rs)` |
 | **Providers**      | Provider-specific post-auth and validation                                        | `[providers/](../../src-tauri/src/providers/)` (e.g. OneDrive)                                               |
 | **Runtime**        | Spawning rclone, timeouts, collecting output                                      | `[rclone_runtime.rs](../../src-tauri/src/rclone_runtime.rs)`                                                 |
 | **Backend common** | Paths via Tauri APIs, config file locations, redaction, shared validation helpers | `[backend_common.rs](../../src-tauri/src/backend_common.rs)`                                                 |
@@ -86,7 +86,7 @@ flowchart TB
 
 - Event names are part of the **public contract** (e.g. progress channels implemented as custom events). Changing them breaks listeners in the webview.
 - Use a **stable, namespaced pattern** (e.g. `scheme://topic`) so grep and documentation stay clear.
-- In this repo, examples include `download://progress`, `upload://progress`, and `library://progress` (see constants near the command implementations in `[lib.rs](../../src-tauri/src/lib.rs)`). New events should follow the same style.
+- In this repo, examples include `download://progress`, `upload://progress`, and `library://progress` (see `[ipc/events.rs](../../src-tauri/src/ipc/events.rs)`). New events should follow the same style.
 
 ## Commands (`#[tauri::command]`)
 
