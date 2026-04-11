@@ -1,0 +1,137 @@
+@media (max-width: 960px) {
+  .workspace-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .storage-sidebar {
+    min-height: 0;
+  }
+
+  .sidebar-panel {
+    width: 100%;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .library-toolbar {
+    flex-direction: column;
+    grid-template-columns: 1fr;
+  }
+
+  .provider-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .upload-queue-item,
+  .transfer-item {
+    flex-direction: column;
+    grid-template-columns: 1fr;
+  }
+
+  .list-item {
+    grid-template-columns: 1fr;
+  }
+
+  .item-list-header,
+  .transfer-list-header {
+    display: none;
+  }
+
+  .item-actions {
+    position: static;
+    align-items: stretch;
+    justify-content: flex-start;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
+
+  .upload-queue-status,
+  .transfer-status {
+    text-align: left;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .startup-splash {
+    padding: 24px;
+  }
+
+  .startup-splash-brand {
+    width: min(100%, 420px);
+  }
+
+  .workspace-main,
+  .modal-overlay {
+    padding: 16px;
+  }
+
+  .library-topbar,
+  .main-empty-state,
+  .full-modal,
+  .confirm-modal {
+    padding: 24px;
+  }
+
+  .modal-actions,
+  .modal-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .item-title-row,
+  .item-meta,
+  .library-toolbar,
+  .library-actions {
+    flex-wrap: wrap;
+  }
+
+  .library-topbar {
+    padding: 4px 0 2px;
+  }
+
+  .library-toolbar .search-field,
+  .library-actions {
+    width: 100%;
+  }
+
+  .toolbar-select {
+    flex: 1 1 140px;
+  }
+
+  .toolbar-select,
+  .toolbar-select-trigger,
+  .issues-entry-button {
+    width: 100%;
+  }
+
+  .download-status {
+    width: 100%;
+  }
+
+  .library-actions {
+    justify-content: stretch;
+  }
+
+  .library-actions .cw-button-primary,
+  .library-actions .issues-entry-button,
+  .upload-picker-actions .cw-button-primary,
+  .upload-picker-actions .cw-button-secondary {
+    width: 100%;
+  }
+
+  .library-content {
+    padding-bottom: 16px;
+  }
+
+  .toast-stack {
+    right: 16px;
+    bottom: 92px;
+    width: min(360px, calc(100vw - 32px));
+  }
+}
+

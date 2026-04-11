@@ -1,0 +1,283 @@
+/* List row layout (UnifiedListItem, row menu). Imported by UnifiedListItem. */
+
+.unified-item {
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--surface-elevated);
+}
+
+.list-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(220px, 2.4fr) minmax(120px, 0.9fr) minmax(220px, 2fr) 142px 92px minmax(140px, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  overflow: visible;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.list-item:hover,
+.list-item:focus-visible {
+  border-color: var(--border-accent);
+}
+
+.item-primary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.item-leading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.item-monogram {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--surface-muted);
+}
+
+.item-monogram.documents,
+.item-monogram.photos,
+.item-monogram.videos,
+.item-monogram.audio,
+.item-monogram.other {
+  background: var(--surface-accent-soft);
+}
+
+.item-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.item-name {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.item-meta span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-path-cell,
+.item-storage-cell,
+.item-status-cell {
+  min-width: 0;
+}
+
+.item-path-cell {
+  position: relative;
+}
+
+.item-cell,
+.item-path,
+.item-status-label {
+  margin: 0;
+  font-size: 12px;
+}
+
+.item-path {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-path-anchor {
+  position: relative;
+  min-width: 0;
+}
+
+.path-tooltip {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  display: block;
+  max-width: min(480px, 56vw);
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-soft);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.item-path-anchor:hover .path-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.item-status-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.item-status-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.item-status-label.danger {
+  color: var(--state-danger-text);
+}
+
+.item-status-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.list-item .open-status,
+.list-item .download-status,
+.list-item .item-status-stack {
+  display: none;
+}
+
+.item-actions,
+.grid-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+  transform: translateX(4px);
+}
+
+.item-actions {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  z-index: 2;
+  padding: 0;
+  transform: translate(4px, -50%);
+  overflow: visible;
+}
+
+.item-actions-trigger {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  font-size: 18px;
+  line-height: 1;
+  background: var(--surface-elevated);
+}
+
+.grid-actions {
+  align-items: stretch;
+}
+
+.list-item:hover .item-actions,
+.list-item:focus-within .item-actions,
+.list-item.row-menu-open .item-actions,
+.grid-item:hover .grid-actions,
+.grid-item:focus-within .grid-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(0, -50%);
+}
+
+.row-action-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 4;
+  min-width: 144px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-soft);
+}
+
+.row-menu-item {
+  width: 100%;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.row-menu-item:hover:enabled,
+.row-menu-item:focus-visible {
+  background: var(--surface-accent-soft);
+  outline: none;
+}
+
+.row-menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.grid-item:hover .grid-actions,
+.grid-item:focus-within .grid-actions {
+  transform: translateX(0);
+}

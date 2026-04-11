@@ -1,0 +1,44 @@
+/* List skeleton rows (LoadingList). Shared loading-pulse keyframes live in index.css. */
+
+.loading-monogram {
+  color: transparent;
+  background: var(--surface-muted);
+  animation: loading-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.loading-placeholder {
+  display: block;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  animation: loading-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.loading-placeholder.name {
+  width: min(220px, 78%);
+}
+
+.loading-placeholder.storage {
+  width: min(96px, 78%);
+}
+
+.loading-placeholder.path {
+  width: min(240px, 88%);
+}
+
+.loading-placeholder.modified {
+  width: 104px;
+}
+
+.loading-placeholder.size {
+  width: 52px;
+}
+
+.loading-placeholder.status {
+  width: min(88px, 72%);
+}
+
+.loading-list-copy.streaming-tail {
+  margin-top: 2px;
+  font-size: 11px;
+}

@@ -220,3 +220,13 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+@keyframes loading-pulse {
+  from {
+    opacity: 0.52;
+  }
+
+  to {
+    opacity: 0.92;
+  }
+}

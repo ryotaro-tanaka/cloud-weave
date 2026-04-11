@@ -1,0 +1,151 @@
+.upload-modal {
+  width: min(980px, 100%);
+}
+
+.upload-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.upload-dropzone,
+.upload-queue-item {
+  border: 1px solid var(--border-subtle);
+  border-radius: 24px;
+  background: var(--surface-elevated);
+}
+
+.upload-dropzone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 24px;
+  border-style: dashed;
+}
+
+.upload-dropzone.active {
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-strong);
+  background: var(--bg-accent-active);
+}
+
+.upload-dropzone-title {
+  margin: 0;
+}
+
+.upload-dropzone-title {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.upload-dropzone-copy {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.upload-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.upload-preparing-summary {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.upload-list-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(110px, 0.75fr) minmax(0, 1.8fr) minmax(120px, 0.8fr);
+  gap: 14px;
+  align-items: center;
+  padding: 0 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.upload-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 42svh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.upload-queue-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(110px, 0.75fr) minmax(0, 1.8fr) minmax(120px, 0.8fr);
+  gap: 14px;
+  align-items: center;
+  padding: 14px 20px;
+}
+
+.upload-queue-item.preparing {
+  pointer-events: none;
+}
+
+.upload-item-name,
+.upload-item-status,
+.upload-item-path,
+.upload-item-storage {
+  margin: 0;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.upload-item-name,
+.upload-item-status {
+  color: var(--text-primary);
+}
+
+.upload-item-path,
+.upload-item-storage {
+  color: var(--text-secondary);
+}
+
+.upload-item-name,
+.upload-item-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-item-status.danger {
+  color: var(--state-danger-text);
+}
+
+.upload-skeleton {
+  display: block;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  animation: loading-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.upload-skeleton.path {
+  width: min(220px, 86%);
+}
+
+.upload-skeleton.storage {
+  width: min(92px, 76%);
+}
+
+.upload-progress-fill {
+  width: 52%;
+  animation: upload-pulse 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes upload-pulse {
+  from {
+    width: 16%;
+  }
+
+  to {
+    width: 88%;
+  }
+}
