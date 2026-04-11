@@ -38,7 +38,6 @@ export function useUploadWorkspaceFlow(params: {
   hasPendingUploadRefresh: boolean
   isStartingUpload: boolean
   showToast: ShowToast
-  refreshLibrary: (options?: { silent?: boolean }) => Promise<void>
   setActiveModal: (modal: ModalName) => void
   setUploadError: (error: string) => void
   setIsUploadDragActive: (active: boolean) => void
@@ -65,7 +64,6 @@ export function useUploadWorkspaceFlow(params: {
     hasPendingUploadRefresh,
     isStartingUpload,
     showToast,
-    refreshLibrary,
     setActiveModal,
     setUploadError,
     setIsUploadDragActive,
@@ -358,11 +356,9 @@ export function useUploadWorkspaceFlow(params: {
 
     lastUploadOutcomeRef.current = nextOutcome
     setHasPendingUploadRefresh(false)
-    void refreshLibrary({ silent: true })
   }, [
     hasPendingUploadRefresh,
     isStartingUpload,
-    refreshLibrary,
     setHasPendingUploadRefresh,
     showToast,
     uploadSummary.active,

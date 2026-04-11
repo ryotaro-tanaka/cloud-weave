@@ -468,6 +468,24 @@ pub fn classify_rclone_error(detail: &str) -> RcloneErrorKind {
     RcloneErrorKind::Other
 }
 
+/// When files live under the default upload layout (`cloud-weave/{category}/...`), align library
+/// category with that folder so the Documents/Photos/... sidebar matches uploaded paths (mime/extension
+/// alone can label a file as `other` while it still lives under `cloud-weave/documents/`).
+fn category_from_default_upload_path(source_path: &str) -> Option<String> {
+    let normalized = source_path.trim().replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    for cat in ["documents", "photos", "videos", "audio", "other"] {
+        let prefix = format!("cloud-weave/{cat}/");
+        if lower.starts_with(&prefix) {
+            return Some(cat.to_string());
+        }
+        if lower == format!("cloud-weave/{cat}") {
+            return Some(cat.to_string());
+        }
+    }
+    None
+}
+
 fn normalize_unified_item(
     item: LsjsonItem,
     source_remote: &str,
@@ -483,7 +501,10 @@ fn normalize_unified_item(
         item.path
     };
     let extension = derive_extension(&name);
-    let category = classify_item(item.mime_type.as_deref(), extension.as_deref()).to_string();
+    let mut category = classify_item(item.mime_type.as_deref(), extension.as_deref()).to_string();
+    if let Some(path_category) = category_from_default_upload_path(&source_path) {
+        category = path_category;
+    }
 
     UnifiedItem {
         id: format!("{source_remote}::{path}", path = source_path),
@@ -778,6 +799,27 @@ mod tests {
         assert_eq!(parsed[0].category, "photos");
         assert_eq!(parsed[0].size, 128);
         assert_eq!(parsed[0].mod_time.as_deref(), Some("2026-01-01T10:00:00Z"));
+    }
+
+    #[test]
+    fn parse_unified_items_maps_default_upload_path_to_sidebar_category() {
+        let raw = r#"
+      [
+        {
+          "Path": "cloud-weave/documents/file.bin",
+          "Name": "file.bin",
+          "Size": 10,
+          "MimeType": "",
+          "ModTime": "2026-01-01T10:00:00Z",
+          "IsDir": false
+        }
+      ]
+    "#;
+
+        let parsed = parse_unified_items(raw, "onedrive-main", "onedrive").expect("lsjson should parse");
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].category, "documents");
     }
 
     #[test]

@@ -156,7 +156,6 @@ export function WorkspaceModalsContainer({
     hasPendingUploadRefresh,
     isStartingUpload,
     showToast,
-    refreshLibrary,
     setActiveModal,
     setUploadError,
     setIsUploadDragActive,

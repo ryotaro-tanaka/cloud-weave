@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import {
   isCallbackStartupFailure,
@@ -113,6 +113,16 @@ function App() {
     onHide: () => setIsStartupSplashVisible(false),
   })
 
+  const uploadLibraryRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (uploadLibraryRefreshTimerRef.current !== null) {
+        clearTimeout(uploadLibraryRefreshTimerRef.current)
+      }
+    }
+  }, [])
+
   const { fetchRemotes, refreshLibrary, synchronizeConnectedRemote } = useWorkspaceLibrarySync({
     isDemoMode,
     demoState,
@@ -143,8 +153,17 @@ function App() {
       if (payload.status === 'failed' && payload.remoteName) {
         void fetchRemotes({ silent: true })
       }
+      if (payload.status === 'succeeded') {
+        if (uploadLibraryRefreshTimerRef.current !== null) {
+          clearTimeout(uploadLibraryRefreshTimerRef.current)
+        }
+        uploadLibraryRefreshTimerRef.current = setTimeout(() => {
+          uploadLibraryRefreshTimerRef.current = null
+          void refreshLibrary({ silent: true })
+        }, 150)
+      }
     },
-    [fetchRemotes],
+    [fetchRemotes, refreshLibrary],
   )
 
   useTransferProgressListeners({
