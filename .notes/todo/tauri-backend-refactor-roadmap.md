@@ -209,7 +209,7 @@ Apply phase 4 **after** phase 3 if large flows remain in a single file.
 - **完了:** Phase 7（「Done」レビュー）を実施。
   - [`lib.rs`](../../src-tauri/src/lib.rs): `run()`、単一 [`generate_handler!`](../../src-tauri/src/lib.rs)、`setup`／プラグイン登録に集約。コマンド本体は `remotes` / `auth_remotes` / `transfers` / `unified_library` / `diagnostics` 等へ分割済みであることをレイヤ表と突合し逸脱なし。
   - IPC: [`ipc/events.rs`](../../src-tauri/src/ipc/events.rs)、[`ipc/types.rs`](../../src-tauri/src/ipc/types.rs)。rclone: [`rclone_runtime.rs`](../../src-tauri/src/rclone_runtime.rs) のみ。ドメイン: [`rclone_logic`](../../src-tauri/crates/rclone_logic/)。セキュリティ: Phase 6 済みの [`capabilities/default.json`](../../src-tauri/capabilities/default.json) / [`backend_common.rs`](../../src-tauri/src/backend_common.rs) と整合。
-  - **対応コミット（Phase 7）:** `PHASE7_SHA_PLACEHOLDER`
+  - **対応コミット（Phase 7）:** `9be4b25`
 
 ## 次にやるべきステップ
 
@@ -227,4 +227,4 @@ Apply phase 4 **after** phase 3 if large flows remain in a single file.
 - [`docs/development/tauri-backend-design.md`](../../docs/development/tauri-backend-design.md) — canonical policy
 - [`docs/development/react-responsibility-separation.md`](../../docs/development/react-responsibility-separation.md) — frontend `invoke` / event listeners
 
-**リファクタ完了（記録）:** 2026-04-11 — コミット範囲 Phase 1 起点 `85a94f4` … Phase 7 締め `PHASE7_SHA_PLACEHOLDER`（[`tauri-backend-design.md`](../../docs/development/tauri-backend-design.md) のレイヤ表との整合を Phase 7 で確認済み）。
+**リファクタ完了（記録）:** 2026-04-11 — コミット範囲 Phase 1 起点 `85a94f4` … Phase 7 締め `9be4b25`（[`tauri-backend-design.md`](../../docs/development/tauri-backend-design.md) のレイヤ表との整合を Phase 7 で確認済み）。
