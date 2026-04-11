@@ -27,6 +27,10 @@ pub async fn export_diagnostics(
         .await
         .map_err(|error| format!("failed to join diagnostics export task: {error}"))?
 }
+
+// ZIP contains `summary.json` (app version, storage names, statuses) and optionally `cloud-weave.log`.
+// Both may include machine-specific paths or account labels; review before sharing externally.
+// Log lines should follow `backend_common` redaction; sensitive rclone errors are often passed through `summarize_output` at the call site.
 fn export_diagnostics_impl(
     app: AppHandle,
     input: ExportDiagnosticsInput,

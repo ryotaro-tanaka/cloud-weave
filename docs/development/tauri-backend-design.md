@@ -109,10 +109,33 @@ Commands are registered in one place (e.g. `invoke_handler` / `generate_handler!
 - `**[src-tauri/capabilities/default.json](../../src-tauri/capabilities/default.json)`** is the **source of truth** for what the webview may invoke (shell sidecar args, dialog, core APIs, etc.).
 - Any new **plugin**, **permission**, or **executable/sidecar** surface must be reflected here. Merging a feature without updating capabilities is a security and runtime bug.
 
+### Rclone sidecar: code vs `default.json` (audit)
+
+The app runs **only** the bundled sidecar `binaries/rclone` (see `shell:allow-execute` in `[default.json](../../src-tauri/capabilities/default.json)`). All spawns go through `[rclone_runtime.rs](../../src-tauri/src/rclone_runtime.rs)` (`run_rclone`, `run_rclone_owned`, `spawn_rclone_owned`); do not add ad-hoc `Command::new` for rclone elsewhere.
+
+When adding a **new** rclone subcommand or argument shape, update **`default.json` in the same PR** so the allowlist stays minimal and accurate.
+
+| Use in app | rclone args (first tokens) | `default.json` pattern (summary) |
+| ---------- | -------------------------- | --------------------------------- |
+| Storage list, library remotes, diagnostics | `listremotes --json --config <path>` | First block: `listremotes`, `--json`, `--config` |
+| Post-setup validation | `lsd <remote>: --config <path>` | `lsd` + remote colon + `--config` |
+| Unified library listing, upload existence checks | `lsjson … --config <path>` (optional `-R`, `--files-only`) | `lsjson` blocks (with/without `-R` / `--files-only`) |
+| Download, open-for-preview | `copyto <remote:path> <local> --local-no-set-modtime --config <path>` | `copyto` block with `--local-no-set-modtime` |
+| Upload | `copyto <local> <remote:path> --config <path>` | `copyto` block without `--local-no-set-modtime` |
+| Upload routing | `about <remote>: --json --config <path>` | `about` + `--json` |
+| Upload mkdir | `mkdir <remote:path> --config <path>` | `mkdir` |
+| Load remote config state | `config show --config <path>` | `config show` |
+| OneDrive create / OAuth | `config create <name> onedrive … --config <path>` | `config create` + `onedrive` + option validators |
+| Reconnect | `config reconnect <name>: --config <path>` | `config reconnect` |
+| Drive finalization | `config update <name> drive_id=… drive_type=… --config <path>` | `config update` |
+| Delete remote | `config delete <name> --config <path>` | `config delete` |
+
+Permissions are intentionally narrow: **core:default**, **shell:allow-open**, **dialog:allow-open**, and **shell:allow-execute** only for the patterns above—not arbitrary shell commands.
+
 ### Secrets and logs
 
 - Never log raw **tokens**, **client secrets**, or full **rclone JSON** that may contain credentials.
-- Follow the redaction mindset of `[backend_common.rs](../../src-tauri/src/backend_common.rs)` (`redact_args`, `summarize_output`): arguments and subprocess output should be **sanitized** before logging or embedding in diagnostics bundles.
+- Follow the redaction mindset of `[backend_common.rs](../../src-tauri/src/backend_common.rs)` (`redact_args`, `summarize_output`): arguments and subprocess output should be **sanitized** before logging or embedding in diagnostics bundles. `summarize_output` truncates long text and strips common OAuth token patterns from strings; paths that log raw subprocess errors should prefer passing output through `summarize_output` where secrets may appear. Application logs included in diagnostics ZIPs follow the same expectation—see the diagnostics module comment.
 
 ### Diagnostics vs normal logs
 

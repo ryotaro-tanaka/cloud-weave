@@ -19,6 +19,8 @@ pub(crate) fn redact_args(args: &[String]) -> String {
                 "token=<redacted>".to_string()
             } else if arg.starts_with("client_secret=") {
                 "client_secret=<redacted>".to_string()
+            } else if arg.starts_with("client_id=") {
+                "client_id=<redacted>".to_string()
             } else {
                 arg.clone()
             }
@@ -27,6 +29,8 @@ pub(crate) fn redact_args(args: &[String]) -> String {
         .join(" ")
 }
 
+/// Shortens and strips common OAuth token patterns from rclone/HTTP error text for logs.
+/// Diagnostics ZIP may include `cloud-weave.log`; treat logged content as potentially user-shareable.
 pub(crate) fn summarize_output(output: &str) -> String {
     let normalized = output.split_whitespace().collect::<Vec<_>>().join(" ");
     let redacted = normalized
@@ -180,4 +184,50 @@ pub(crate) fn validate_remote_after_setup(
     );
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{redact_args, summarize_output};
+
+    #[test]
+    fn redact_args_strips_oauth_style_fields() {
+        let args = vec![
+            "config".to_string(),
+            "create".to_string(),
+            "myremote".to_string(),
+            "onedrive".to_string(),
+            "client_id=abc123".to_string(),
+            "client_secret=secret".to_string(),
+            "token={\"x\":1}".to_string(),
+            "--config".to_string(),
+            "C:/app/rclone.conf".to_string(),
+        ];
+        let s = redact_args(&args);
+        assert!(!s.contains("client_id=abc123"));
+        assert!(!s.contains("client_secret=secret"));
+        assert!(!s.contains("token={"));
+        assert!(s.contains("client_id=<redacted>"));
+        assert!(s.contains("client_secret=<redacted>"));
+        assert!(s.contains("token=<redacted>"));
+        assert!(s.contains("C:/app/rclone.conf"));
+    }
+
+    #[test]
+    fn summarize_output_inserts_redacted_markers_and_truncates() {
+        let short = r#"{"error":"x","access_token":"eyJ","refresh_token":"rt"}"#;
+        let out = summarize_output(short);
+        assert!(out.contains("<redacted>"));
+        assert!(out.contains("access_token"));
+
+        let long = "x".repeat(300);
+        let with_tokens = format!(
+            r#"{{"access_token":"{0}","refresh_token":"{0}","msg":"{1}"}}"#,
+            "t".repeat(50),
+            long
+        );
+        let summarized = summarize_output(&with_tokens);
+        assert!(summarized.len() <= 223);
+        assert!(summarized.ends_with("..."));
+    }
 }
