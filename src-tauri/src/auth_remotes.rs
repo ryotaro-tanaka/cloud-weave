@@ -26,10 +26,7 @@ pub async fn create_onedrive_remote(
 }
 
 #[tauri::command]
-pub async fn reconnect_remote(
-    app: AppHandle,
-    name: String,
-) -> Result<CreateRemoteResult, String> {
+pub async fn reconnect_remote(app: AppHandle, name: String) -> Result<CreateRemoteResult, String> {
     tauri::async_runtime::spawn_blocking(move || reconnect_remote_impl(app, name))
         .await
         .map_err(|error| format!("failed to join reconnect task: {error}"))?

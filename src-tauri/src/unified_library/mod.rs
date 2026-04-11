@@ -13,9 +13,7 @@ use rclone_logic::{
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    backend_common::{
-        default_remote_config_state, ensure_rclone_config, summarize_output,
-    },
+    backend_common::{default_remote_config_state, ensure_rclone_config, summarize_output},
     ipc::events::LIBRARY_PROGRESS_EVENT,
     ipc::types::{StartUnifiedLibraryLoadResult, UnifiedLibraryLoadEvent},
     rclone_runtime::{

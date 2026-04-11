@@ -3,7 +3,8 @@ mod transfer_paths;
 pub use transfer_paths::{
     category_base_path, completion_progress, default_upload_routing_tables, join_remote_path,
     open_cache_key_suffix, providers_for_extension, rank_upload_remotes_by_capacity,
-    sanitize_open_cache_stem, select_leaf_file_name, select_preview_open_mode, UploadRemoteCapacity,
+    sanitize_open_cache_stem, select_leaf_file_name, select_preview_open_mode,
+    UploadRemoteCapacity,
 };
 
 use serde::{Deserialize, Serialize};
@@ -816,7 +817,8 @@ mod tests {
       ]
     "#;
 
-        let parsed = parse_unified_items(raw, "onedrive-main", "onedrive").expect("lsjson should parse");
+        let parsed =
+            parse_unified_items(raw, "onedrive-main", "onedrive").expect("lsjson should parse");
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].category, "documents");

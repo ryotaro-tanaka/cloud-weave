@@ -9,7 +9,9 @@ use std::{
     time::Duration,
 };
 
-use rclone_logic::{classify_rclone_error, completion_progress, select_leaf_file_name, RcloneErrorKind};
+use rclone_logic::{
+    classify_rclone_error, completion_progress, select_leaf_file_name, RcloneErrorKind,
+};
 use tauri::{AppHandle, Emitter};
 
 use crate::{

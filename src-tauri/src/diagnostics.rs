@@ -8,7 +8,8 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 use crate::{
     backend_common::{ensure_rclone_config, resolve_app_log_dir, resolve_diagnostics_dir},
     ipc::types::{
-        DiagnosticsStorageSummary, DiagnosticsSummary, ExportDiagnosticsInput, ExportDiagnosticsResult,
+        DiagnosticsStorageSummary, DiagnosticsSummary, ExportDiagnosticsInput,
+        ExportDiagnosticsResult,
     },
     remotes::list_storage_remotes_impl,
     transfers::resolve_downloads_dir,

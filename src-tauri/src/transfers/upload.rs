@@ -1,11 +1,6 @@
-use std::{
-    path::Path,
-    thread,
-};
+use std::{path::Path, thread};
 
-use rclone_logic::{
-    classify_rclone_error, join_remote_path, parse_lsjson_items, RcloneErrorKind,
-};
+use rclone_logic::{classify_rclone_error, join_remote_path, parse_lsjson_items, RcloneErrorKind};
 use tauri::{AppHandle, Emitter};
 
 use crate::{

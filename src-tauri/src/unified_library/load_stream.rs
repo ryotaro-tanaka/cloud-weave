@@ -1,18 +1,13 @@
-use std::{
-    path::PathBuf,
-    sync::mpsc,
-    thread,
-};
+use std::{path::PathBuf, sync::mpsc, thread};
 
 use rclone_logic::UnifiedItem;
 use tauri::AppHandle;
 
-use crate::{
-    backend_common::user_facing_command_error,
-    ipc::types::UnifiedLibraryLoadEvent,
-};
+use crate::{backend_common::user_facing_command_error, ipc::types::UnifiedLibraryLoadEvent};
 
-use super::{emit_library_progress, load_items_for_remote, stream_onedrive_remote_batches, RemoteLoadTarget};
+use super::{
+    emit_library_progress, load_items_for_remote, stream_onedrive_remote_batches, RemoteLoadTarget,
+};
 
 pub(super) enum LibraryLoadMessage {
     Batch {
@@ -57,9 +52,15 @@ pub(super) fn spawn_unified_library_load_thread(
 
             thread::spawn(move || {
                 if remote.provider == "onedrive" {
-                    match stream_onedrive_remote_batches(&app, &config_path, &remote, sender.clone()) {
+                    match stream_onedrive_remote_batches(
+                        &app,
+                        &config_path,
+                        &remote,
+                        sender.clone(),
+                    ) {
                         Ok(notices) => {
-                            let _ = sender.send(LibraryLoadMessage::RemoteComplete { remote, notices });
+                            let _ =
+                                sender.send(LibraryLoadMessage::RemoteComplete { remote, notices });
                         }
                         Err(error) => {
                             let _ = sender.send(LibraryLoadMessage::RemoteFailed { remote, error });

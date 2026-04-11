@@ -5,8 +5,8 @@ mod backend_common;
 mod diagnostics;
 mod ipc;
 mod providers;
-mod remotes;
 mod rclone_runtime;
+mod remotes;
 mod transfers;
 mod unified_library;
 
@@ -26,9 +26,7 @@ use crate::{
     backend_common::resolve_app_log_dir,
     diagnostics::export_diagnostics,
     remotes::{delete_remote, list_storage_remotes},
-    transfers::{
-        prepare_open_file, prepare_upload_batch, start_download, start_upload_batch,
-    },
+    transfers::{prepare_open_file, prepare_upload_batch, start_download, start_upload_batch},
     unified_library::{list_unified_items, start_unified_library_load},
 };
 

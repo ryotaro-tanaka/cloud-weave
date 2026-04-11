@@ -20,7 +20,10 @@ pub fn join_remote_path(base_path: &str, relative_path: &str) -> String {
 }
 
 /// Download / copy progress percentage from bytes and known total.
-pub fn completion_progress(bytes_transferred: Option<u64>, total_bytes: Option<u64>) -> Option<f64> {
+pub fn completion_progress(
+    bytes_transferred: Option<u64>,
+    total_bytes: Option<u64>,
+) -> Option<f64> {
     match (bytes_transferred, total_bytes) {
         (_, Some(0)) => Some(100.0),
         (Some(bytes), Some(total)) if total > 0 => {
@@ -129,8 +132,7 @@ pub fn category_base_path(
 }
 
 /// Default upload routing tables (extension → providers, provider → category paths).
-pub fn default_upload_routing_tables(
-) -> (
+pub fn default_upload_routing_tables() -> (
     HashMap<String, Vec<String>>,
     HashMap<String, HashMap<String, String>>,
 ) {
@@ -228,7 +230,10 @@ pub fn open_cache_key_suffix(source_remote: &str, source_path: &str) -> String {
 }
 
 /// How to open a local file for preview (`preview-image`, `preview-pdf`, `system-default`).
-pub fn select_preview_open_mode(mime_type: Option<&str>, extension: Option<&str>) -> Option<&'static str> {
+pub fn select_preview_open_mode(
+    mime_type: Option<&str>,
+    extension: Option<&str>,
+) -> Option<&'static str> {
     let normalized_mime = mime_type.unwrap_or_default().trim().to_ascii_lowercase();
     let normalized_extension = extension
         .unwrap_or_default()
@@ -411,6 +416,9 @@ mod tests {
             ),
             Some("system-default")
         );
-        assert_eq!(select_preview_open_mode(Some("application/zip"), Some("zip")), None);
+        assert_eq!(
+            select_preview_open_mode(Some("application/zip"), Some("zip")),
+            None
+        );
     }
 }
