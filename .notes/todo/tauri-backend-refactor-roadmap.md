@@ -227,4 +227,4 @@ Apply phase 4 **after** phase 3 if large flows remain in a single file.
 - [`docs/development/tauri-backend-design.md`](../../docs/development/tauri-backend-design.md) — canonical policy
 - [`docs/development/react-responsibility-separation.md`](../../docs/development/react-responsibility-separation.md) — frontend `invoke` / event listeners
 
-**リファクタ完了（記録）:** 2026-04-11 — コミット範囲 Phase 1 起点 `85a94f4` … Phase 7 締め `9be4b25`（[`tauri-backend-design.md`](../../docs/development/tauri-backend-design.md) のレイヤ表との整合を Phase 7 で確認済み）。
+**リファクタ完了（記録）:** 2026-04-11 — コミット範囲 `85a94f4..9be4b25`（[`tauri-backend-design.md`](../../docs/development/tauri-backend-design.md) のレイヤ表との整合を Phase 7 で確認済み）。
