@@ -176,6 +176,8 @@ A change is in good shape when:
 - Secrets are not logged or exported in diagnostics.
 - New modules fit the **layer table** above (or the PR explains the temporary exception).
 
+**Roadmap alignment:** The Tauri backend refactor roadmap (Phases 1–7) closed with the Phase 7 “Done” review: current `src-tauri` layout matches this layer table; keep new work within the same boundaries unless a deliberate architecture change is documented.
+
 ## Related documentation
 
 - `**[react-responsibility-separation.md](react-responsibility-separation.md)`** — frontend layers, `invoke`, and event listeners.
