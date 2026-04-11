@@ -3,7 +3,9 @@ use std::{
     thread,
 };
 
-use rclone_logic::{classify_rclone_error, parse_lsjson_items, RcloneErrorKind};
+use rclone_logic::{
+    classify_rclone_error, join_remote_path, parse_lsjson_items, RcloneErrorKind,
+};
 use tauri::{AppHandle, Emitter};
 
 use crate::{
@@ -352,19 +354,6 @@ fn remote_path_exists(
                 Err(error)
             }
         }
-    }
-}
-
-pub(super) fn join_remote_path(base_path: &str, relative_path: &str) -> String {
-    let trimmed_base = base_path.trim_matches('/');
-    let trimmed_relative = relative_path.trim_matches('/');
-
-    if trimmed_base.is_empty() {
-        trimmed_relative.to_string()
-    } else if trimmed_relative.is_empty() {
-        trimmed_base.to_string()
-    } else {
-        format!("{trimmed_base}/{trimmed_relative}")
     }
 }
 

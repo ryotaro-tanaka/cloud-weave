@@ -64,7 +64,7 @@ flowchart TB
 | **Providers**      | Provider-specific post-auth and validation                                        | `[providers/](../../src-tauri/src/providers/)` (e.g. OneDrive)                                               |
 | **Runtime**        | Spawning rclone, timeouts, collecting output                                      | `[rclone_runtime.rs](../../src-tauri/src/rclone_runtime.rs)`                                                 |
 | **Backend common** | Paths via Tauri APIs, config file locations, redaction, shared validation helpers | `[backend_common.rs](../../src-tauri/src/backend_common.rs)`                                                 |
-| **Domain crate**   | Parsing, classification, pure types; **no `tauri` dependency**                    | `[crates/rclone_logic/](../../src-tauri/crates/rclone_logic/)`                                               |
+| **Domain crate**   | Parsing, classification, pure types; **no `tauri` dependency**                    | `[crates/rclone_logic/](../../src-tauri/crates/rclone_logic/)` (e.g. `[transfer_paths.rs](../../src-tauri/crates/rclone_logic/src/transfer_paths.rs)` for remote path joining, upload routing tables, capacity ranking, download `%` math, open-cache naming) |
 
 
 *Note:* `[lib.rs](../../src-tauri/src/lib.rs)` still hosts `run()` and shared remote-status helpers; heavier flows live in modules such as `transfers/` / `unified_library/`. Remaining growth should follow the table rather than re-centralizing logic in the shell.

@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use rclone_logic::{classify_rclone_error, RcloneErrorKind};
+use rclone_logic::{classify_rclone_error, completion_progress, select_leaf_file_name, RcloneErrorKind};
 use tauri::{AppHandle, Emitter};
 
 use crate::{
@@ -196,19 +196,7 @@ pub(super) fn emit_download_progress(app: &AppHandle, event: DownloadProgressEve
 }
 
 pub(super) fn select_download_file_name(display_name: &str, source_path: &str) -> String {
-    let display_candidate = Path::new(display_name)
-        .components()
-        .rev()
-        .find_map(super::component_to_normal_path_part);
-    let source_candidate = Path::new(source_path)
-        .components()
-        .rev()
-        .find_map(super::component_to_normal_path_part);
-
-    display_candidate
-        .or(source_candidate)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "downloaded-file".to_string())
+    select_leaf_file_name(display_name, source_path)
 }
 
 pub(super) fn resolve_unique_download_target(downloads_dir: &Path, file_name: &str) -> PathBuf {
@@ -241,16 +229,6 @@ pub(super) fn resolve_unique_download_target(downloads_dir: &Path, file_name: &s
     }
 
     unreachable!("the loop above always returns once an unused path is found")
-}
-
-pub(super) fn completion_progress(bytes_transferred: Option<u64>, total_bytes: Option<u64>) -> Option<f64> {
-    match (bytes_transferred, total_bytes) {
-        (_, Some(0)) => Some(100.0),
-        (Some(bytes), Some(total)) if total > 0 => {
-            Some(((bytes as f64 / total as f64) * 100.0).clamp(0.0, 100.0))
-        }
-        _ => None,
-    }
 }
 
 pub(super) fn user_facing_download_error(detail: &str) -> String {

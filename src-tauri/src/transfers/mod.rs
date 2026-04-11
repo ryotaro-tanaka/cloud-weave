@@ -7,7 +7,11 @@ use std::{
 };
 
 use rclone_logic::{
-    classify_item, classify_rclone_error, derive_extension, RcloneErrorKind,
+    category_base_path as category_base_path_for_provider,
+    classify_item, classify_rclone_error, default_upload_routing_tables, derive_extension,
+    open_cache_key_suffix, providers_for_extension as providers_for_extension_from_maps,
+    rank_upload_remotes_by_capacity, sanitize_open_cache_stem, select_preview_open_mode,
+    UploadRemoteCapacity, RcloneErrorKind,
 };
 use tauri::{AppHandle, Manager};
 
@@ -190,7 +194,8 @@ fn prepare_open_file_impl(
         return Err("Source path is required.".to_string());
     }
 
-    let Some(open_mode) = select_open_mode(input.mime_type.as_deref(), input.extension.as_deref())
+    let Some(open_mode) =
+        select_preview_open_mode(input.mime_type.as_deref(), input.extension.as_deref())
     else {
         return Err(
             "Open is only available for previewable files and supported documents.".to_string(),
@@ -397,7 +402,11 @@ fn prepare_upload_item(
     let mut candidates = Vec::new();
 
     for provider in providers {
-        let base_path = category_base_path(routing, &provider, &source.category);
+        let base_path = category_base_path_for_provider(
+            &routing.category_path_by_provider,
+            &provider,
+            &source.category,
+        );
 
         candidates.extend(resolve_upload_candidates_for_provider(
             app,
@@ -491,40 +500,7 @@ fn write_upload_routing_config(path: &Path, config: &UploadRoutingConfig) -> Res
 }
 
 fn default_upload_routing_config() -> UploadRoutingConfig {
-    let mut provider_priority_by_extension = HashMap::<String, Vec<String>>::new();
-
-    for extension in ["doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf"] {
-        provider_priority_by_extension.insert(extension.to_string(), vec!["onedrive".to_string()]);
-    }
-
-    for extension in ["jpg", "jpeg", "png", "heic", "heif", "raw", "mp4", "mov"] {
-        provider_priority_by_extension.insert(
-            extension.to_string(),
-            vec![
-                "icloud".to_string(),
-                "dropbox".to_string(),
-                "onedrive".to_string(),
-            ],
-        );
-    }
-
-    for extension in ["txt", "md", "csv", "json", "zip"] {
-        provider_priority_by_extension.insert(extension.to_string(), vec!["onedrive".to_string()]);
-    }
-
-    let categories = ["documents", "photos", "videos", "audio", "other"];
-    let mut category_path_by_provider = HashMap::<String, HashMap<String, String>>::new();
-
-    for provider in ["onedrive", "gdrive", "dropbox", "icloud"] {
-        let mut provider_paths = HashMap::new();
-
-        for category in categories {
-            provider_paths.insert(category.to_string(), format!("cloud-weave/{category}"));
-        }
-
-        category_path_by_provider.insert(provider.to_string(), provider_paths);
-    }
-
+    let (provider_priority_by_extension, category_path_by_provider) = default_upload_routing_tables();
     UploadRoutingConfig {
         provider_priority_by_extension,
         category_path_by_provider,
@@ -533,22 +509,7 @@ fn default_upload_routing_config() -> UploadRoutingConfig {
 }
 
 fn providers_for_extension(routing: &UploadRoutingConfig, extension: Option<&str>) -> Vec<String> {
-    let normalized = extension
-        .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
-        .filter(|value| !value.is_empty());
-
-    let mut providers = normalized
-        .as_deref()
-        .and_then(|value| routing.provider_priority_by_extension.get(value))
-        .cloned()
-        .unwrap_or_default();
-
-    if !providers.iter().any(|provider| provider == "onedrive") {
-        providers.push("onedrive".to_string());
-    }
-
-    providers.dedup();
-    providers
+    providers_for_extension_from_maps(&routing.provider_priority_by_extension, extension)
 }
 
 fn resolve_upload_candidates_for_provider(
@@ -576,13 +537,6 @@ fn resolve_upload_candidates_for_provider(
             base_path: base_path.to_string(),
         })
         .collect()
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum UploadRemoteCapacity {
-    Supported { free_bytes: u64 },
-    SupportedWithoutFree,
-    Unsupported,
 }
 
 fn probe_upload_remote_capacities(
@@ -623,69 +577,6 @@ fn remote_free_space(
     Ok(parsed.free)
 }
 
-fn rank_upload_remotes_by_capacity(
-    remotes: &[String],
-    capacities: &HashMap<String, UploadRemoteCapacity>,
-    file_size: u64,
-) -> Vec<String> {
-    let mut supported = remotes
-        .iter()
-        .filter_map(|remote_name| match capacities.get(remote_name) {
-            Some(UploadRemoteCapacity::Supported { free_bytes }) if *free_bytes >= file_size => {
-                Some((remote_name.clone(), *free_bytes))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    supported.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
-
-    let unsupported = remotes
-        .iter()
-        .filter(|remote_name| {
-            matches!(
-                capacities.get(*remote_name),
-                Some(
-                    UploadRemoteCapacity::Unsupported | UploadRemoteCapacity::SupportedWithoutFree
-                )
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-
-    if !supported.is_empty() {
-        let mut ranked = vec![supported[0].0.clone()];
-
-        for remote_name in unsupported {
-            if !ranked.iter().any(|existing| existing == &remote_name) {
-                ranked.push(remote_name);
-            }
-        }
-
-        for (remote_name, _) in supported.into_iter().skip(1) {
-            if !ranked.iter().any(|existing| existing == &remote_name) {
-                ranked.push(remote_name);
-            }
-        }
-
-        return ranked;
-    }
-
-    unsupported
-}
-
-fn category_base_path(routing: &UploadRoutingConfig, provider: &str, category: &str) -> String {
-    routing
-        .category_path_by_provider
-        .get(provider)
-        .and_then(|paths| paths.get(category))
-        .cloned()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| format!("cloud-weave/{category}"))
-        .trim_matches('/')
-        .replace('\\', "/")
-}
-
 fn build_upload_batch_id() -> String {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -724,83 +615,14 @@ fn resolve_open_cache_target(
                 .filter(|value| !value.trim().is_empty())
         });
 
-    let sanitized_stem = sanitize_file_name_component(&stem);
-    let cache_key = build_open_cache_key(&input.source_remote, &input.source_path);
+    let sanitized_stem = sanitize_open_cache_stem(&stem);
+    let cache_key = open_cache_key_suffix(&input.source_remote, &input.source_path);
     let file_name = match extension.as_deref().filter(|value| !value.is_empty()) {
         Some(extension) => format!("{sanitized_stem}-{cache_key}.{extension}"),
         None => format!("{sanitized_stem}-{cache_key}"),
     };
 
     open_temp_dir.join(file_name)
-}
-
-fn sanitize_file_name_component(value: &str) -> String {
-    let sanitized = value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .chars()
-        .take(48)
-        .collect::<String>();
-
-    if sanitized.is_empty() {
-        "open-file".to_string()
-    } else {
-        sanitized
-    }
-}
-
-fn build_open_cache_key(source_remote: &str, source_path: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    source_remote.hash(&mut hasher);
-    source_path.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
-fn select_open_mode(mime_type: Option<&str>, extension: Option<&str>) -> Option<&'static str> {
-    let normalized_mime = mime_type.unwrap_or_default().trim().to_ascii_lowercase();
-    let normalized_extension = extension
-        .unwrap_or_default()
-        .trim()
-        .trim_start_matches('.')
-        .to_ascii_lowercase();
-
-    if normalized_mime.starts_with("image/")
-        || matches!(
-            normalized_extension.as_str(),
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
-        )
-    {
-        Some("preview-image")
-    } else if normalized_mime == "application/pdf" || normalized_extension == "pdf" {
-        Some("preview-pdf")
-    } else if matches!(
-        normalized_mime.as_str(),
-        "text/plain"
-            | "text/markdown"
-            | "text/csv"
-            | "application/json"
-            | "application/msword"
-            | "application/vnd.ms-excel"
-            | "application/vnd.ms-powerpoint"
-            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    ) || matches!(
-        normalized_extension.as_str(),
-        "txt" | "md" | "csv" | "json" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx"
-    ) {
-        Some("system-default")
-    } else {
-        None
-    }
 }
 
 pub(crate) fn cleanup_stale_open_temp_files(app: &AppHandle) -> Result<(), String> {
@@ -860,18 +682,11 @@ pub(super) fn component_to_normal_path_part(component: Component<'_>) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_open_cache_key, category_base_path, default_upload_routing_config,
-        expand_upload_directory, providers_for_extension, rank_upload_remotes_by_capacity,
-        sanitize_file_name_component, select_open_mode, UploadRemoteCapacity,
-    };
+    use super::expand_upload_directory;
     use super::download::{
-        completion_progress, resolve_unique_download_target, select_download_file_name,
-        user_facing_download_error,
+        resolve_unique_download_target, select_download_file_name, user_facing_download_error,
     };
-    use super::upload::join_remote_path;
     use std::{
-        collections::HashMap,
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -911,132 +726,9 @@ mod tests {
     }
 
     #[test]
-    fn completion_progress_uses_total_bytes() {
-        assert_eq!(completion_progress(Some(25), Some(100)), Some(25.0));
-        assert_eq!(completion_progress(Some(0), Some(0)), Some(100.0));
-        assert_eq!(completion_progress(Some(50), None), None);
-    }
-
-    #[test]
     fn user_facing_download_error_falls_back_to_detail() {
         let message = user_facing_download_error("access denied");
         assert!(message.contains("access denied"));
-    }
-
-    #[test]
-    fn select_open_mode_prefers_previewable_types() {
-        assert_eq!(
-            select_open_mode(Some("image/jpeg"), Some("jpg")),
-            Some("preview-image")
-        );
-        assert_eq!(
-            select_open_mode(Some("application/pdf"), Some("pdf")),
-            Some("preview-pdf")
-        );
-        assert_eq!(
-            select_open_mode(
-                Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-                Some("docx")
-            ),
-            Some("system-default")
-        );
-        assert_eq!(select_open_mode(Some("application/zip"), Some("zip")), None);
-    }
-
-    #[test]
-    fn build_open_cache_key_is_stable() {
-        let first = build_open_cache_key("onedrive-main", "folder/file.pdf");
-        let second = build_open_cache_key("onedrive-main", "folder/file.pdf");
-        let third = build_open_cache_key("onedrive-main", "folder/other.pdf");
-
-        assert_eq!(first, second);
-        assert_ne!(first, third);
-    }
-
-    #[test]
-    fn sanitize_file_name_component_preserves_safe_characters() {
-        assert_eq!(sanitize_file_name_component("report.v1"), "report.v1");
-        assert_eq!(sanitize_file_name_component("bad name/?"), "bad-name");
-    }
-
-    #[test]
-    fn providers_for_extension_falls_back_to_onedrive() {
-        let config = default_upload_routing_config();
-
-        assert_eq!(
-            providers_for_extension(&config, Some(".docx")),
-            vec!["onedrive".to_string()]
-        );
-        assert_eq!(
-            providers_for_extension(&config, Some(".unknown")),
-            vec!["onedrive".to_string()]
-        );
-    }
-
-    #[test]
-    fn rank_upload_remotes_by_capacity_prefers_largest_supported_remote() {
-        let remotes = vec![
-            "onedrive-main".to_string(),
-            "onedrive-archive".to_string(),
-            "onedrive-fallback".to_string(),
-        ];
-        let capacities = HashMap::from([
-            (
-                "onedrive-main".to_string(),
-                UploadRemoteCapacity::Supported { free_bytes: 100 },
-            ),
-            (
-                "onedrive-archive".to_string(),
-                UploadRemoteCapacity::Supported { free_bytes: 300 },
-            ),
-            (
-                "onedrive-fallback".to_string(),
-                UploadRemoteCapacity::Unsupported,
-            ),
-        ]);
-
-        assert_eq!(
-            rank_upload_remotes_by_capacity(&remotes, &capacities, 50),
-            vec![
-                "onedrive-archive".to_string(),
-                "onedrive-fallback".to_string(),
-                "onedrive-main".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn rank_upload_remotes_by_capacity_falls_back_to_unsupported_when_needed() {
-        let remotes = vec!["onedrive-main".to_string(), "onedrive-archive".to_string()];
-        let capacities = HashMap::from([
-            (
-                "onedrive-main".to_string(),
-                UploadRemoteCapacity::Supported { free_bytes: 10 },
-            ),
-            (
-                "onedrive-archive".to_string(),
-                UploadRemoteCapacity::Unsupported,
-            ),
-        ]);
-
-        assert_eq!(
-            rank_upload_remotes_by_capacity(&remotes, &capacities, 50),
-            vec!["onedrive-archive".to_string()]
-        );
-    }
-
-    #[test]
-    fn category_base_path_uses_default_when_missing() {
-        let config = default_upload_routing_config();
-
-        assert_eq!(
-            category_base_path(&config, "onedrive", "documents"),
-            "cloud-weave/documents"
-        );
-        assert_eq!(
-            category_base_path(&config, "unknown-provider", "other"),
-            "cloud-weave/other"
-        );
     }
 
     #[test]
@@ -1066,13 +758,5 @@ mod tests {
         );
 
         fs::remove_dir_all(&root).expect("temp directory should be removed");
-    }
-
-    #[test]
-    fn join_remote_path_normalizes_segments() {
-        assert_eq!(
-            join_remote_path("cloud-weave/documents", "reports/file.pdf"),
-            "cloud-weave/documents/reports/file.pdf"
-        );
     }
 }
