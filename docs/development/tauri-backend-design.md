@@ -59,7 +59,7 @@ flowchart TB
 | ------------------ | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | **Entry**          | OS entry only; no app logic                                                       | `[src-tauri/src/main.rs](../../src-tauri/src/main.rs)` delegates to `app_lib::run()`                         |
 | **Tauri shell**    | `run()`: plugins, `setup`, `.manage()`, `invoke_handler`                          | `[src-tauri/src/lib.rs](../../src-tauri/src/lib.rs)`                                                         |
-| **Orchestration**  | Command bodies, threading, progress polling, mapping to user-visible results      | Prefer modules such as `[unified_library.rs](../../src-tauri/src/unified_library.rs)` (library), `[transfers.rs](../../src-tauri/src/transfers.rs)` (download / open / upload), `[diagnostics.rs](../../src-tauri/src/diagnostics.rs)` (diagnostics export), `[remotes.rs](../../src-tauri/src/remotes.rs)` (storage list / delete) |
+| **Orchestration**  | Command bodies, threading, progress polling, mapping to user-visible results      | Prefer modules such as `[unified_library/](../../src-tauri/src/unified_library/)` (listing + `[load_stream.rs](../../src-tauri/src/unified_library/load_stream.rs)` for the background load stream), `[transfers/](../../src-tauri/src/transfers/)` (`[download.rs](../../src-tauri/src/transfers/download.rs)` / `[upload.rs](../../src-tauri/src/transfers/upload.rs)` for long-running transfer progress; open + routing in `[mod.rs](../../src-tauri/src/transfers/mod.rs)`), `[diagnostics.rs](../../src-tauri/src/diagnostics.rs)` (diagnostics export), `[remotes.rs](../../src-tauri/src/remotes.rs)` (storage list / delete) |
 | **Auth / session** | OAuth-style flows, persisted session records                                      | `[auth_flow.rs](../../src-tauri/src/auth_flow.rs)`, `[auth_session.rs](../../src-tauri/src/auth_session.rs)`; OneDrive connect / reconnect / session status commands live in `[auth_remotes.rs](../../src-tauri/src/auth_remotes.rs)` |
 | **Providers**      | Provider-specific post-auth and validation                                        | `[providers/](../../src-tauri/src/providers/)` (e.g. OneDrive)                                               |
 | **Runtime**        | Spawning rclone, timeouts, collecting output                                      | `[rclone_runtime.rs](../../src-tauri/src/rclone_runtime.rs)`                                                 |
@@ -67,7 +67,7 @@ flowchart TB
 | **Domain crate**   | Parsing, classification, pure types; **no `tauri` dependency**                    | `[crates/rclone_logic/](../../src-tauri/crates/rclone_logic/)`                                               |
 
 
-*Note:* `[lib.rs](../../src-tauri/src/lib.rs)` still hosts `run()` and shared remote-status helpers; heavier flows live in modules such as `transfers` / `unified_library`. Remaining growth should follow the table rather than re-centralizing logic in the shell.
+*Note:* `[lib.rs](../../src-tauri/src/lib.rs)` still hosts `run()` and shared remote-status helpers; heavier flows live in modules such as `transfers/` / `unified_library/`. Remaining growth should follow the table rather than re-centralizing logic in the shell.
 
 ## Frontend contract
 
