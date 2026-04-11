@@ -67,7 +67,7 @@ flowchart TB
 | **Domain crate**   | Parsing, classification, pure types; **no `tauri` dependency**                    | `[crates/rclone_logic/](../../src-tauri/crates/rclone_logic/)`                                               |
 
 
-*Note:* Today `[lib.rs](../../src-tauri/src/lib.rs)` also holds substantial orchestration and DTOs. That concentration is **legacy shape**, not the target end-state. New work should still **default** to the placements in the table even if older code has not been split yet.
+*Note:* `[lib.rs](../../src-tauri/src/lib.rs)` still hosts `run()` and shared remote-status helpers; heavier flows live in modules such as `transfers` / `unified_library`. Remaining growth should follow the table rather than re-centralizing logic in the shell.
 
 ## Frontend contract
 
