@@ -7,11 +7,10 @@ use std::{
 };
 
 use rclone_logic::{
-    category_base_path as category_base_path_for_provider,
-    classify_item, classify_rclone_error, default_upload_routing_tables, derive_extension,
-    open_cache_key_suffix, providers_for_extension as providers_for_extension_from_maps,
-    rank_upload_remotes_by_capacity, sanitize_open_cache_stem, select_preview_open_mode,
-    UploadRemoteCapacity, RcloneErrorKind,
+    category_base_path as category_base_path_for_provider, classify_item, classify_rclone_error,
+    default_upload_routing_tables, derive_extension, open_cache_key_suffix,
+    providers_for_extension as providers_for_extension_from_maps, rank_upload_remotes_by_capacity,
+    sanitize_open_cache_stem, select_preview_open_mode, RcloneErrorKind, UploadRemoteCapacity,
 };
 use tauri::{AppHandle, Manager};
 
@@ -20,9 +19,9 @@ use crate::{
     backend_common::{ensure_rclone_config, resolve_app_local_data_dir},
     ipc::types::{
         AboutJson, DownloadAcceptedResult, DownloadProgressEvent, PrepareOpenFileInput,
-        PrepareOpenFileResult, PrepareUploadBatchInput, PreparedUploadBatch, PreparedUploadCandidate,
-        PreparedUploadItem, StartDownloadInput, StartUploadBatchInput, UploadAcceptedResult,
-        UploadRoutingConfig, UploadSelectionInput,
+        PrepareOpenFileResult, PrepareUploadBatchInput, PreparedUploadBatch,
+        PreparedUploadCandidate, PreparedUploadItem, StartDownloadInput, StartUploadBatchInput,
+        UploadAcceptedResult, UploadRoutingConfig, UploadSelectionInput,
     },
     rclone_runtime::{run_rclone_owned, INVENTORY_COMMAND_TIMEOUT},
     unified_library::{list_connected_remote_targets, RemoteLoadTarget},
@@ -500,7 +499,8 @@ fn write_upload_routing_config(path: &Path, config: &UploadRoutingConfig) -> Res
 }
 
 fn default_upload_routing_config() -> UploadRoutingConfig {
-    let (provider_priority_by_extension, category_path_by_provider) = default_upload_routing_tables();
+    let (provider_priority_by_extension, category_path_by_provider) =
+        default_upload_routing_tables();
     UploadRoutingConfig {
         provider_priority_by_extension,
         category_path_by_provider,
@@ -682,10 +682,10 @@ pub(super) fn component_to_normal_path_part(component: Component<'_>) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::expand_upload_directory;
     use super::download::{
         resolve_unique_download_target, select_download_file_name, user_facing_download_error,
     };
+    use super::expand_upload_directory;
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
